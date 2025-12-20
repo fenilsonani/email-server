@@ -51,7 +51,44 @@ func (b *Backend) NotifyUpdate(update backend.Update) {
 
 // NotifyMailboxUpdate notifies IDLE clients about a mailbox change (new message)
 func (b *Backend) NotifyMailboxUpdate(username, mailbox string) {
+	ctx := context.Background()
+
+	// Look up user to get their mailbox stats
+	user, err := b.authenticator.LookupUser(ctx, username)
+	if err != nil {
+		// Fallback to simple update without stats
+		b.updates.Notify(&backend.MailboxUpdate{
+			Update: backend.NewUpdate(username, mailbox),
+		})
+		return
+	}
+
+	// Get mailbox to find its ID
+	mb, err := b.store.GetMailbox(ctx, user.ID, mailbox)
+	if err != nil {
+		b.updates.Notify(&backend.MailboxUpdate{
+			Update: backend.NewUpdate(username, mailbox),
+		})
+		return
+	}
+
+	// Get current mailbox stats for accurate message count
+	stats, err := b.store.GetMailboxStats(ctx, mb.ID)
+	if err != nil {
+		b.updates.Notify(&backend.MailboxUpdate{
+			Update: backend.NewUpdate(username, mailbox),
+		})
+		return
+	}
+
+	// Send update with full mailbox status - this triggers IDLE notification
+	status := imap.NewMailboxStatus(mailbox, []imap.StatusItem{imap.StatusMessages, imap.StatusRecent, imap.StatusUnseen})
+	status.Messages = uint32(stats.Messages)
+	status.Recent = uint32(stats.Recent)
+	status.Unseen = uint32(stats.Unseen)
+
 	b.updates.Notify(&backend.MailboxUpdate{
-		Update: backend.NewUpdate(username, mailbox),
+		Update:        backend.NewUpdate(username, mailbox),
+		MailboxStatus: status,
 	})
 }
