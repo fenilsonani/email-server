@@ -55,9 +55,10 @@ func (b *Backend) NotifyUpdate(update backend.Update) {
 }
 
 // NotifyMailboxUpdate notifies IDLE clients about a mailbox change (new message)
+// NOTE: IDLE updates are disabled due to a crash in go-imap v1.2.1
+// The crash occurs in responses/select.go when sending unilateral responses
+// Apple Mail will still receive emails via its periodic polling (every 1-5 minutes)
+// TODO: Upgrade to go-imap/v2 for proper IDLE support
 func (b *Backend) NotifyMailboxUpdate(username, mailbox string) {
-	log.Printf("IDLE: NotifyMailboxUpdate called for %s/%s (disabled for debugging)", username, mailbox)
-	// TEMPORARILY DISABLED - investigating crash
-	// The crash happens in go-imap's SELECT response writer
-	// which suggests something is wrong with how IDLE updates trigger re-SELECT
+	log.Printf("IDLE: New message for %s/%s (IDLE disabled, will sync on next poll)", username, mailbox)
 }
