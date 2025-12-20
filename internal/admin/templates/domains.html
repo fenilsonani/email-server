@@ -1,0 +1,50 @@
+{{define "domains.html"}}
+{{template "layout" .}}
+{{end}}
+
+{{define "content"}}
+<h1 style="margin-bottom: 1.5rem;">Domains</h1>
+
+<div class="card">
+    {{if .Domains}}
+    <table>
+        <thead>
+            <tr>
+                <th>Domain</th>
+                <th>Users</th>
+                <th>Created</th>
+                <th>DNS Status</th>
+            </tr>
+        </thead>
+        <tbody>
+            {{range .Domains}}
+            <tr>
+                <td><strong>{{.Name}}</strong></td>
+                <td>{{.UserCount}} users</td>
+                <td>{{.CreatedAt.Format "Jan 02, 2006"}}</td>
+                <td>
+                    <span class="badge badge-warning">Check DNS</span>
+                </td>
+            </tr>
+            {{end}}
+        </tbody>
+    </table>
+    {{else}}
+    <p style="color: var(--text-muted);">No domains configured.</p>
+    {{end}}
+</div>
+
+<div class="card">
+    <h2>DNS Configuration</h2>
+    <p style="margin-bottom: 1rem; color: var(--text-muted);">
+        Use the CLI to check and generate DNS records:
+    </p>
+    <pre style="background: var(--bg); padding: 1rem; border-radius: 6px; overflow-x: auto;">
+# Check DNS configuration
+mailserver dns check yourdomain.com
+
+# Generate required records
+mailserver dns generate yourdomain.com
+    </pre>
+</div>
+{{end}}

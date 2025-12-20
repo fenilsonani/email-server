@@ -1,0 +1,46 @@
+{{define "user_form.html"}}
+{{template "layout" .}}
+{{end}}
+
+{{define "content"}}
+<h1 style="margin-bottom: 1.5rem;">{{.Title}}</h1>
+
+<div class="card" style="max-width: 500px;">
+    <form method="POST" action="/admin/users/add">
+        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+
+        <div class="form-group">
+            <label for="username">Username</label>
+            <input type="text" id="username" name="username" class="form-control" required
+                   placeholder="e.g., john (without @domain)">
+        </div>
+
+        <div class="form-group">
+            <label for="domain_id">Domain</label>
+            <select id="domain_id" name="domain_id" class="form-control" required>
+                <option value="">Select domain...</option>
+                {{range .Domains}}
+                <option value="{{.ID}}">{{.Name}}</option>
+                {{end}}
+            </select>
+        </div>
+
+        <div class="form-group">
+            <label for="password">Password</label>
+            <input type="password" id="password" name="password" class="form-control" required
+                   minlength="8" placeholder="Minimum 8 characters">
+        </div>
+
+        <div class="form-group">
+            <label>
+                <input type="checkbox" name="is_admin"> Admin user
+            </label>
+        </div>
+
+        <div style="display: flex; gap: 1rem;">
+            <button type="submit" class="btn btn-primary">Create User</button>
+            <a href="/admin/users" class="btn" style="background: var(--border);">Cancel</a>
+        </div>
+    </form>
+</div>
+{{end}}

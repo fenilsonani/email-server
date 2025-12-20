@@ -10,6 +10,7 @@ import (
 
 	"github.com/fenilsonani/email-server/internal/auth"
 	"github.com/fenilsonani/email-server/internal/config"
+	"github.com/fenilsonani/email-server/internal/dns"
 	imapserver "github.com/fenilsonani/email-server/internal/imap"
 	"github.com/fenilsonani/email-server/internal/logging"
 	"github.com/fenilsonani/email-server/internal/queue"
@@ -525,6 +526,87 @@ var userPasswdCmd = &cobra.Command{
 	},
 }
 
+// DNS management commands
+var dnsCmd = &cobra.Command{
+	Use:   "dns",
+	Short: "DNS record checking and generation",
+}
+
+var dnsCheckCmd = &cobra.Command{
+	Use:   "check <domain>",
+	Short: "Check DNS configuration for a domain",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		domain := args[0]
+		mailServer := cfg.Server.Hostname
+
+		checker := dns.NewChecker(domain, mailServer)
+		results := checker.CheckAll(context.Background())
+
+		fmt.Printf("DNS Check for %s (mail server: %s)\n", domain, mailServer)
+		fmt.Println("=" + "========================================")
+
+		for _, r := range results {
+			var icon string
+			switch r.Status {
+			case dns.StatusPass:
+				icon = "✓"
+			case dns.StatusFail:
+				icon = "✗"
+			case dns.StatusWarning:
+				icon = "!"
+			case dns.StatusMissing:
+				icon = "?"
+			}
+
+			fmt.Printf("[%s] %-8s %s\n", icon, r.RecordType, r.Status)
+			if r.Actual != "" {
+				fmt.Printf("    Found:    %s\n", r.Actual)
+			}
+			if r.Expected != "" && r.Status != dns.StatusPass {
+				fmt.Printf("    Expected: %s\n", r.Expected)
+			}
+			fmt.Printf("    %s\n\n", r.Message)
+		}
+
+		return nil
+	},
+}
+
+var dnsGenerateCmd = &cobra.Command{
+	Use:   "generate <domain> [server-ip]",
+	Short: "Generate required DNS records for a domain",
+	Args:  cobra.RangeArgs(1, 2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		domain := args[0]
+		mailServer := cfg.Server.Hostname
+		serverIP := ""
+		if len(args) > 1 {
+			serverIP = args[1]
+		}
+
+		generator := dns.NewGenerator(domain, mailServer, serverIP)
+
+		// Try to load DKIM key if configured
+		for _, d := range cfg.Domains {
+			if d.Name == domain && d.DKIMKeyFile != "" {
+				// Read public key
+				fmt.Printf("Using DKIM key from %s\n\n", d.DKIMKeyFile)
+			}
+		}
+
+		records := generator.GenerateAll()
+
+		fmt.Println(dns.FormatForProvider(records, domain))
+
+		fmt.Println("\nZone file format:")
+		fmt.Println("-----------------")
+		fmt.Println(dns.FormatAsZone(records, domain))
+
+		return nil
+	},
+}
+
 var versionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Print version information",
@@ -550,6 +632,11 @@ func init() {
 	userCmd.AddCommand(userListCmd)
 	userCmd.AddCommand(userPasswdCmd)
 	rootCmd.AddCommand(userCmd)
+
+	// DNS commands
+	dnsCmd.AddCommand(dnsCheckCmd)
+	dnsCmd.AddCommand(dnsGenerateCmd)
+	rootCmd.AddCommand(dnsCmd)
 }
 
 func splitEmail(email string) []string {

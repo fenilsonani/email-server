@@ -1,11 +1,14 @@
 package smtp
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
 	"io"
+	"net/textproto"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +18,7 @@ import (
 	"github.com/fenilsonani/email-server/internal/auth"
 	"github.com/fenilsonani/email-server/internal/config"
 	"github.com/fenilsonani/email-server/internal/logging"
+	"github.com/fenilsonani/email-server/internal/sieve"
 	"github.com/fenilsonani/email-server/internal/smtp/delivery"
 	"github.com/fenilsonani/email-server/internal/storage"
 	"github.com/fenilsonani/email-server/internal/storage/maildir"
@@ -32,6 +36,7 @@ type Backend struct {
 	logger           *logging.Logger
 	queuePath        string // Path to store queued message files
 	onLocalDelivery  LocalDeliveryNotifier
+	sieveExecutor    *sieve.Executor
 }
 
 // NewBackend creates a new SMTP backend
@@ -52,6 +57,11 @@ func NewBackend(cfg *config.Config, authenticator *auth.Authenticator, store *ma
 // SetLocalDeliveryNotifier sets the callback for local delivery notifications
 func (b *Backend) SetLocalDeliveryNotifier(notifier LocalDeliveryNotifier) {
 	b.onLocalDelivery = notifier
+}
+
+// SetSieveExecutor sets the Sieve script executor for mail filtering
+func (b *Backend) SetSieveExecutor(executor *sieve.Executor) {
+	b.sieveExecutor = executor
 }
 
 // NewSession is called when a new SMTP connection is established
@@ -256,14 +266,93 @@ func (s *Session) deliverToLocalRecipient(rcpt string, data []byte) error {
 		return fmt.Errorf("user not found: %w", err)
 	}
 
-	// Get INBOX mailbox
-	inbox, err := s.backend.store.GetMailbox(ctx, user.ID, "INBOX")
+	// Execute Sieve filtering if available
+	targetMailbox := "INBOX"
+	if s.backend.sieveExecutor != nil {
+		msg := s.parseMessageForSieve(data)
+		result, err := s.backend.sieveExecutor.Execute(ctx, user.ID, msg)
+		if err != nil {
+			s.backend.logger.WarnContext(ctx, "Sieve execution failed, delivering to INBOX",
+				"error", err.Error(),
+			)
+		} else if result != nil {
+			// Handle discard
+			if result.Discarded {
+				s.backend.logger.InfoContext(ctx, "Message discarded by Sieve",
+					"recipient", rcpt,
+				)
+				return nil
+			}
+
+			// Handle reject
+			if result.Rejected {
+				s.backend.logger.InfoContext(ctx, "Message rejected by Sieve",
+					"recipient", rcpt,
+					"reason", result.RejectMsg,
+				)
+				return fmt.Errorf("message rejected: %s", result.RejectMsg)
+			}
+
+			// Handle redirect
+			if result.Redirected && len(result.RedirectTo) > 0 {
+				if s.backend.deliveryEngine != nil {
+					messagePath, err := s.saveMessageToQueue(data)
+					if err != nil {
+						return fmt.Errorf("failed to save message for redirect: %w", err)
+					}
+					if err := s.backend.deliveryEngine.Enqueue(ctx, s.from, result.RedirectTo, messagePath); err != nil {
+						s.backend.logger.ErrorContext(ctx, "Failed to enqueue redirected message", err)
+					} else {
+						s.backend.logger.InfoContext(ctx, "Message redirected by Sieve",
+							"recipient", rcpt,
+							"redirect_to", result.RedirectTo,
+						)
+					}
+				}
+				if !result.Keep {
+					return nil
+				}
+			}
+
+			// Handle fileinto
+			if result.Filed && result.FileInto != "" {
+				targetMailbox = result.FileInto
+			}
+
+			// Handle vacation response
+			if result.Vacation && result.VacationTo != "" {
+				go s.sendVacationResponse(ctx, result, user)
+			}
+		}
+	}
+
+	// Get target mailbox (INBOX or fileinto folder)
+	mailbox, err := s.backend.store.GetMailbox(ctx, user.ID, targetMailbox)
 	if err != nil {
-		return fmt.Errorf("INBOX not found: %w", err)
+		// If target folder doesn't exist, try to create it, or fall back to INBOX
+		if targetMailbox != "INBOX" {
+			s.backend.logger.WarnContext(ctx, "Sieve target folder not found, creating",
+				"folder", targetMailbox,
+			)
+			mailbox, err = s.backend.store.CreateMailbox(ctx, user.ID, targetMailbox, "")
+			if err != nil {
+				s.backend.logger.WarnContext(ctx, "Failed to create Sieve target folder, using INBOX",
+					"folder", targetMailbox,
+					"error", err.Error(),
+				)
+				mailbox, err = s.backend.store.GetMailbox(ctx, user.ID, "INBOX")
+				if err != nil {
+					return fmt.Errorf("INBOX not found: %w", err)
+				}
+				targetMailbox = "INBOX"
+			}
+		} else {
+			return fmt.Errorf("INBOX not found: %w", err)
+		}
 	}
 
 	// Deliver message
-	_, err = s.backend.store.AppendMessage(ctx, inbox.ID, nil, time.Now(),
+	_, err = s.backend.store.AppendMessage(ctx, mailbox.ID, nil, time.Now(),
 		strings.NewReader(string(data)))
 	if err != nil {
 		return fmt.Errorf("failed to append message: %w", err)
@@ -271,7 +360,7 @@ func (s *Session) deliverToLocalRecipient(rcpt string, data []byte) error {
 
 	// Notify IMAP clients about new message (for IDLE support) - async for speed
 	if s.backend.onLocalDelivery != nil {
-		go s.backend.onLocalDelivery(user.Email, "INBOX")
+		go s.backend.onLocalDelivery(user.Email, targetMailbox)
 	}
 
 	return nil
@@ -419,4 +508,85 @@ func generateID() string {
 		return fmt.Sprintf("%d-%x", time.Now().UnixNano(), time.Now().UnixNano()%0xFFFFFF)
 	}
 	return hex.EncodeToString(b)
+}
+
+// parseMessageForSieve parses raw email data into a Sieve message structure
+func (s *Session) parseMessageForSieve(data []byte) *sieve.Message {
+	msg := &sieve.Message{
+		Headers: make(map[string][]string),
+		Size:    int64(len(data)),
+	}
+
+	// Parse headers using textproto
+	reader := bufio.NewReader(bytes.NewReader(data))
+	tp := textproto.NewReader(reader)
+	headers, err := tp.ReadMIMEHeader()
+	if err != nil && len(headers) == 0 {
+		// Failed to parse headers, return minimal message
+		msg.From = s.from
+		return msg
+	}
+
+	// Copy headers
+	for key, values := range headers {
+		msg.Headers[key] = values
+	}
+
+	// Extract common headers
+	if from := headers.Get("From"); from != "" {
+		msg.From = from
+	} else {
+		msg.From = s.from
+	}
+
+	if to := headers.Get("To"); to != "" {
+		msg.To = strings.Split(to, ",")
+		for i := range msg.To {
+			msg.To[i] = strings.TrimSpace(msg.To[i])
+		}
+	}
+
+	if subject := headers.Get("Subject"); subject != "" {
+		msg.Subject = subject
+	}
+
+	return msg
+}
+
+// sendVacationResponse sends an automatic vacation reply
+func (s *Session) sendVacationResponse(ctx context.Context, result *sieve.Result, user *auth.User) {
+	if s.backend.deliveryEngine == nil {
+		s.backend.logger.WarnContext(ctx, "Cannot send vacation response - delivery engine not configured")
+		return
+	}
+
+	// Build vacation message
+	var msg bytes.Buffer
+	msg.WriteString(fmt.Sprintf("From: %s\r\n", user.Email))
+	msg.WriteString(fmt.Sprintf("To: %s\r\n", result.VacationTo))
+	msg.WriteString(fmt.Sprintf("Subject: %s\r\n", result.VacationSubject))
+	msg.WriteString("Auto-Submitted: auto-replied\r\n")
+	msg.WriteString("X-Auto-Response-Suppress: All\r\n")
+	msg.WriteString(fmt.Sprintf("Date: %s\r\n", time.Now().Format(time.RFC1123Z)))
+	msg.WriteString(fmt.Sprintf("Message-ID: <%s@%s>\r\n", generateID(), s.backend.config.Server.Domain))
+	msg.WriteString("MIME-Version: 1.0\r\n")
+	msg.WriteString("Content-Type: text/plain; charset=utf-8\r\n")
+	msg.WriteString("\r\n")
+	msg.WriteString(result.VacationBody)
+
+	// Save and enqueue
+	messagePath, err := s.saveMessageToQueue(msg.Bytes())
+	if err != nil {
+		s.backend.logger.ErrorContext(ctx, "Failed to save vacation response", err)
+		return
+	}
+
+	if err := s.backend.deliveryEngine.Enqueue(ctx, user.Email, []string{result.VacationTo}, messagePath); err != nil {
+		s.backend.logger.ErrorContext(ctx, "Failed to enqueue vacation response", err)
+		return
+	}
+
+	s.backend.logger.InfoContext(ctx, "Vacation response queued",
+		"to", result.VacationTo,
+	)
 }

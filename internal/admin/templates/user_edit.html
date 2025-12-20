@@ -1,0 +1,35 @@
+{{define "user_edit.html"}}
+{{template "layout" .}}
+{{end}}
+
+{{define "content"}}
+<h1 style="margin-bottom: 1.5rem;">Edit User: {{.Email}}</h1>
+
+<div class="card" style="max-width: 500px;">
+    <form method="POST" action="/admin/users/edit/{{.UserID}}">
+        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+
+        <div class="form-group">
+            <label>Email</label>
+            <input type="text" class="form-control" value="{{.Email}}" disabled>
+        </div>
+
+        <div class="form-group">
+            <label for="password">New Password (leave blank to keep current)</label>
+            <input type="password" id="password" name="password" class="form-control"
+                   minlength="8" placeholder="Minimum 8 characters">
+        </div>
+
+        <div class="form-group">
+            <label>
+                <input type="checkbox" name="is_admin" {{if .IsAdmin}}checked{{end}}> Admin user
+            </label>
+        </div>
+
+        <div style="display: flex; gap: 1rem;">
+            <button type="submit" class="btn btn-primary">Save Changes</button>
+            <a href="/admin/users" class="btn" style="background: var(--border);">Cancel</a>
+        </div>
+    </form>
+</div>
+{{end}}

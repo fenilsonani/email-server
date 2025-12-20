@@ -211,6 +211,59 @@ func (a *Authenticator) GetDomainID(ctx context.Context, name string) (int64, er
 	return id, nil
 }
 
+// CreateUser creates a new user account
+func (a *Authenticator) CreateUser(ctx context.Context, username, password string, domainID int64) (*User, error) {
+	// Hash password
+	passwordHash, err := HashPassword(password)
+	if err != nil {
+		return nil, fmt.Errorf("failed to hash password: %w", err)
+	}
+
+	// Get domain name
+	var domainName string
+	err = a.db.QueryRowContext(ctx, "SELECT name FROM domains WHERE id = ?", domainID).Scan(&domainName)
+	if err != nil {
+		return nil, ErrDomainNotFound
+	}
+
+	email := fmt.Sprintf("%s@%s", strings.ToLower(username), domainName)
+
+	result, err := a.db.ExecContext(ctx, `
+		INSERT INTO users (domain_id, username, password_hash, email, is_active, created_at, updated_at)
+		VALUES (?, ?, ?, ?, TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+	`, domainID, strings.ToLower(username), passwordHash, email)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create user: %w", err)
+	}
+
+	id, err := result.LastInsertId()
+	if err != nil {
+		return nil, err
+	}
+
+	return &User{
+		ID:       id,
+		DomainID: domainID,
+		Username: strings.ToLower(username),
+		Domain:   domainName,
+		Email:    email,
+		IsActive: true,
+	}, nil
+}
+
+// UpdatePassword updates a user's password
+func (a *Authenticator) UpdatePassword(ctx context.Context, userID int64, password string) error {
+	passwordHash, err := HashPassword(password)
+	if err != nil {
+		return fmt.Errorf("failed to hash password: %w", err)
+	}
+
+	_, err = a.db.ExecContext(ctx, `
+		UPDATE users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?
+	`, passwordHash, userID)
+	return err
+}
+
 // lookupUserWithPassword retrieves user info including password hash
 func (a *Authenticator) lookupUserWithPassword(ctx context.Context, username, domain string) (*User, string, error) {
 	query := `

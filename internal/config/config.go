@@ -20,6 +20,8 @@ type Config struct {
 	Logging  LoggingConfig  `koanf:"logging"`
 	Queue    QueueConfig    `koanf:"queue"`
 	Delivery DeliveryConfig `koanf:"delivery"`
+	Admin    AdminConfig    `koanf:"admin"`
+	Sieve    SieveConfig    `koanf:"sieve"`
 }
 
 // ServerConfig holds server-related configuration
@@ -93,6 +95,20 @@ type DeliveryConfig struct {
 	RelayHost      string `koanf:"relay_host"`      // Optional smarthost (host:port)
 }
 
+// AdminConfig holds admin web panel configuration
+type AdminConfig struct {
+	Enabled bool   `koanf:"enabled"` // Enable admin web panel
+	Port    int    `koanf:"port"`    // Admin port (default 8080)
+	Listen  string `koanf:"listen"`  // Listen address (default 127.0.0.1)
+}
+
+// SieveConfig holds Sieve filtering configuration
+type SieveConfig struct {
+	Enabled           bool `koanf:"enabled"`              // Enable Sieve filtering
+	MaxScriptSize     int  `koanf:"max_script_size"`      // Maximum script size in bytes
+	MaxScriptsPerUser int  `koanf:"max_scripts_per_user"` // Maximum scripts per user
+}
+
 // DefaultConfig returns a configuration with sensible defaults
 func DefaultConfig() *Config {
 	return &Config{
@@ -141,6 +157,16 @@ func DefaultConfig() *Config {
 			CommandTimeout: "5m",
 			RequireTLS:     false,
 			VerifyTLS:      true,
+		},
+		Admin: AdminConfig{
+			Enabled: true,
+			Port:    8080,
+			Listen:  "127.0.0.1",
+		},
+		Sieve: SieveConfig{
+			Enabled:           true,
+			MaxScriptSize:     32768, // 32KB
+			MaxScriptsPerUser: 5,
 		},
 	}
 }

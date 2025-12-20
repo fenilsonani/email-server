@@ -1,0 +1,129 @@
+{{define "sieve.html"}}
+{{template "layout" .}}
+{{end}}
+
+{{define "content"}}
+<h1 style="margin-bottom: 1.5rem;">Sieve Scripts - User #{{.UserID}}</h1>
+
+<div class="card">
+    <h2>Scripts</h2>
+    {{if .Scripts}}
+    <table>
+        <thead>
+            <tr>
+                <th>Name</th>
+                <th>Status</th>
+                <th>Updated</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {{range .Scripts}}
+            <tr>
+                <td><strong>{{.Name}}</strong></td>
+                <td>
+                    {{if .IsActive}}
+                    <span class="badge badge-success">Active</span>
+                    {{else}}
+                    <span class="badge">Inactive</span>
+                    {{end}}
+                </td>
+                <td>{{.UpdatedAt.Format "Jan 02, 2006 15:04"}}</td>
+                <td>
+                    <button class="btn btn-sm btn-primary" onclick="editScript('{{.Name}}', `{{.Content}}`)">Edit</button>
+                    {{if not .IsActive}}
+                    <form method="POST" style="display: inline;">
+                        <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                        <input type="hidden" name="action" value="activate">
+                        <input type="hidden" name="name" value="{{.Name}}">
+                        <button type="submit" class="btn btn-sm btn-primary">Activate</button>
+                    </form>
+                    {{end}}
+                    <form method="POST" style="display: inline;" onsubmit="return confirm('Delete this script?');">
+                        <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                        <input type="hidden" name="action" value="delete">
+                        <input type="hidden" name="name" value="{{.Name}}">
+                        <button type="submit" class="btn btn-sm btn-danger">Delete</button>
+                    </form>
+                </td>
+            </tr>
+            {{end}}
+        </tbody>
+    </table>
+    {{else}}
+    <p style="color: var(--text-muted);">No Sieve scripts configured.</p>
+    {{end}}
+</div>
+
+<div class="card">
+    <h2 id="form-title">Create New Script</h2>
+    <form method="POST" id="sieve-form">
+        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+        <input type="hidden" name="action" id="form-action" value="create">
+
+        <div class="form-group">
+            <label for="name">Script Name</label>
+            <input type="text" id="name" name="name" class="form-control" required>
+        </div>
+
+        <div class="form-group">
+            <label for="content">Script Content</label>
+            <textarea id="content" name="content" class="form-control" required
+                      placeholder="# Sieve script
+require &quot;fileinto&quot;;
+
+# Move newsletters to folder
+if header :contains &quot;Subject&quot; &quot;[Newsletter]&quot; {
+    fileinto &quot;Newsletters&quot;;
+    stop;
+}
+
+# Keep everything else in INBOX
+keep;"></textarea>
+        </div>
+
+        <button type="submit" class="btn btn-primary" id="submit-btn">Create Script</button>
+    </form>
+</div>
+
+<div class="card">
+    <h2>Sieve Examples</h2>
+    <pre style="background: var(--bg); padding: 1rem; border-radius: 6px; overflow-x: auto; font-size: 0.875rem;">
+# Move spam to Junk folder
+require "fileinto";
+if header :contains "X-Spam-Flag" "YES" {
+    fileinto "Junk";
+    stop;
+}
+
+# Forward emails from specific sender
+require "redirect";
+if address :is "from" "important@example.com" {
+    redirect "backup@example.com";
+}
+
+# Vacation auto-reply
+require "vacation";
+vacation :days 7 :subject "Out of Office"
+    "I am currently out of the office and will return on Monday.";
+
+# Discard messages from blocked sender
+if address :is "from" "spam@example.com" {
+    discard;
+    stop;
+}
+    </pre>
+</div>
+
+<script>
+function editScript(name, content) {
+    document.getElementById('form-title').textContent = 'Edit Script: ' + name;
+    document.getElementById('form-action').value = 'update';
+    document.getElementById('name').value = name;
+    document.getElementById('name').readOnly = true;
+    document.getElementById('content').value = content;
+    document.getElementById('submit-btn').textContent = 'Update Script';
+    document.getElementById('sieve-form').scrollIntoView({behavior: 'smooth'});
+}
+</script>
+{{end}}

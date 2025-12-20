@@ -1,0 +1,46 @@
+{{define "auth_logs.html"}}
+{{template "layout" .}}
+{{end}}
+
+{{define "content"}}
+<h1 style="margin-bottom: 1.5rem;">Authentication Logs</h1>
+
+<div class="card">
+    {{if .Logs}}
+    <table>
+        <thead>
+            <tr>
+                <th>Time</th>
+                <th>Username</th>
+                <th>Protocol</th>
+                <th>Remote IP</th>
+                <th>Status</th>
+                <th>Reason</th>
+            </tr>
+        </thead>
+        <tbody>
+            {{range .Logs}}
+            <tr>
+                <td>{{.CreatedAt.Format "Jan 02 15:04:05"}}</td>
+                <td>{{.Username}}</td>
+                <td>{{.Protocol}}</td>
+                <td>{{.RemoteAddr}}</td>
+                <td>
+                    {{if .Success}}
+                    <span class="badge badge-success">Success</span>
+                    {{else}}
+                    <span class="badge badge-danger">Failed</span>
+                    {{end}}
+                </td>
+                <td>
+                    {{if .FailureReason}}{{.FailureReason}}{{else}}-{{end}}
+                </td>
+            </tr>
+            {{end}}
+        </tbody>
+    </table>
+    {{else}}
+    <p style="color: var(--text-muted);">No authentication logs found.</p>
+    {{end}}
+</div>
+{{end}}

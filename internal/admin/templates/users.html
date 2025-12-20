@@ -1,0 +1,53 @@
+{{define "users.html"}}
+{{template "layout" .}}
+{{end}}
+
+{{define "content"}}
+<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
+    <h1>Users</h1>
+    <a href="/admin/users/add" class="btn btn-primary">Add User</a>
+</div>
+
+<div class="card">
+    {{if .Users}}
+    <table>
+        <thead>
+            <tr>
+                <th>Email</th>
+                <th>Domain</th>
+                <th>Admin</th>
+                <th>Created</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {{range .Users}}
+            <tr>
+                <td>{{.Email}}</td>
+                <td>{{.Domain}}</td>
+                <td>
+                    {{if .IsAdmin}}
+                    <span class="badge badge-success">Yes</span>
+                    {{else}}
+                    <span class="badge">No</span>
+                    {{end}}
+                </td>
+                <td>{{.CreatedAt.Format "Jan 02, 2006"}}</td>
+                <td>
+                    <a href="/admin/users/edit/{{.ID}}" class="btn btn-sm btn-primary">Edit</a>
+                    <a href="/admin/sieve/{{.ID}}" class="btn btn-sm btn-primary">Sieve</a>
+                    <form method="POST" action="/admin/users/delete/{{.ID}}" style="display: inline;"
+                          onsubmit="return confirm('Delete this user?');">
+                        <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                        <button type="submit" class="btn btn-sm btn-danger">Delete</button>
+                    </form>
+                </td>
+            </tr>
+            {{end}}
+        </tbody>
+    </table>
+    {{else}}
+    <p style="color: var(--text-muted);">No users found.</p>
+    {{end}}
+</div>
+{{end}}

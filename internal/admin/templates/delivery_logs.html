@@ -1,0 +1,50 @@
+{{define "delivery_logs.html"}}
+{{template "layout" .}}
+{{end}}
+
+{{define "content"}}
+<h1 style="margin-bottom: 1.5rem;">Delivery Logs</h1>
+
+<div class="card">
+    {{if .Logs}}
+    <table>
+        <thead>
+            <tr>
+                <th>Time</th>
+                <th>From</th>
+                <th>To</th>
+                <th>Status</th>
+                <th>Code</th>
+                <th>Error</th>
+            </tr>
+        </thead>
+        <tbody>
+            {{range .Logs}}
+            <tr>
+                <td>{{.CreatedAt.Format "Jan 02 15:04:05"}}</td>
+                <td style="max-width: 200px; overflow: hidden; text-overflow: ellipsis;">{{.Sender}}</td>
+                <td style="max-width: 200px; overflow: hidden; text-overflow: ellipsis;">{{.Recipient}}</td>
+                <td>
+                    {{if eq .Status "delivered"}}
+                    <span class="badge badge-success">Delivered</span>
+                    {{else if eq .Status "bounced"}}
+                    <span class="badge badge-danger">Bounced</span>
+                    {{else if eq .Status "deferred"}}
+                    <span class="badge badge-warning">Deferred</span>
+                    {{else}}
+                    <span class="badge">{{.Status}}</span>
+                    {{end}}
+                </td>
+                <td>{{if .SMTPCode}}{{.SMTPCode}}{{else}}-{{end}}</td>
+                <td style="max-width: 250px; overflow: hidden; text-overflow: ellipsis;">
+                    {{if .ErrorMessage}}{{.ErrorMessage}}{{else}}-{{end}}
+                </td>
+            </tr>
+            {{end}}
+        </tbody>
+    </table>
+    {{else}}
+    <p style="color: var(--text-muted);">No delivery logs found.</p>
+    {{end}}
+</div>
+{{end}}

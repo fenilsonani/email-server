@@ -1,0 +1,70 @@
+{{define "dashboard.html"}}
+{{template "layout" .}}
+{{end}}
+
+{{define "content"}}
+<h1 style="margin-bottom: 1.5rem;">Dashboard</h1>
+
+<div class="stats-grid">
+    <div class="card stat-card">
+        <div class="stat-value">{{.Stats.TotalUsers}}</div>
+        <div class="stat-label">Total Users</div>
+    </div>
+    <div class="card stat-card">
+        <div class="stat-value">{{.Stats.TotalDomains}}</div>
+        <div class="stat-label">Domains</div>
+    </div>
+    <div class="card stat-card">
+        <div class="stat-value">{{.Stats.TotalMessages}}</div>
+        <div class="stat-label">Messages</div>
+    </div>
+    <div class="card stat-card">
+        <div class="stat-value">{{.Stats.QueuePending}}</div>
+        <div class="stat-label">Queue Pending</div>
+    </div>
+</div>
+
+<div class="card">
+    <h2>Recent Activity</h2>
+    {{if .Stats.RecentActivity}}
+    <table>
+        <thead>
+            <tr>
+                <th>Time</th>
+                <th>Type</th>
+                <th>Description</th>
+                <th>Status</th>
+            </tr>
+        </thead>
+        <tbody>
+            {{range .Stats.RecentActivity}}
+            <tr>
+                <td>{{.Time.Format "Jan 02 15:04:05"}}</td>
+                <td>{{.Type}}</td>
+                <td>{{.Description}}</td>
+                <td>
+                    {{if eq .Status "success"}}
+                    <span class="badge badge-success">Success</span>
+                    {{else}}
+                    <span class="badge badge-danger">Failed</span>
+                    {{end}}
+                </td>
+            </tr>
+            {{end}}
+        </tbody>
+    </table>
+    {{else}}
+    <p style="color: var(--text-muted);">No recent activity.</p>
+    {{end}}
+</div>
+
+<div class="card">
+    <h2>Quick Actions</h2>
+    <div style="display: flex; gap: 1rem; flex-wrap: wrap;">
+        <a href="/admin/users/add" class="btn btn-primary">Add User</a>
+        <a href="/admin/domains" class="btn btn-primary">Manage Domains</a>
+        <a href="/admin/logs/auth" class="btn btn-primary">View Auth Logs</a>
+        <a href="/admin/logs/delivery" class="btn btn-primary">View Delivery Logs</a>
+    </div>
+</div>
+{{end}}
