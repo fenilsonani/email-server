@@ -1,0 +1,79 @@
+version: '3.8'
+
+services:
+  mailserver:
+    build: .
+    container_name: mailserver
+    hostname: mail.example.com
+    restart: unless-stopped
+
+    # Run as non-root
+    user: "1000:1000"
+
+    ports:
+      # SMTP (for receiving mail from other servers)
+      - "25:25"
+      # Submission (for sending mail from clients)
+      - "587:587"
+      # SMTPS (implicit TLS)
+      - "465:465"
+      # IMAP
+      - "143:143"
+      # IMAPS
+      - "993:993"
+      # CalDAV/CardDAV
+      - "8443:8443"
+
+    volumes:
+      # Configuration
+      - ./config.yaml:/etc/mailserver/config.yaml:ro
+      # Data persistence
+      - mailserver_data:/var/lib/mailserver
+      # DKIM keys
+      - ./dkim:/etc/mailserver/dkim:ro
+      # TLS certificates (if not using auto-TLS)
+      - ./certs:/etc/mailserver/certs:ro
+
+    environment:
+      - TZ=UTC
+
+    # Required for binding to privileged ports
+    cap_add:
+      - NET_BIND_SERVICE
+
+    # Security options
+    security_opt:
+      - no-new-privileges:true
+
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 128M
+
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "993"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  mailserver_data:
+    driver: local
+
+# Example networks configuration for production
+# networks:
+#   default:
+#     driver: bridge
+#     ipam:
+#       config:
+#         - subnet: 172.20.0.0/16
