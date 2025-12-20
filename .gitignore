@@ -1,5 +1,5 @@
-# Binaries
-mailserver
+# Binaries (at root level only)
+/mailserver
 *.exe
 *.dll
 *.so
