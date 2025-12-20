@@ -33,10 +33,10 @@ type Server struct {
 
 // NewServer creates a new admin server
 func NewServer(cfg *config.Config, db *sql.DB, authenticator *auth.Authenticator, store *maildir.Store, sieveStore *sieve.Store, logger *logging.Logger) (*Server, error) {
-	// Parse base template first
-	baseTmpl, err := template.ParseFS(templatesFS, "templates/base.html")
+	// Read base template content
+	baseContent, err := templatesFS.ReadFile("templates/base.html")
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse base template: %w", err)
+		return nil, fmt.Errorf("failed to read base template: %w", err)
 	}
 
 	// Create template map
@@ -56,16 +56,35 @@ func NewServer(cfg *config.Config, db *sql.DB, authenticator *auth.Authenticator
 	}
 
 	for _, page := range pages {
-		// Clone base template and parse page template into it
-		tmpl, err := template.Must(baseTmpl.Clone()).ParseFS(templatesFS, "templates/"+page)
+		// Create a fresh template for each page
+		tmpl := template.New("base")
+
+		// Parse base template
+		tmpl, err = tmpl.Parse(string(baseContent))
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse base for %s: %w", page, err)
+		}
+
+		// Read and parse page template
+		pageContent, err := templatesFS.ReadFile("templates/" + page)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read template %s: %w", page, err)
+		}
+
+		tmpl, err = tmpl.Parse(string(pageContent))
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse template %s: %w", page, err)
 		}
+
 		templates[page] = tmpl
 	}
 
 	// Login page is standalone (no base layout)
-	loginTmpl, err := template.ParseFS(templatesFS, "templates/login.html")
+	loginContent, err := templatesFS.ReadFile("templates/login.html")
+	if err != nil {
+		return nil, fmt.Errorf("failed to read login template: %w", err)
+	}
+	loginTmpl, err := template.New("login.html").Parse(string(loginContent))
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse login template: %w", err)
 	}
