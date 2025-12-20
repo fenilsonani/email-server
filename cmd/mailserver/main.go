@@ -6,12 +6,16 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/fenilsonani/email-server/internal/auth"
 	"github.com/fenilsonani/email-server/internal/config"
 	imapserver "github.com/fenilsonani/email-server/internal/imap"
+	"github.com/fenilsonani/email-server/internal/logging"
+	"github.com/fenilsonani/email-server/internal/queue"
 	"github.com/fenilsonani/email-server/internal/security"
 	smtpserver "github.com/fenilsonani/email-server/internal/smtp"
+	"github.com/fenilsonani/email-server/internal/smtp/delivery"
 	"github.com/fenilsonani/email-server/internal/storage/maildir"
 	"github.com/fenilsonani/email-server/internal/storage/metadata"
 	"github.com/spf13/cobra"
@@ -95,14 +99,75 @@ var serveCmd = &cobra.Command{
 			return fmt.Errorf("failed to initialize maildir store: %w", err)
 		}
 
+		// Initialize structured logger
+		logger, err := logging.New(logging.Config{
+			Level:  cfg.Logging.Level,
+			Format: cfg.Logging.Format,
+			Output: cfg.Logging.Output,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to initialize logger: %w", err)
+		}
+
+		// Initialize Redis queue for message delivery
+		retryMaxAge, _ := time.ParseDuration(cfg.Queue.RetryMaxAge)
+		if retryMaxAge == 0 {
+			retryMaxAge = 7 * 24 * time.Hour // Default 7 days
+		}
+		redisQueue, err := queue.NewRedisQueue(queue.Config{
+			RedisURL:    cfg.Queue.RedisURL,
+			Prefix:      cfg.Queue.Prefix,
+			MaxRetries:  cfg.Queue.MaxRetries,
+			RetryMaxAge: retryMaxAge,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to initialize Redis queue: %w", err)
+		}
+		defer redisQueue.Close()
+
+		// Initialize DKIM signer pool
+		dkimPool := security.NewDKIMSignerPool()
+		for _, domain := range cfg.Domains {
+			if domain.DKIMKeyFile != "" {
+				if err := dkimPool.AddSigner(domain.Name, domain.DKIMSelector, domain.DKIMKeyFile); err != nil {
+					logger.Warn("Failed to load DKIM key for domain",
+						"domain", domain.Name,
+						"error", err.Error())
+				} else {
+					logger.Info("Loaded DKIM key", "domain", domain.Name, "selector", domain.DKIMSelector)
+				}
+			}
+		}
+
+		// Initialize delivery engine
+		connectTimeout, _ := time.ParseDuration(cfg.Delivery.ConnectTimeout)
+		if connectTimeout == 0 {
+			connectTimeout = 30 * time.Second
+		}
+		commandTimeout, _ := time.ParseDuration(cfg.Delivery.CommandTimeout)
+		if commandTimeout == 0 {
+			commandTimeout = 5 * time.Minute
+		}
+		deliveryEngine := delivery.NewEngine(delivery.Config{
+			Workers:        cfg.Delivery.Workers,
+			Hostname:       cfg.Server.Hostname,
+			ConnectTimeout: connectTimeout,
+			CommandTimeout: commandTimeout,
+			MaxMessageSize: int64(cfg.Security.MaxMessageSize),
+			RequireTLS:     cfg.Delivery.RequireTLS,
+			VerifyTLS:      cfg.Delivery.VerifyTLS,
+		}, redisQueue, dkimPool, logger)
+		deliveryEngine.Start()
+		defer deliveryEngine.Stop()
+
 		// Create IMAP backend and server
 		imapBackend := imapserver.NewBackend(authenticator, store)
 		imapAddr := fmt.Sprintf(":%d", cfg.Server.IMAPPort)
 		imapsAddr := fmt.Sprintf(":%d", cfg.Server.IMAPSPort)
 		imapSrv := imapserver.NewServer(imapBackend, imapAddr, imapsAddr, tlsManager.TLSConfig())
 
-		// Create SMTP backend and server
-		smtpBackend := smtpserver.NewBackend(cfg, authenticator, store)
+		// Create SMTP backend and server with delivery engine
+		smtpBackend := smtpserver.NewBackend(cfg, authenticator, store, deliveryEngine, logger)
 		smtpSrv := smtpserver.NewServer(smtpBackend, cfg, tlsManager.TLSConfig())
 
 		fmt.Printf("Mail server starting on %s\n", cfg.Server.Hostname)

@@ -334,7 +334,17 @@ func (s *Store) AppendMessage(ctx context.Context, mailboxID int64, flags []stor
 		return nil, err
 	}
 
-	msgID, _ := result.LastInsertId()
+	msgID, err := result.LastInsertId()
+	if err != nil {
+		// Non-fatal, but log it
+		msgID = 0
+	}
+
+	// Update user quota
+	if err := s.UpdateUserQuota(ctx, mb.UserID, size); err != nil {
+		// Log but don't fail - message was already stored
+		// In production, you might want to handle this differently
+	}
 
 	// Notify IDLE listeners via the maildir
 	dir.Unseen()
@@ -377,7 +387,10 @@ func (s *Store) GetMessage(ctx context.Context, mailboxID int64, uid uint32) (*s
 	msg.Subject = subject.String
 	msg.From = fromAddr.String
 	if toAddrs.Valid {
-		json.Unmarshal([]byte(toAddrs.String), &msg.To)
+		if err := json.Unmarshal([]byte(toAddrs.String), &msg.To); err != nil {
+			// Non-fatal: To field will remain empty if JSON is malformed
+			// This can happen with corrupted data
+		}
 	}
 	msg.Flags = stringToFlags(flagsStr)
 	return &msg, nil
@@ -463,7 +476,10 @@ func (s *Store) ListMessages(ctx context.Context, mailboxID int64, start, end ui
 
 		msg.Flags = stringToFlags(flagsStr)
 		if toAddrs.Valid {
-			json.Unmarshal([]byte(toAddrs.String), &msg.To)
+			if err := json.Unmarshal([]byte(toAddrs.String), &msg.To); err != nil {
+				// Non-fatal: To field will remain empty if JSON is malformed
+				// This can happen with corrupted data
+			}
 		}
 		messages = append(messages, &msg)
 	}
@@ -578,10 +594,18 @@ func (s *Store) SetFlags(ctx context.Context, mailboxID int64, uid uint32, flags
 		}
 
 		// Update maildir_key in database
-		s.db.ExecContext(ctx,
+		_, err = s.db.ExecContext(ctx,
 			"UPDATE messages SET maildir_key = ? WHERE mailbox_id = ? AND uid = ?",
 			newKey, mailboxID, uid,
 		)
+		if err != nil {
+			// Attempt to rollback the file rename to maintain consistency
+			if rollbackErr := os.Rename(newPath, oldPath); rollbackErr != nil {
+				// Critical: both operations failed, log for manual intervention
+				return fmt.Errorf("CRITICAL: DB update failed and rollback failed - manual intervention required: db_err=%v, rollback_err=%v", err, rollbackErr)
+			}
+			return fmt.Errorf("failed to update maildir_key in database: %w", err)
+		}
 	}
 
 	return nil

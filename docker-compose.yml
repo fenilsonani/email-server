@@ -66,8 +66,26 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # Redis for message queue
+  redis:
+    image: redis:7-alpine
+    container_name: mailserver-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes --appendfsync everysec
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
 volumes:
   mailserver_data:
+    driver: local
+  redis_data:
     driver: local
 
 # Example networks configuration for production

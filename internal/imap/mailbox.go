@@ -152,7 +152,11 @@ func (m *Mailbox) ListMessages(uid bool, seqSet *imap.SeqSet, items []imap.Fetch
 				}
 				defer body.Close()
 
-				content, _ := io.ReadAll(body)
+				content, err := io.ReadAll(body)
+				if err != nil {
+					// Return empty content on read error rather than failing
+					content = []byte{}
+				}
 				literal := imap.Literal(newBytesLiteral(content))
 				imapMsg.Body[section] = literal
 
@@ -348,11 +352,12 @@ func (m *Mailbox) Expunge() error {
 		return err
 	}
 
-	// Notify about expunged messages
-	if len(expunged) > 0 {
+	// Notify about all expunged messages in reverse order per RFC 3501
+	// (sequence numbers shift after each expunge, so we must go backwards)
+	for i := len(expunged) - 1; i >= 0; i-- {
 		m.user.backend.NotifyUpdate(&backend.ExpungeUpdate{
 			Update: backend.NewUpdate(m.user.Username(), m.mailbox.Name),
-			SeqNum: expunged[0], // Simplified - should send multiple updates
+			SeqNum: expunged[i],
 		})
 	}
 

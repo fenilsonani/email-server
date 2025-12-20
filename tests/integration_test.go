@@ -15,8 +15,9 @@ import (
 	"github.com/fenilsonani/email-server/internal/auth"
 	"github.com/fenilsonani/email-server/internal/config"
 	imapServer "github.com/fenilsonani/email-server/internal/imap"
-	"github.com/fenilsonani/email-server/internal/storage/maildir"
+	"github.com/fenilsonani/email-server/internal/logging"
 	smtpServer "github.com/fenilsonani/email-server/internal/smtp"
+	"github.com/fenilsonani/email-server/internal/storage/maildir"
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -190,8 +191,11 @@ func setupIntegrationEnv(t *testing.T) (*testEnv, func()) {
 	// Create IMAP backend
 	imapBackend := imapServer.NewBackend(authenticator, store)
 
-	// Create SMTP backend
-	smtpBackend := smtpServer.NewBackend(cfg, authenticator, store)
+	// Create logger for testing
+	logger := logging.Default()
+
+	// Create SMTP backend (nil delivery engine for tests - no external delivery)
+	smtpBackend := smtpServer.NewBackend(cfg, authenticator, store, nil, logger)
 
 	env := &testEnv{
 		db:          db,

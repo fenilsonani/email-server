@@ -18,17 +18,21 @@ type Config struct {
 	Domains  []DomainConfig `koanf:"domains"`
 	Security SecurityConfig `koanf:"security"`
 	Logging  LoggingConfig  `koanf:"logging"`
+	Queue    QueueConfig    `koanf:"queue"`
+	Delivery DeliveryConfig `koanf:"delivery"`
 }
 
 // ServerConfig holds server-related configuration
 type ServerConfig struct {
-	Hostname       string `koanf:"hostname"`        // mail.example.com
-	SMTPPort       int    `koanf:"smtp_port"`       // 25 for MX receiving
-	SubmissionPort int    `koanf:"submission_port"` // 587 for client submission
-	SMTPSPort      int    `koanf:"smtps_port"`      // 465 for implicit TLS
-	IMAPPort       int    `koanf:"imap_port"`       // 143 for STARTTLS
-	IMAPSPort      int    `koanf:"imaps_port"`      // 993 for implicit TLS
-	DAVPort        int    `koanf:"dav_port"`        // 443 for CalDAV/CardDAV
+	Hostname        string `koanf:"hostname"`         // mail.example.com
+	Domain          string `koanf:"domain"`           // Primary email domain (e.g., example.com)
+	SMTPPort        int    `koanf:"smtp_port"`        // 25 for MX receiving
+	SubmissionPort  int    `koanf:"submission_port"`  // 587 for client submission
+	SMTPSPort       int    `koanf:"smtps_port"`       // 465 for implicit TLS
+	IMAPPort        int    `koanf:"imap_port"`        // 143 for STARTTLS
+	IMAPSPort       int    `koanf:"imaps_port"`       // 993 for implicit TLS
+	DAVPort         int    `koanf:"dav_port"`         // 443 for CalDAV/CardDAV
+	ShutdownTimeout string `koanf:"shutdown_timeout"` // Graceful shutdown timeout
 }
 
 // TLSConfig holds TLS/ACME configuration
@@ -71,17 +75,36 @@ type LoggingConfig struct {
 	Output string `koanf:"output"` // stdout, stderr, or file path
 }
 
+// QueueConfig holds Redis queue configuration
+type QueueConfig struct {
+	RedisURL    string `koanf:"redis_url"`     // Redis connection URL
+	Prefix      string `koanf:"prefix"`        // Key prefix for queue entries
+	MaxRetries  int    `koanf:"max_retries"`   // Maximum delivery attempts
+	RetryMaxAge string `koanf:"retry_max_age"` // Max time to retry (e.g., "168h")
+}
+
+// DeliveryConfig holds outbound delivery configuration
+type DeliveryConfig struct {
+	Workers        int    `koanf:"workers"`         // Number of delivery workers
+	ConnectTimeout string `koanf:"connect_timeout"` // TCP connection timeout
+	CommandTimeout string `koanf:"command_timeout"` // SMTP command timeout
+	RequireTLS     bool   `koanf:"require_tls"`     // Require TLS for outbound
+	VerifyTLS      bool   `koanf:"verify_tls"`      // Verify TLS certificates
+}
+
 // DefaultConfig returns a configuration with sensible defaults
 func DefaultConfig() *Config {
 	return &Config{
 		Server: ServerConfig{
-			Hostname:       "localhost",
-			SMTPPort:       25,
-			SubmissionPort: 587,
-			SMTPSPort:      465,
-			IMAPPort:       143,
-			IMAPSPort:      993,
-			DAVPort:        443,
+			Hostname:        "localhost",
+			Domain:          "localhost",
+			SMTPPort:        25,
+			SubmissionPort:  587,
+			SMTPSPort:       465,
+			IMAPPort:        143,
+			IMAPSPort:       993,
+			DAVPort:         443,
+			ShutdownTimeout: "30s",
 		},
 		TLS: TLSConfig{
 			AutoTLS:  false,
@@ -104,6 +127,19 @@ func DefaultConfig() *Config {
 			Level:  "info",
 			Format: "json",
 			Output: "stdout",
+		},
+		Queue: QueueConfig{
+			RedisURL:    "redis://localhost:6379/0",
+			Prefix:      "mail",
+			MaxRetries:  15,
+			RetryMaxAge: "168h", // 7 days
+		},
+		Delivery: DeliveryConfig{
+			Workers:        4,
+			ConnectTimeout: "30s",
+			CommandTimeout: "5m",
+			RequireTLS:     false,
+			VerifyTLS:      true,
 		},
 	}
 }
