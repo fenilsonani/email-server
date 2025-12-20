@@ -8,6 +8,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/fenilsonani/email-server/internal/admin"
 	"github.com/fenilsonani/email-server/internal/auth"
 	"github.com/fenilsonani/email-server/internal/config"
 	"github.com/fenilsonani/email-server/internal/dns"
@@ -15,6 +16,7 @@ import (
 	"github.com/fenilsonani/email-server/internal/logging"
 	"github.com/fenilsonani/email-server/internal/queue"
 	"github.com/fenilsonani/email-server/internal/security"
+	"github.com/fenilsonani/email-server/internal/sieve"
 	smtpserver "github.com/fenilsonani/email-server/internal/smtp"
 	"github.com/fenilsonani/email-server/internal/smtp/delivery"
 	"github.com/fenilsonani/email-server/internal/storage/maildir"
@@ -175,6 +177,15 @@ var serveCmd = &cobra.Command{
 			imapSrv.NotifyMailboxUpdateByName(username, mailbox)
 		})
 
+		// Initialize Sieve executor if enabled
+		var sieveStore *sieve.Store
+		if cfg.Sieve.Enabled {
+			sieveStore = sieve.NewStore(db.DB)
+			sieveExecutor := sieve.NewExecutor(db.DB)
+			smtpBackend.SetSieveExecutor(sieveExecutor)
+			logger.Info("Sieve filtering enabled")
+		}
+
 		smtpSrv := smtpserver.NewServer(smtpBackend, cfg, tlsManager.TLSConfig())
 
 		fmt.Printf("Mail server starting on %s\n", cfg.Server.Hostname)
@@ -206,6 +217,24 @@ var serveCmd = &cobra.Command{
 			}
 		}
 
+		// Start admin server if enabled
+		var adminSrv *admin.Server
+		if cfg.Admin.Enabled {
+			var err error
+			adminSrv, err = admin.NewServer(cfg, db.DB, authenticator, store, sieveStore, logger)
+			if err != nil {
+				logger.Warn("Failed to initialize admin server", "error", err.Error())
+			} else {
+				adminAddr := fmt.Sprintf("%s:%d", cfg.Admin.Listen, cfg.Admin.Port)
+				go func() {
+					if err := adminSrv.Start(adminAddr); err != nil {
+						logger.Warn("Admin server stopped", "error", err.Error())
+					}
+				}()
+				fmt.Printf("  Admin: http://%s\n", adminAddr)
+			}
+		}
+
 		fmt.Println("\nServer is running. Press Ctrl+C to stop.")
 
 		// Wait for shutdown signal
@@ -216,6 +245,9 @@ var serveCmd = &cobra.Command{
 		fmt.Println("\nShutting down...")
 
 		// Graceful shutdown
+		if adminSrv != nil {
+			adminSrv.Shutdown(context.Background())
+		}
 		imapSrv.Close()
 		smtpSrv.Close()
 
