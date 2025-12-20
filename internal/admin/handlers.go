@@ -98,10 +98,10 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 // handleUsers shows user list
 func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.db.QueryContext(r.Context(), `
-		SELECT u.id, u.username, d.name as domain, u.email, u.is_admin, u.created_at
+		SELECT u.id, u.username, d.name as domain, u.is_admin, u.created_at
 		FROM users u
 		JOIN domains d ON u.domain_id = d.id
-		ORDER BY u.email
+		ORDER BY d.name, u.username
 	`)
 	if err != nil {
 		s.logger.ErrorContext(r.Context(), "Failed to get users", err)
@@ -122,9 +122,10 @@ func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 	var users []User
 	for rows.Next() {
 		var u User
-		if err := rows.Scan(&u.ID, &u.Username, &u.Domain, &u.Email, &u.IsAdmin, &u.CreatedAt); err != nil {
+		if err := rows.Scan(&u.ID, &u.Username, &u.Domain, &u.IsAdmin, &u.CreatedAt); err != nil {
 			continue
 		}
+		u.Email = u.Username + "@" + u.Domain
 		users = append(users, u)
 	}
 
@@ -200,11 +201,12 @@ func (s *Server) handleUserEdit(w http.ResponseWriter, r *http.Request) {
 	userID, _ := strconv.ParseInt(parts[4], 10, 64)
 
 	if r.Method == http.MethodGet {
-		var username, email string
+		var username, domain string
 		var isAdmin bool
 		err := s.db.QueryRowContext(r.Context(),
-			"SELECT username, email, is_admin FROM users WHERE id = ?", userID).
-			Scan(&username, &email, &isAdmin)
+			`SELECT u.username, d.name, u.is_admin FROM users u
+			 JOIN domains d ON u.domain_id = d.id WHERE u.id = ?`, userID).
+			Scan(&username, &domain, &isAdmin)
 		if err != nil {
 			http.NotFound(w, r)
 			return
@@ -214,7 +216,7 @@ func (s *Server) handleUserEdit(w http.ResponseWriter, r *http.Request) {
 			"Title":    "Edit User",
 			"UserID":   userID,
 			"Username": username,
-			"Email":    email,
+			"Email":    username + "@" + domain,
 			"IsAdmin":  isAdmin,
 		})
 		return
