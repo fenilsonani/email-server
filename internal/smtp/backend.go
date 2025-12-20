@@ -20,14 +20,18 @@ import (
 	"github.com/fenilsonani/email-server/internal/storage/maildir"
 )
 
+// LocalDeliveryNotifier is called when a message is delivered locally
+type LocalDeliveryNotifier func(username, mailbox string)
+
 // Backend implements the go-smtp Backend interface
 type Backend struct {
-	config         *config.Config
-	authenticator  *auth.Authenticator
-	store          *maildir.Store
-	deliveryEngine *delivery.Engine
-	logger         *logging.Logger
-	queuePath      string // Path to store queued message files
+	config           *config.Config
+	authenticator    *auth.Authenticator
+	store            *maildir.Store
+	deliveryEngine   *delivery.Engine
+	logger           *logging.Logger
+	queuePath        string // Path to store queued message files
+	onLocalDelivery  LocalDeliveryNotifier
 }
 
 // NewBackend creates a new SMTP backend
@@ -36,13 +40,18 @@ func NewBackend(cfg *config.Config, authenticator *auth.Authenticator, store *ma
 	os.MkdirAll(queuePath, 0755)
 
 	return &Backend{
-		config:         cfg,
-		authenticator:  authenticator,
-		store:          store,
-		deliveryEngine: deliveryEngine,
-		logger:         logger.SMTP(),
-		queuePath:      queuePath,
+		config:           cfg,
+		authenticator:    authenticator,
+		store:            store,
+		deliveryEngine:   deliveryEngine,
+		logger:           logger.SMTP(),
+		queuePath:        queuePath,
 	}
+}
+
+// SetLocalDeliveryNotifier sets the callback for local delivery notifications
+func (b *Backend) SetLocalDeliveryNotifier(notifier LocalDeliveryNotifier) {
+	b.onLocalDelivery = notifier
 }
 
 // NewSession is called when a new SMTP connection is established
@@ -258,6 +267,11 @@ func (s *Session) deliverToLocalRecipient(rcpt string, data []byte) error {
 		strings.NewReader(string(data)))
 	if err != nil {
 		return fmt.Errorf("failed to append message: %w", err)
+	}
+
+	// Notify IMAP clients about new message (for IDLE support)
+	if s.backend.onLocalDelivery != nil {
+		s.backend.onLocalDelivery(user.Email, "INBOX")
 	}
 
 	return nil

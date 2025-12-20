@@ -169,6 +169,12 @@ var serveCmd = &cobra.Command{
 
 		// Create SMTP backend and server with delivery engine
 		smtpBackend := smtpserver.NewBackend(cfg, authenticator, store, deliveryEngine, logger)
+
+		// Wire up SMTP -> IMAP notifications for instant email delivery
+		smtpBackend.SetLocalDeliveryNotifier(func(username, mailbox string) {
+			imapBackend.NotifyMailboxUpdate(username, mailbox)
+		})
+
 		smtpSrv := smtpserver.NewServer(smtpBackend, cfg, tlsManager.TLSConfig())
 
 		fmt.Printf("Mail server starting on %s\n", cfg.Server.Hostname)

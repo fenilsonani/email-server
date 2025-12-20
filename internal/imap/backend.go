@@ -48,3 +48,10 @@ func (b *Backend) Updates() <-chan backend.Update {
 func (b *Backend) NotifyUpdate(update backend.Update) {
 	b.updates.Notify(update)
 }
+
+// NotifyMailboxUpdate notifies IDLE clients about a mailbox change (new message)
+func (b *Backend) NotifyMailboxUpdate(username, mailbox string) {
+	b.updates.Notify(&backend.MailboxUpdate{
+		Update: backend.NewUpdate(username, mailbox),
+	})
+}
