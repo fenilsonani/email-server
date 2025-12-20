@@ -1,0 +1,47 @@
+# Example configuration for the email server
+# Copy this file to config.yaml and modify as needed
+
+server:
+  hostname: mail.example.com
+  smtp_port: 25           # MX receiving
+  submission_port: 587    # Client submission (STARTTLS)
+  smtps_port: 465         # Client submission (implicit TLS)
+  imap_port: 143          # IMAP (STARTTLS)
+  imaps_port: 993         # IMAP (implicit TLS)
+  dav_port: 443           # CalDAV/CardDAV (HTTPS)
+
+tls:
+  auto_tls: true          # Use Let's Encrypt for automatic certificates
+  email: admin@example.com  # Required for Let's Encrypt
+  # For manual certificates, set auto_tls: false and specify:
+  # cert_file: /etc/mailserver/tls/cert.pem
+  # key_file: /etc/mailserver/tls/key.pem
+  cache_dir: /var/lib/mailserver/acme
+
+storage:
+  data_dir: /var/lib/mailserver
+  database_path: /var/lib/mailserver/mail.db
+  maildir_path: /var/lib/mailserver/maildir
+
+domains:
+  - name: example.com
+    dkim_selector: mail
+    dkim_key_file: /etc/mailserver/dkim/example.com.key
+
+  # Add more domains as needed:
+  # - name: otherdomain.org
+  #   dkim_selector: mail
+  #   dkim_key_file: /etc/mailserver/dkim/otherdomain.org.key
+
+security:
+  require_tls: true       # Require TLS for client connections
+  verify_spf: true        # Verify SPF on incoming mail
+  verify_dkim: true       # Verify DKIM on incoming mail
+  verify_dmarc: true      # Check DMARC policy on incoming mail
+  sign_outbound: true     # DKIM sign outgoing mail
+  max_message_size: 26214400  # 25MB
+
+logging:
+  level: info             # debug, info, warn, error
+  format: json            # json or text
+  output: stdout          # stdout, stderr, or file path
