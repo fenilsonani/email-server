@@ -40,6 +40,23 @@ func (m *Mailbox) Status(items []imap.StatusItem) (*imap.MailboxStatus, error) {
 	status.UidValidity = stats.UIDValidity
 	status.UidNext = stats.UIDNext
 
+	// Set flags - required for SELECT response to not crash
+	status.Flags = []string{
+		imap.SeenFlag,
+		imap.AnsweredFlag,
+		imap.FlaggedFlag,
+		imap.DeletedFlag,
+		imap.DraftFlag,
+	}
+	status.PermanentFlags = []string{
+		imap.SeenFlag,
+		imap.AnsweredFlag,
+		imap.FlaggedFlag,
+		imap.DeletedFlag,
+		imap.DraftFlag,
+		`\*`, // Allow custom flags
+	}
+
 	for _, item := range items {
 		switch item {
 		case imap.StatusMessages:

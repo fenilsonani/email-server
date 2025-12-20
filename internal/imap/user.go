@@ -127,11 +127,12 @@ func flagsContain(flags []string, flag string) bool {
 // convertMailboxInfo converts our mailbox to go-imap MailboxInfo
 func convertMailboxInfo(mb *storage.Mailbox) *imap.MailboxInfo {
 	info := &imap.MailboxInfo{
-		Name: mb.Name,
+		Name:       mb.Name,
+		Attributes: []string{}, // Initialize to empty slice to avoid nil
 	}
 
 	if mb.SpecialUse != "" {
-		info.Attributes = []string{string(mb.SpecialUse)}
+		info.Attributes = append(info.Attributes, string(mb.SpecialUse))
 	}
 
 	return info
