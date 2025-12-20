@@ -56,42 +56,8 @@ func (b *Backend) NotifyUpdate(update backend.Update) {
 
 // NotifyMailboxUpdate notifies IDLE clients about a mailbox change (new message)
 func (b *Backend) NotifyMailboxUpdate(username, mailbox string) {
-	ctx := context.Background()
-	log.Printf("IDLE: NotifyMailboxUpdate called for %s/%s", username, mailbox)
-
-	// Look up user to get their mailbox stats
-	user, err := b.authenticator.LookupUser(ctx, username)
-	if err != nil {
-		// Fallback to simple update without stats
-		b.updates.Notify(&backend.MailboxUpdate{
-			Update: backend.NewUpdate(username, mailbox),
-		})
-		return
-	}
-
-	// Get mailbox to find its ID
-	mb, err := b.store.GetMailbox(ctx, user.ID, mailbox)
-	if err != nil {
-		b.updates.Notify(&backend.MailboxUpdate{
-			Update: backend.NewUpdate(username, mailbox),
-		})
-		return
-	}
-
-	// Get current mailbox stats for accurate message count
-	stats, err := b.store.GetMailboxStats(ctx, mb.ID)
-	if err != nil {
-		b.updates.Notify(&backend.MailboxUpdate{
-			Update: backend.NewUpdate(username, mailbox),
-		})
-		return
-	}
-
-	// Send simple update - go-imap handles the IDLE notification
-	// Don't include MailboxStatus as it can cause nil pointer issues in go-imap v1
-	log.Printf("IDLE: Sending update with Messages=%d, Recent=%d, Unseen=%d", stats.Messages, stats.Recent, stats.Unseen)
-
-	b.updates.Notify(&backend.MailboxUpdate{
-		Update: backend.NewUpdate(username, mailbox),
-	})
+	log.Printf("IDLE: NotifyMailboxUpdate called for %s/%s (disabled for debugging)", username, mailbox)
+	// TEMPORARILY DISABLED - investigating crash
+	// The crash happens in go-imap's SELECT response writer
+	// which suggests something is wrong with how IDLE updates trigger re-SELECT
 }
