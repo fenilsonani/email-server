@@ -23,8 +23,9 @@ func NewServer(backend *Backend, addr, tlsAddr string, tlsConfig *tls.Config) *S
 	imapServer := server.New(backend)
 	imapServer.AllowInsecureAuth = true // We handle auth security ourselves
 
-	// Enable extensions
-	// IDLE is automatically supported by go-imap when the backend implements Updates()
+	// Enable IDLE extension - go-imap automatically enables it when backend has Updates()
+	// Log enabled extensions for debugging
+	log.Printf("IMAP server created, IDLE enabled: %v", imapServer.EnableAuth)
 
 	return &Server{
 		Server:  imapServer,

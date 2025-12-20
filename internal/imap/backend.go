@@ -29,11 +29,15 @@ func NewBackend(authenticator *auth.Authenticator, store *maildir.Store) *Backen
 // Login authenticates a user and returns their User implementation
 func (b *Backend) Login(connInfo *imap.ConnInfo, username, password string) (backend.User, error) {
 	ctx := context.Background()
+	log.Printf("IMAP: Login attempt for user: %s", username)
+
 	user, err := b.authenticator.Authenticate(ctx, username, password)
 	if err != nil {
+		log.Printf("IMAP: Login failed for user: %s", username)
 		return nil, backend.ErrInvalidCredentials
 	}
 
+	log.Printf("IMAP: Login successful for user: %s (email: %s)", username, user.Email)
 	return &User{
 		backend: b,
 		user:    user,
