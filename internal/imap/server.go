@@ -48,7 +48,6 @@ func NewServer(authenticator *auth.Authenticator, store *maildir.Store, addr, tl
 		},
 		Caps: imap.CapSet{
 			imap.CapIMAP4rev1: {},
-			imap.CapIMAP4rev2: {},
 			imap.CapIdle:      {},
 		},
 		TLSConfig:    tlsConfig,
