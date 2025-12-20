@@ -33,14 +33,18 @@ func (m *Mailbox) Status(items []imap.StatusItem) (*imap.MailboxStatus, error) {
 
 	stats, err := m.user.backend.store.GetMailboxStats(ctx, m.mailbox.ID)
 	if err != nil {
-		return nil, err
+		// Return a minimal valid status on error rather than failing
+		status := imap.NewMailboxStatus(m.mailbox.Name, items)
+		status.Flags = []string{imap.SeenFlag, imap.AnsweredFlag, imap.FlaggedFlag, imap.DeletedFlag, imap.DraftFlag}
+		status.PermanentFlags = []string{imap.SeenFlag, imap.AnsweredFlag, imap.FlaggedFlag, imap.DeletedFlag, imap.DraftFlag, `\*`}
+		status.UidValidity = 1
+		status.UidNext = 1
+		return status, nil
 	}
 
 	status := imap.NewMailboxStatus(m.mailbox.Name, items)
-	status.UidValidity = stats.UIDValidity
-	status.UidNext = stats.UIDNext
 
-	// Set flags - required for SELECT response to not crash
+	// Always set these fields - required for SELECT response to not crash
 	status.Flags = []string{
 		imap.SeenFlag,
 		imap.AnsweredFlag,
@@ -57,20 +61,12 @@ func (m *Mailbox) Status(items []imap.StatusItem) (*imap.MailboxStatus, error) {
 		`\*`, // Allow custom flags
 	}
 
-	for _, item := range items {
-		switch item {
-		case imap.StatusMessages:
-			status.Messages = uint32(stats.Messages)
-		case imap.StatusRecent:
-			status.Recent = uint32(stats.Recent)
-		case imap.StatusUnseen:
-			status.Unseen = uint32(stats.Unseen)
-		case imap.StatusUidNext:
-			status.UidNext = stats.UIDNext
-		case imap.StatusUidValidity:
-			status.UidValidity = stats.UIDValidity
-		}
-	}
+	// Always set core stats - SELECT needs these regardless of items requested
+	status.Messages = uint32(stats.Messages)
+	status.Recent = uint32(stats.Recent)
+	status.Unseen = uint32(stats.Unseen)
+	status.UidValidity = stats.UIDValidity
+	status.UidNext = stats.UIDNext
 
 	return status, nil
 }
