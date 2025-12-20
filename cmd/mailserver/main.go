@@ -156,6 +156,7 @@ var serveCmd = &cobra.Command{
 			MaxMessageSize: int64(cfg.Security.MaxMessageSize),
 			RequireTLS:     cfg.Delivery.RequireTLS,
 			VerifyTLS:      cfg.Delivery.VerifyTLS,
+			RelayHost:      cfg.Delivery.RelayHost,
 		}, redisQueue, dkimPool, logger)
 		deliveryEngine.Start()
 		defer deliveryEngine.Stop()

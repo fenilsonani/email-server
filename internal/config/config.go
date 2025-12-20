@@ -90,6 +90,7 @@ type DeliveryConfig struct {
 	CommandTimeout string `koanf:"command_timeout"` // SMTP command timeout
 	RequireTLS     bool   `koanf:"require_tls"`     // Require TLS for outbound
 	VerifyTLS      bool   `koanf:"verify_tls"`      // Verify TLS certificates
+	RelayHost      string `koanf:"relay_host"`      // Optional smarthost (host:port)
 }
 
 // DefaultConfig returns a configuration with sensible defaults

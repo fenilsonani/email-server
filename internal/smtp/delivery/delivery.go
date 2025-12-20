@@ -48,6 +48,8 @@ type Config struct {
 	VerifyTLS bool
 	// QueuePath is the base path for queued message files (for safe cleanup verification)
 	QueuePath string
+	// RelayHost is an optional smarthost for all outbound mail (host:port).
+	RelayHost string
 }
 
 // DefaultConfig returns sensible default configuration.
@@ -301,12 +303,18 @@ func (e *Engine) cleanupMessageFile(path string) error {
 	return nil
 }
 
-// attemptDelivery tries to deliver to MX servers.
+// attemptDelivery tries to deliver to MX servers or relay host.
 func (e *Engine) attemptDelivery(ctx context.Context, msg *queue.Message) error {
 	// Read and sign the message
 	messageData, err := e.readAndSignMessage(ctx, msg)
 	if err != nil {
 		return fmt.Errorf("failed to prepare message: %w", err)
+	}
+
+	// Use relay host if configured
+	if e.config.RelayHost != "" {
+		e.logger.DebugContext(ctx, "Using relay host", "relay", e.config.RelayHost)
+		return e.deliverToRelay(ctx, msg, messageData)
 	}
 
 	// Resolve MX records
@@ -338,6 +346,76 @@ func (e *Engine) attemptDelivery(ctx context.Context, msg *queue.Message) error 
 	}
 
 	return fmt.Errorf("%w: %v", ErrAllMXFailed, lastErr)
+}
+
+// deliverToRelay sends mail through the configured relay host.
+func (e *Engine) deliverToRelay(ctx context.Context, msg *queue.Message, data []byte) error {
+	host, port, err := net.SplitHostPort(e.config.RelayHost)
+	if err != nil {
+		// Assume port 25 if not specified
+		host = e.config.RelayHost
+		port = "25"
+	}
+
+	// Connect with timeout
+	dialer := &net.Dialer{
+		Timeout: e.config.ConnectTimeout,
+	}
+
+	conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(host, port))
+	if err != nil {
+		return fmt.Errorf("relay connection failed: %w", err)
+	}
+	defer conn.Close()
+
+	// Set overall deadline
+	conn.SetDeadline(time.Now().Add(e.config.CommandTimeout))
+
+	// Create SMTP client
+	client, err := smtp.NewClient(conn, host)
+	if err != nil {
+		return fmt.Errorf("SMTP client creation failed: %w", err)
+	}
+	defer client.Close()
+
+	// Say hello
+	if err := client.Hello(e.config.Hostname); err != nil {
+		return fmt.Errorf("HELO failed: %w", err)
+	}
+
+	// Set sender
+	if err := client.Mail(msg.Sender); err != nil {
+		return classifyError(err)
+	}
+
+	// Set recipients
+	for _, rcpt := range msg.Recipients {
+		if err := client.Rcpt(rcpt); err != nil {
+			e.logger.WarnContext(ctx, "RCPT failed",
+				"recipient", rcpt,
+				"error", err.Error(),
+			)
+		}
+	}
+
+	// Send data
+	w, err := client.Data()
+	if err != nil {
+		return classifyError(err)
+	}
+
+	_, err = w.Write(data)
+	if err != nil {
+		w.Close()
+		return fmt.Errorf("data write failed: %w", err)
+	}
+
+	if err := w.Close(); err != nil {
+		return classifyError(err)
+	}
+
+	client.Quit()
+	return nil
 }
 
 // readAndSignMessage reads the message and applies DKIM signature.
