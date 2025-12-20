@@ -87,14 +87,11 @@ func (b *Backend) NotifyMailboxUpdate(username, mailbox string) {
 		return
 	}
 
-	// Send update with full mailbox status - this triggers IDLE notification
-	status := imap.NewMailboxStatus(mailbox, []imap.StatusItem{imap.StatusMessages, imap.StatusRecent, imap.StatusUnseen})
-	status.Messages = uint32(stats.Messages)
-	status.Recent = uint32(stats.Recent)
-	status.Unseen = uint32(stats.Unseen)
+	// Send simple update - go-imap handles the IDLE notification
+	// Don't include MailboxStatus as it can cause nil pointer issues in go-imap v1
+	log.Printf("IDLE: Sending update with Messages=%d, Recent=%d, Unseen=%d", stats.Messages, stats.Recent, stats.Unseen)
 
 	b.updates.Notify(&backend.MailboxUpdate{
-		Update:        backend.NewUpdate(username, mailbox),
-		MailboxStatus: status,
+		Update: backend.NewUpdate(username, mailbox),
 	})
 }
