@@ -1,7 +1,6 @@
 package admin
 
 import (
-	"context"
 	"net/http"
 	"strconv"
 	"strings"
@@ -457,6 +456,84 @@ func (s *Server) handleDeliveryLogs(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleDomainAdd handles adding a new domain
+func (s *Server) handleDomainAdd(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		s.renderTemplate(w, "domain_form.html", map[string]interface{}{
+			"Title": "Add Domain",
+		})
+		return
+	}
+
+	// POST - create domain
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "Bad request", http.StatusBadRequest)
+		return
+	}
+
+	name := strings.TrimSpace(strings.ToLower(r.FormValue("name")))
+	if name == "" {
+		s.renderTemplate(w, "domain_form.html", map[string]interface{}{
+			"Title": "Add Domain",
+			"Error": "Domain name is required",
+		})
+		return
+	}
+
+	// Check if domain already exists
+	var exists int
+	err := s.db.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM domains WHERE name = ?", name).Scan(&exists)
+	if err == nil && exists > 0 {
+		s.renderTemplate(w, "domain_form.html", map[string]interface{}{
+			"Title": "Add Domain",
+			"Error": "Domain already exists",
+		})
+		return
+	}
+
+	// Insert domain
+	_, err = s.db.ExecContext(r.Context(),
+		"INSERT INTO domains (name, dkim_selector) VALUES (?, ?)",
+		name, "mail",
+	)
+	if err != nil {
+		s.logger.ErrorContext(r.Context(), "Failed to create domain", err)
+		s.renderTemplate(w, "domain_form.html", map[string]interface{}{
+			"Title": "Add Domain",
+			"Error": "Failed to create domain: " + err.Error(),
+		})
+		return
+	}
+
+	http.Redirect(w, r, "/admin/domains", http.StatusSeeOther)
+}
+
+// handleDomainDelete handles deleting a domain
+func (s *Server) handleDomainDelete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Extract domain ID from path
+	parts := strings.Split(r.URL.Path, "/")
+	if len(parts) < 5 {
+		http.NotFound(w, r)
+		return
+	}
+	domainID, _ := strconv.ParseInt(parts[4], 10, 64)
+
+	// Delete domain (users will be cascade deleted due to foreign key)
+	_, err := s.db.ExecContext(r.Context(), "DELETE FROM domains WHERE id = ?", domainID)
+	if err != nil {
+		s.logger.ErrorContext(r.Context(), "Failed to delete domain", err)
+		http.Error(w, "Failed to delete domain", http.StatusInternalServerError)
+		return
+	}
+
+	http.Redirect(w, r, "/admin/domains", http.StatusSeeOther)
+}
+
 // handleAPIStats returns stats as JSON for AJAX updates
 func (s *Server) handleAPIStats(w http.ResponseWriter, r *http.Request) {
 	stats, err := s.getStats(r.Context())
@@ -470,19 +547,4 @@ func (s *Server) handleAPIStats(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(`{"users":` + strconv.Itoa(stats.TotalUsers) +
 		`,"domains":` + strconv.Itoa(stats.TotalDomains) +
 		`,"messages":` + strconv.Itoa(stats.TotalMessages) + `}`))
-}
-
-// renderTemplate renders a template with the given data
-func (s *Server) renderTemplate(w http.ResponseWriter, name string, data map[string]interface{}) {
-	if data == nil {
-		data = make(map[string]interface{})
-	}
-
-	// Add common data
-	data["CSRFToken"] = w.Header().Get("X-CSRF-Token")
-
-	if err := s.templates.ExecuteTemplate(w, name, data); err != nil {
-		s.logger.ErrorContext(context.Background(), "Failed to render template", err, "template", name)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
-	}
 }

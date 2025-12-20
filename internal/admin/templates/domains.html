@@ -1,9 +1,8 @@
-{{define "domains.html"}}
-{{template "layout" .}}
-{{end}}
-
 {{define "content"}}
-<h1 style="margin-bottom: 1.5rem;">Domains</h1>
+<div class="page-header">
+    <h1>Domains</h1>
+    <a href="/admin/domains/add" class="btn btn-primary">Add Domain</a>
+</div>
 
 <div class="card">
     {{if .Domains}}
@@ -13,38 +12,46 @@
                 <th>Domain</th>
                 <th>Users</th>
                 <th>Created</th>
-                <th>DNS Status</th>
+                <th>Actions</th>
             </tr>
         </thead>
         <tbody>
             {{range .Domains}}
             <tr>
                 <td><strong>{{.Name}}</strong></td>
-                <td>{{.UserCount}} users</td>
-                <td>{{.CreatedAt.Format "Jan 02, 2006"}}</td>
                 <td>
-                    <span class="badge badge-warning">Check DNS</span>
+                    <span class="badge badge-secondary">{{.UserCount}} users</span>
+                </td>
+                <td>{{.CreatedAt.Format "Jan 02, 2006"}}</td>
+                <td class="actions">
+                    <form method="POST" action="/admin/domains/delete/{{.ID}}" style="display: inline;"
+                          onsubmit="return confirm('Are you sure you want to delete this domain? All users under this domain will also be deleted!');">
+                        <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                        <button type="submit" class="btn btn-sm btn-danger">Delete</button>
+                    </form>
                 </td>
             </tr>
             {{end}}
         </tbody>
     </table>
     {{else}}
-    <p style="color: var(--text-muted);">No domains configured.</p>
+    <div class="empty-state">
+        <p>No domains configured.</p>
+        <a href="/admin/domains/add" class="btn btn-primary">Add your first domain</a>
+    </div>
     {{end}}
 </div>
 
 <div class="card">
     <h2>DNS Configuration</h2>
     <p style="margin-bottom: 1rem; color: var(--text-muted);">
-        Use the CLI to check and generate DNS records:
+        Use the CLI to check and generate DNS records for your domains:
     </p>
-    <pre style="background: var(--bg); padding: 1rem; border-radius: 6px; overflow-x: auto;">
-# Check DNS configuration
+    <pre style="background: var(--bg); padding: 1rem; border-radius: 6px; overflow-x: auto; font-size: 0.875rem; line-height: 1.6;">
+# Check DNS configuration for a domain
 mailserver dns check yourdomain.com
 
-# Generate required records
-mailserver dns generate yourdomain.com
-    </pre>
+# Generate required DNS records
+mailserver dns generate yourdomain.com</pre>
 </div>
 {{end}}

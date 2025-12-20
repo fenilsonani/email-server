@@ -27,17 +27,49 @@ type Server struct {
 	store         *maildir.Store
 	sieveStore    *sieve.Store
 	logger        *logging.Logger
-	templates     *template.Template
+	templates     map[string]*template.Template
 	httpServer    *http.Server
 }
 
 // NewServer creates a new admin server
 func NewServer(cfg *config.Config, db *sql.DB, authenticator *auth.Authenticator, store *maildir.Store, sieveStore *sieve.Store, logger *logging.Logger) (*Server, error) {
-	// Parse templates
-	tmpl, err := template.ParseFS(templatesFS, "templates/*.html")
+	// Parse base template first
+	baseTmpl, err := template.ParseFS(templatesFS, "templates/base.html")
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse templates: %w", err)
+		return nil, fmt.Errorf("failed to parse base template: %w", err)
 	}
+
+	// Create template map
+	templates := make(map[string]*template.Template)
+
+	// Pages that use the base layout
+	pages := []string{
+		"dashboard.html",
+		"users.html",
+		"user_form.html",
+		"user_edit.html",
+		"domains.html",
+		"domain_form.html",
+		"sieve.html",
+		"auth_logs.html",
+		"delivery_logs.html",
+	}
+
+	for _, page := range pages {
+		// Clone base template and parse page template into it
+		tmpl, err := template.Must(baseTmpl.Clone()).ParseFS(templatesFS, "templates/"+page)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse template %s: %w", page, err)
+		}
+		templates[page] = tmpl
+	}
+
+	// Login page is standalone (no base layout)
+	loginTmpl, err := template.ParseFS(templatesFS, "templates/login.html")
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse login template: %w", err)
+	}
+	templates["login.html"] = loginTmpl
 
 	s := &Server{
 		config:        cfg,
@@ -46,7 +78,7 @@ func NewServer(cfg *config.Config, db *sql.DB, authenticator *auth.Authenticator
 		store:         store,
 		sieveStore:    sieveStore,
 		logger:        logger,
-		templates:     tmpl,
+		templates:     templates,
 	}
 
 	return s, nil
@@ -65,6 +97,8 @@ func (s *Server) Start(listen string) error {
 	mux.HandleFunc("/admin/users/edit/", s.withAuth(s.handleUserEdit))
 	mux.HandleFunc("/admin/users/delete/", s.withAuth(s.handleUserDelete))
 	mux.HandleFunc("/admin/domains", s.withAuth(s.handleDomains))
+	mux.HandleFunc("/admin/domains/add", s.withAuth(s.handleDomainAdd))
+	mux.HandleFunc("/admin/domains/delete/", s.withAuth(s.handleDomainDelete))
 	mux.HandleFunc("/admin/sieve/", s.withAuth(s.handleSieve))
 	mux.HandleFunc("/admin/logs/auth", s.withAuth(s.handleAuthLogs))
 	mux.HandleFunc("/admin/logs/delivery", s.withAuth(s.handleDeliveryLogs))
@@ -155,4 +189,36 @@ func (s *Server) getStats(ctx context.Context) (*Stats, error) {
 	}
 
 	return stats, nil
+}
+
+// renderTemplate renders a template with the given data
+func (s *Server) renderTemplate(w http.ResponseWriter, name string, data map[string]interface{}) {
+	if data == nil {
+		data = make(map[string]interface{})
+	}
+
+	// Add common data
+	data["CSRFToken"] = w.Header().Get("X-CSRF-Token")
+
+	tmpl, ok := s.templates[name]
+	if !ok {
+		s.logger.Error("Template not found", "template", name)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	// For login page, execute the template directly
+	if name == "login.html" {
+		if err := tmpl.ExecuteTemplate(w, "login.html", data); err != nil {
+			s.logger.Error("Failed to render template", "template", name, "error", err.Error())
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+		}
+		return
+	}
+
+	// For other pages, execute the base template which includes the content
+	if err := tmpl.ExecuteTemplate(w, "base", data); err != nil {
+		s.logger.Error("Failed to render template", "template", name, "error", err.Error())
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+	}
 }

@@ -1,4 +1,4 @@
-{{define "layout"}}
+{{define "base"}}
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -23,7 +23,7 @@
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             background: var(--bg);
             color: var(--text);
-            line-height: 1.5;
+            line-height: 1.6;
         }
         .container { max-width: 1200px; margin: 0 auto; padding: 0 1rem; }
         nav {
@@ -31,11 +31,13 @@
             color: white;
             padding: 1rem 0;
             margin-bottom: 2rem;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
         }
-        nav .container { display: flex; justify-content: space-between; align-items: center; }
-        nav a { color: white; text-decoration: none; margin-left: 1.5rem; }
-        nav a:hover { opacity: 0.8; }
+        nav .container { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem; }
+        nav a { color: white; text-decoration: none; padding: 0.5rem 0.75rem; border-radius: 4px; transition: background 0.2s; }
+        nav a:hover { background: rgba(255,255,255,0.1); }
         .brand { font-weight: 600; font-size: 1.25rem; }
+        .nav-links { display: flex; gap: 0.5rem; flex-wrap: wrap; }
         .card {
             background: var(--card);
             border-radius: 8px;
@@ -43,11 +45,11 @@
             padding: 1.5rem;
             margin-bottom: 1.5rem;
         }
-        .card h2 { margin-bottom: 1rem; font-size: 1.25rem; }
+        .card h2 { margin-bottom: 1rem; font-size: 1.25rem; color: var(--text); }
         table { width: 100%; border-collapse: collapse; }
         th, td { padding: 0.75rem; text-align: left; border-bottom: 1px solid var(--border); }
         th { font-weight: 600; background: var(--bg); }
-        tr:hover { background: var(--bg); }
+        tr:hover td { background: var(--bg); }
         .btn {
             display: inline-block;
             padding: 0.5rem 1rem;
@@ -57,11 +59,16 @@
             text-decoration: none;
             font-size: 0.875rem;
             font-weight: 500;
+            transition: all 0.2s;
         }
         .btn-primary { background: var(--primary); color: white; }
         .btn-primary:hover { background: var(--primary-dark); }
+        .btn-success { background: var(--success); color: white; }
         .btn-danger { background: var(--danger); color: white; }
-        .btn-sm { padding: 0.25rem 0.5rem; font-size: 0.75rem; }
+        .btn-danger:hover { background: #b91c1c; }
+        .btn-secondary { background: var(--border); color: var(--text); }
+        .btn-secondary:hover { background: #cbd5e1; }
+        .btn-sm { padding: 0.375rem 0.75rem; font-size: 0.75rem; }
         .badge {
             display: inline-block;
             padding: 0.25rem 0.5rem;
@@ -72,31 +79,44 @@
         .badge-success { background: #dcfce7; color: var(--success); }
         .badge-danger { background: #fee2e2; color: var(--danger); }
         .badge-warning { background: #fef3c7; color: var(--warning); }
+        .badge-secondary { background: var(--border); color: var(--text-muted); }
         .form-group { margin-bottom: 1rem; }
-        .form-group label { display: block; margin-bottom: 0.25rem; font-weight: 500; }
+        .form-group label { display: block; margin-bottom: 0.5rem; font-weight: 500; }
         .form-control {
             width: 100%;
-            padding: 0.5rem;
+            padding: 0.625rem;
             border: 1px solid var(--border);
             border-radius: 6px;
             font-size: 1rem;
+            transition: border-color 0.2s;
         }
-        .form-control:focus { outline: none; border-color: var(--primary); }
-        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; }
+        .form-control:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+        .form-check { display: flex; align-items: center; gap: 0.5rem; }
+        .form-check input[type="checkbox"] { width: 1rem; height: 1rem; }
+        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
         .stat-card { text-align: center; padding: 1.5rem; }
-        .stat-value { font-size: 2rem; font-weight: 700; color: var(--primary); }
-        .stat-label { color: var(--text-muted); }
+        .stat-value { font-size: 2.5rem; font-weight: 700; color: var(--primary); }
+        .stat-label { color: var(--text-muted); font-size: 0.875rem; margin-top: 0.25rem; }
         .alert { padding: 1rem; border-radius: 6px; margin-bottom: 1rem; }
-        .alert-danger { background: #fee2e2; color: var(--danger); }
-        .alert-success { background: #dcfce7; color: var(--success); }
-        textarea.form-control { min-height: 200px; font-family: monospace; }
+        .alert-danger { background: #fee2e2; color: var(--danger); border: 1px solid #fecaca; }
+        .alert-success { background: #dcfce7; color: var(--success); border: 1px solid #bbf7d0; }
+        textarea.form-control { min-height: 200px; font-family: 'SF Mono', Monaco, monospace; font-size: 0.875rem; }
+        .page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; flex-wrap: wrap; gap: 1rem; }
+        .page-header h1 { font-size: 1.5rem; font-weight: 600; }
+        .actions { display: flex; gap: 0.5rem; align-items: center; }
+        .empty-state { text-align: center; padding: 3rem; color: var(--text-muted); }
+        .empty-state p { margin-bottom: 1rem; }
+        @media (max-width: 768px) {
+            .page-header { flex-direction: column; align-items: flex-start; }
+            table { display: block; overflow-x: auto; }
+        }
     </style>
 </head>
 <body>
     <nav>
         <div class="container">
             <span class="brand">Mail Server Admin</span>
-            <div>
+            <div class="nav-links">
                 <a href="/admin/">Dashboard</a>
                 <a href="/admin/users">Users</a>
                 <a href="/admin/domains">Domains</a>
@@ -107,7 +127,7 @@
         </div>
     </nav>
     <main class="container">
-        {{template "content" .}}
+        {{block "content" .}}{{end}}
     </main>
 </body>
 </html>

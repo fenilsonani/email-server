@@ -1,9 +1,5 @@
-{{define "users.html"}}
-{{template "layout" .}}
-{{end}}
-
 {{define "content"}}
-<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
+<div class="page-header">
     <h1>Users</h1>
     <a href="/admin/users/add" class="btn btn-primary">Add User</a>
 </div>
@@ -23,21 +19,21 @@
         <tbody>
             {{range .Users}}
             <tr>
-                <td>{{.Email}}</td>
+                <td><strong>{{.Email}}</strong></td>
                 <td>{{.Domain}}</td>
                 <td>
                     {{if .IsAdmin}}
                     <span class="badge badge-success">Yes</span>
                     {{else}}
-                    <span class="badge">No</span>
+                    <span class="badge badge-secondary">No</span>
                     {{end}}
                 </td>
                 <td>{{.CreatedAt.Format "Jan 02, 2006"}}</td>
-                <td>
+                <td class="actions">
                     <a href="/admin/users/edit/{{.ID}}" class="btn btn-sm btn-primary">Edit</a>
-                    <a href="/admin/sieve/{{.ID}}" class="btn btn-sm btn-primary">Sieve</a>
+                    <a href="/admin/sieve/{{.ID}}" class="btn btn-sm btn-secondary">Sieve</a>
                     <form method="POST" action="/admin/users/delete/{{.ID}}" style="display: inline;"
-                          onsubmit="return confirm('Delete this user?');">
+                          onsubmit="return confirm('Are you sure you want to delete this user? This cannot be undone.');">
                         <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
                         <button type="submit" class="btn btn-sm btn-danger">Delete</button>
                     </form>
@@ -47,7 +43,10 @@
         </tbody>
     </table>
     {{else}}
-    <p style="color: var(--text-muted);">No users found.</p>
+    <div class="empty-state">
+        <p>No users found.</p>
+        <a href="/admin/users/add" class="btn btn-primary">Add your first user</a>
+    </div>
     {{end}}
 </div>
 {{end}}

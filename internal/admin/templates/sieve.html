@@ -1,12 +1,11 @@
-{{define "sieve.html"}}
-{{template "layout" .}}
-{{end}}
-
 {{define "content"}}
-<h1 style="margin-bottom: 1.5rem;">Sieve Scripts - User #{{.UserID}}</h1>
+<div class="page-header">
+    <h1>Sieve Scripts</h1>
+    <a href="/admin/users" class="btn btn-secondary">Back to Users</a>
+</div>
 
 <div class="card">
-    <h2>Scripts</h2>
+    <h2>Scripts for User #{{.UserID}}</h2>
     {{if .Scripts}}
     <table>
         <thead>
@@ -25,18 +24,18 @@
                     {{if .IsActive}}
                     <span class="badge badge-success">Active</span>
                     {{else}}
-                    <span class="badge">Inactive</span>
+                    <span class="badge badge-secondary">Inactive</span>
                     {{end}}
                 </td>
                 <td>{{.UpdatedAt.Format "Jan 02, 2006 15:04"}}</td>
-                <td>
+                <td class="actions">
                     <button class="btn btn-sm btn-primary" onclick="editScript('{{.Name}}', `{{.Content}}`)">Edit</button>
                     {{if not .IsActive}}
                     <form method="POST" style="display: inline;">
                         <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
                         <input type="hidden" name="action" value="activate">
                         <input type="hidden" name="name" value="{{.Name}}">
-                        <button type="submit" class="btn btn-sm btn-primary">Activate</button>
+                        <button type="submit" class="btn btn-sm btn-success">Activate</button>
                     </form>
                     {{end}}
                     <form method="POST" style="display: inline;" onsubmit="return confirm('Delete this script?');">
@@ -51,7 +50,9 @@
         </tbody>
     </table>
     {{else}}
-    <p style="color: var(--text-muted);">No Sieve scripts configured.</p>
+    <div class="empty-state">
+        <p>No Sieve scripts configured for this user.</p>
+    </div>
     {{end}}
 </div>
 
@@ -63,13 +64,14 @@
 
         <div class="form-group">
             <label for="name">Script Name</label>
-            <input type="text" id="name" name="name" class="form-control" required>
+            <input type="text" id="name" name="name" class="form-control" required
+                   placeholder="e.g., main, spam-filter, vacation">
         </div>
 
         <div class="form-group">
             <label for="content">Script Content</label>
             <textarea id="content" name="content" class="form-control" required
-                      placeholder="# Sieve script
+                      placeholder="# Sieve script example
 require &quot;fileinto&quot;;
 
 # Move newsletters to folder
@@ -82,13 +84,16 @@ if header :contains &quot;Subject&quot; &quot;[Newsletter]&quot; {
 keep;"></textarea>
         </div>
 
-        <button type="submit" class="btn btn-primary" id="submit-btn">Create Script</button>
+        <div style="display: flex; gap: 1rem;">
+            <button type="submit" class="btn btn-primary" id="submit-btn">Create Script</button>
+            <button type="button" class="btn btn-secondary" onclick="resetForm()">Reset</button>
+        </div>
     </form>
 </div>
 
 <div class="card">
     <h2>Sieve Examples</h2>
-    <pre style="background: var(--bg); padding: 1rem; border-radius: 6px; overflow-x: auto; font-size: 0.875rem;">
+    <pre style="background: var(--bg); padding: 1rem; border-radius: 6px; overflow-x: auto; font-size: 0.875rem; line-height: 1.6;">
 # Move spam to Junk folder
 require "fileinto";
 if header :contains "X-Spam-Flag" "YES" {
@@ -111,8 +116,7 @@ vacation :days 7 :subject "Out of Office"
 if address :is "from" "spam@example.com" {
     discard;
     stop;
-}
-    </pre>
+}</pre>
 </div>
 
 <script>
@@ -124,6 +128,15 @@ function editScript(name, content) {
     document.getElementById('content').value = content;
     document.getElementById('submit-btn').textContent = 'Update Script';
     document.getElementById('sieve-form').scrollIntoView({behavior: 'smooth'});
+}
+
+function resetForm() {
+    document.getElementById('form-title').textContent = 'Create New Script';
+    document.getElementById('form-action').value = 'create';
+    document.getElementById('name').value = '';
+    document.getElementById('name').readOnly = false;
+    document.getElementById('content').value = '';
+    document.getElementById('submit-btn').textContent = 'Create Script';
 }
 </script>
 {{end}}

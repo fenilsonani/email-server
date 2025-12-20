@@ -1,24 +1,28 @@
-{{define "user_form.html"}}
-{{template "layout" .}}
-{{end}}
-
 {{define "content"}}
-<h1 style="margin-bottom: 1.5rem;">{{.Title}}</h1>
+<div class="page-header">
+    <h1>Add User</h1>
+</div>
 
 <div class="card" style="max-width: 500px;">
+    {{if .Error}}
+    <div class="alert alert-danger">{{.Error}}</div>
+    {{end}}
+
     <form method="POST" action="/admin/users/add">
         <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
 
         <div class="form-group">
             <label for="username">Username</label>
             <input type="text" id="username" name="username" class="form-control" required
-                   placeholder="e.g., john (without @domain)">
+                   placeholder="john" pattern="[a-zA-Z0-9._-]+"
+                   title="Username can only contain letters, numbers, dots, underscores, and hyphens">
+            <small style="color: var(--text-muted);">Without the @domain part</small>
         </div>
 
         <div class="form-group">
             <label for="domain_id">Domain</label>
             <select id="domain_id" name="domain_id" class="form-control" required>
-                <option value="">Select domain...</option>
+                <option value="">Select a domain...</option>
                 {{range .Domains}}
                 <option value="{{.ID}}">{{.Name}}</option>
                 {{end}}
@@ -32,14 +36,15 @@
         </div>
 
         <div class="form-group">
-            <label>
-                <input type="checkbox" name="is_admin"> Admin user
+            <label class="form-check">
+                <input type="checkbox" name="is_admin">
+                <span>Grant admin privileges</span>
             </label>
         </div>
 
-        <div style="display: flex; gap: 1rem;">
+        <div style="display: flex; gap: 1rem; margin-top: 1.5rem;">
             <button type="submit" class="btn btn-primary">Create User</button>
-            <a href="/admin/users" class="btn" style="background: var(--border);">Cancel</a>
+            <a href="/admin/users" class="btn btn-secondary">Cancel</a>
         </div>
     </form>
 </div>

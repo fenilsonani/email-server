@@ -1,0 +1,41 @@
+{{define "content"}}
+<div class="page-header">
+    <h1>Add Domain</h1>
+</div>
+
+<div class="card" style="max-width: 500px;">
+    {{if .Error}}
+    <div class="alert alert-danger">{{.Error}}</div>
+    {{end}}
+
+    <form method="POST" action="/admin/domains/add">
+        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+
+        <div class="form-group">
+            <label for="name">Domain Name</label>
+            <input type="text" id="name" name="name" class="form-control" required
+                   placeholder="example.com" pattern="[a-zA-Z0-9][a-zA-Z0-9.-]*[a-zA-Z0-9]"
+                   title="Enter a valid domain name">
+            <small style="color: var(--text-muted);">e.g., example.com, mail.example.org</small>
+        </div>
+
+        <div style="display: flex; gap: 1rem; margin-top: 1.5rem;">
+            <button type="submit" class="btn btn-primary">Add Domain</button>
+            <a href="/admin/domains" class="btn btn-secondary">Cancel</a>
+        </div>
+    </form>
+</div>
+
+<div class="card">
+    <h2>After Adding a Domain</h2>
+    <p style="color: var(--text-muted); margin-bottom: 1rem;">
+        After adding your domain, you'll need to configure DNS records. Use the CLI to generate the required records:
+    </p>
+    <pre style="background: var(--bg); padding: 1rem; border-radius: 6px; overflow-x: auto; font-size: 0.875rem; line-height: 1.6;">
+# Generate DNS records for your domain
+mailserver dns generate yourdomain.com
+
+# Check if DNS is configured correctly
+mailserver dns check yourdomain.com</pre>
+</div>
+{{end}}

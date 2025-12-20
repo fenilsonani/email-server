@@ -1,9 +1,7 @@
-{{define "dashboard.html"}}
-{{template "layout" .}}
-{{end}}
-
 {{define "content"}}
-<h1 style="margin-bottom: 1.5rem;">Dashboard</h1>
+<div class="page-header">
+    <h1>Dashboard</h1>
+</div>
 
 <div class="stats-grid">
     <div class="card stat-card">
@@ -54,7 +52,9 @@
         </tbody>
     </table>
     {{else}}
-    <p style="color: var(--text-muted);">No recent activity.</p>
+    <div class="empty-state">
+        <p>No recent activity.</p>
+    </div>
     {{end}}
 </div>
 
@@ -62,9 +62,9 @@
     <h2>Quick Actions</h2>
     <div style="display: flex; gap: 1rem; flex-wrap: wrap;">
         <a href="/admin/users/add" class="btn btn-primary">Add User</a>
-        <a href="/admin/domains" class="btn btn-primary">Manage Domains</a>
-        <a href="/admin/logs/auth" class="btn btn-primary">View Auth Logs</a>
-        <a href="/admin/logs/delivery" class="btn btn-primary">View Delivery Logs</a>
+        <a href="/admin/domains/add" class="btn btn-primary">Add Domain</a>
+        <a href="/admin/logs/auth" class="btn btn-secondary">View Auth Logs</a>
+        <a href="/admin/logs/delivery" class="btn btn-secondary">View Delivery Logs</a>
     </div>
 </div>
 {{end}}

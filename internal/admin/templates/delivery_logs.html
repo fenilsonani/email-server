@@ -1,9 +1,7 @@
-{{define "delivery_logs.html"}}
-{{template "layout" .}}
-{{end}}
-
 {{define "content"}}
-<h1 style="margin-bottom: 1.5rem;">Delivery Logs</h1>
+<div class="page-header">
+    <h1>Delivery Logs</h1>
+</div>
 
 <div class="card">
     {{if .Logs}}
@@ -22,8 +20,12 @@
             {{range .Logs}}
             <tr>
                 <td>{{.CreatedAt.Format "Jan 02 15:04:05"}}</td>
-                <td style="max-width: 200px; overflow: hidden; text-overflow: ellipsis;">{{.Sender}}</td>
-                <td style="max-width: 200px; overflow: hidden; text-overflow: ellipsis;">{{.Recipient}}</td>
+                <td style="max-width: 180px; overflow: hidden; text-overflow: ellipsis;" title="{{.Sender}}">
+                    {{.Sender}}
+                </td>
+                <td style="max-width: 180px; overflow: hidden; text-overflow: ellipsis;" title="{{.Recipient}}">
+                    {{.Recipient}}
+                </td>
                 <td>
                     {{if eq .Status "delivered"}}
                     <span class="badge badge-success">Delivered</span>
@@ -31,20 +33,28 @@
                     <span class="badge badge-danger">Bounced</span>
                     {{else if eq .Status "deferred"}}
                     <span class="badge badge-warning">Deferred</span>
+                    {{else if eq .Status "rejected"}}
+                    <span class="badge badge-danger">Rejected</span>
                     {{else}}
-                    <span class="badge">{{.Status}}</span>
+                    <span class="badge badge-secondary">{{.Status}}</span>
                     {{end}}
                 </td>
-                <td>{{if .SMTPCode}}{{.SMTPCode}}{{else}}-{{end}}</td>
-                <td style="max-width: 250px; overflow: hidden; text-overflow: ellipsis;">
-                    {{if .ErrorMessage}}{{.ErrorMessage}}{{else}}-{{end}}
+                <td>
+                    {{if .SMTPCode}}
+                    <code>{{.SMTPCode}}</code>
+                    {{else}}-{{end}}
+                </td>
+                <td style="max-width: 220px; overflow: hidden; text-overflow: ellipsis;">
+                    {{if .ErrorMessage}}<span title="{{.ErrorMessage}}">{{.ErrorMessage}}</span>{{else}}-{{end}}
                 </td>
             </tr>
             {{end}}
         </tbody>
     </table>
     {{else}}
-    <p style="color: var(--text-muted);">No delivery logs found.</p>
+    <div class="empty-state">
+        <p>No delivery logs found.</p>
+    </div>
     {{end}}
 </div>
 {{end}}

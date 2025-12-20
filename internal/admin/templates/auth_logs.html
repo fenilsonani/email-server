@@ -1,9 +1,7 @@
-{{define "auth_logs.html"}}
-{{template "layout" .}}
-{{end}}
-
 {{define "content"}}
-<h1 style="margin-bottom: 1.5rem;">Authentication Logs</h1>
+<div class="page-header">
+    <h1>Authentication Logs</h1>
+</div>
 
 <div class="card">
     {{if .Logs}}
@@ -22,9 +20,11 @@
             {{range .Logs}}
             <tr>
                 <td>{{.CreatedAt.Format "Jan 02 15:04:05"}}</td>
-                <td>{{.Username}}</td>
-                <td>{{.Protocol}}</td>
-                <td>{{.RemoteAddr}}</td>
+                <td><strong>{{.Username}}</strong></td>
+                <td>
+                    <span class="badge badge-secondary">{{.Protocol}}</span>
+                </td>
+                <td><code>{{.RemoteAddr}}</code></td>
                 <td>
                     {{if .Success}}
                     <span class="badge badge-success">Success</span>
@@ -32,15 +32,17 @@
                     <span class="badge badge-danger">Failed</span>
                     {{end}}
                 </td>
-                <td>
-                    {{if .FailureReason}}{{.FailureReason}}{{else}}-{{end}}
+                <td style="max-width: 200px; overflow: hidden; text-overflow: ellipsis;">
+                    {{if .FailureReason}}<span title="{{.FailureReason}}">{{.FailureReason}}</span>{{else}}-{{end}}
                 </td>
             </tr>
             {{end}}
         </tbody>
     </table>
     {{else}}
-    <p style="color: var(--text-muted);">No authentication logs found.</p>
+    <div class="empty-state">
+        <p>No authentication logs found.</p>
+    </div>
     {{end}}
 </div>
 {{end}}
