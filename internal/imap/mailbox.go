@@ -123,22 +123,53 @@ func (m *Mailbox) ListMessages(uid bool, seqSet *imap.SeqSet, items []imap.Fetch
 			continue
 		}
 
-		// Build IMAP message
-		imapMsg := imap.NewMessage(seqNum, items)
+		// Build IMAP message with only the items we can provide
+		// Filter out items we don't support to prevent nil pointer crashes
+		supportedItems := make([]imap.FetchItem, 0, len(items))
+		for _, item := range items {
+			switch item {
+			case imap.FetchEnvelope, imap.FetchFlags, imap.FetchInternalDate,
+				imap.FetchRFC822Size, imap.FetchUid:
+				supportedItems = append(supportedItems, item)
+			case imap.FetchBodyStructure, imap.FetchBody:
+				// Skip BODYSTRUCTURE - we don't support it yet
+				continue
+			default:
+				// Check if it's a BODY section request
+				if _, err := imap.ParseBodySectionName(item); err == nil {
+					supportedItems = append(supportedItems, item)
+				}
+			}
+		}
+
+		imapMsg := imap.NewMessage(seqNum, supportedItems)
 		imapMsg.Uid = msg.UID
 
-		for _, item := range items {
+		// Ensure InternalDate is always set (required by many clients)
+		if msg.InternalDate.IsZero() {
+			imapMsg.InternalDate = time.Now()
+		} else {
+			imapMsg.InternalDate = msg.InternalDate
+		}
+
+		// Always set flags to prevent nil
+		imapMsg.Flags = convertFlags(msg.Flags)
+
+		// Always set size
+		imapMsg.Size = uint32(msg.Size)
+
+		for _, item := range supportedItems {
 			switch item {
 			case imap.FetchEnvelope:
 				imapMsg.Envelope = m.buildEnvelope(msg)
 			case imap.FetchFlags:
-				imapMsg.Flags = convertFlags(msg.Flags)
+				// Already set above
 			case imap.FetchInternalDate:
-				imapMsg.InternalDate = msg.InternalDate
+				// Already set above
 			case imap.FetchRFC822Size:
-				imapMsg.Size = uint32(msg.Size)
+				// Already set above
 			case imap.FetchUid:
-				imapMsg.Uid = msg.UID
+				// Already set above
 			default:
 				// Handle BODY and BODY.PEEK
 				section, err := imap.ParseBodySectionName(item)
@@ -148,17 +179,17 @@ func (m *Mailbox) ListMessages(uid bool, seqSet *imap.SeqSet, items []imap.Fetch
 
 				body, err := m.user.backend.store.GetMessageBody(ctx, msg)
 				if err != nil {
+					// Return empty body on error
+					imapMsg.Body[section] = newBytesLiteral([]byte{})
 					continue
 				}
-				defer body.Close()
 
 				content, err := io.ReadAll(body)
+				body.Close()
 				if err != nil {
-					// Return empty content on read error rather than failing
 					content = []byte{}
 				}
-				literal := imap.Literal(newBytesLiteral(content))
-				imapMsg.Body[section] = literal
+				imapMsg.Body[section] = newBytesLiteral(content)
 
 				// Mark as seen if not PEEK
 				if !section.Peek {
