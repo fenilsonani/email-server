@@ -28,7 +28,7 @@ type clientState struct {
 func NewUpdateHub() *UpdateHub {
 	hub := &UpdateHub{
 		clients:  make(map[chan backend.Update]*clientState),
-		updateCh: make(chan backend.Update, 100),
+		updateCh: make(chan backend.Update, 10000), // Large buffer for instant notifications
 	}
 
 	hub.wg.Add(1)
@@ -68,7 +68,7 @@ func (h *UpdateHub) Subscribe() chan backend.Update {
 		return ch
 	}
 
-	ch := make(chan backend.Update, 10)
+	ch := make(chan backend.Update, 1000) // Large buffer for fast delivery
 	state := &clientState{ch: ch}
 
 	h.mu.Lock()

@@ -269,9 +269,9 @@ func (s *Session) deliverToLocalRecipient(rcpt string, data []byte) error {
 		return fmt.Errorf("failed to append message: %w", err)
 	}
 
-	// Notify IMAP clients about new message (for IDLE support)
+	// Notify IMAP clients about new message (for IDLE support) - async for speed
 	if s.backend.onLocalDelivery != nil {
-		s.backend.onLocalDelivery(user.Email, "INBOX")
+		go s.backend.onLocalDelivery(user.Email, "INBOX")
 	}
 
 	return nil

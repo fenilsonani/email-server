@@ -406,13 +406,31 @@ func (s *Store) GetMessageBody(ctx context.Context, msg *storage.Message) (io.Re
 
 	path := s.getUserMaildirPath(mb.UserID, mb.Name)
 
-	// Extract base key (without :2,FLAGS suffix)
+	// FAST PATH: Try direct file access first (O(1) instead of O(n) directory scan)
+	// Most messages are in "cur" with their exact maildir_key
+	for _, subdir := range []string{"cur", "new"} {
+		fullPath := filepath.Join(path, subdir, msg.MaildirKey)
+		if f, err := os.Open(fullPath); err == nil {
+			return f, nil
+		}
+	}
+
+	// Extract base key (without :2,FLAGS suffix) for fallback
 	baseKey := msg.MaildirKey
 	if idx := strings.Index(baseKey, ":2,"); idx >= 0 {
 		baseKey = baseKey[:idx]
 	}
 
-	// Try cur first, then new - search by base key prefix
+	// Try base key without flags (file may have been renamed)
+	for _, subdir := range []string{"cur", "new"} {
+		fullPath := filepath.Join(path, subdir, baseKey)
+		if f, err := os.Open(fullPath); err == nil {
+			return f, nil
+		}
+	}
+
+	// SLOW FALLBACK: Only scan directory if direct paths fail
+	// This handles edge cases where flags changed since DB lookup
 	for _, subdir := range []string{"cur", "new"} {
 		subdirPath := filepath.Join(path, subdir)
 		entries, err := os.ReadDir(subdirPath)
@@ -422,8 +440,8 @@ func (s *Store) GetMessageBody(ctx context.Context, msg *storage.Message) (io.Re
 
 		for _, entry := range entries {
 			name := entry.Name()
-			// Match if it's the exact key or starts with baseKey: or baseKey:2,
-			if name == msg.MaildirKey || name == baseKey || strings.HasPrefix(name, baseKey+":") {
+			// Match if starts with baseKey (handles any flag suffix)
+			if strings.HasPrefix(name, baseKey) {
 				fullPath := filepath.Join(subdirPath, name)
 				if f, err := os.Open(fullPath); err == nil {
 					return f, nil
