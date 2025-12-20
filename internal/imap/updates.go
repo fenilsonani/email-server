@@ -39,7 +39,8 @@ func (h *UpdateHub) Notify(update backend.Update) {
 
 	select {
 	case h.updateCh <- update:
-		// Successfully sent
+		// Successfully sent - log for debugging
+		log.Printf("IDLE: Update sent to channel (buffer: %d/%d)", len(h.updateCh), cap(h.updateCh))
 	default:
 		// Channel full, drop update and track it
 		count := atomic.AddInt64(&h.droppedUpdates, 1)

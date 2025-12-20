@@ -2,6 +2,7 @@ package imap
 
 import (
 	"context"
+	"log"
 
 	"github.com/emersion/go-imap"
 	"github.com/emersion/go-imap/backend"
@@ -52,6 +53,7 @@ func (b *Backend) NotifyUpdate(update backend.Update) {
 // NotifyMailboxUpdate notifies IDLE clients about a mailbox change (new message)
 func (b *Backend) NotifyMailboxUpdate(username, mailbox string) {
 	ctx := context.Background()
+	log.Printf("IDLE: NotifyMailboxUpdate called for %s/%s", username, mailbox)
 
 	// Look up user to get their mailbox stats
 	user, err := b.authenticator.LookupUser(ctx, username)
