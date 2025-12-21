@@ -13,16 +13,17 @@ import (
 
 // Config holds all configuration for the mail server
 type Config struct {
-	Server   ServerConfig   `koanf:"server"`
-	TLS      TLSConfig      `koanf:"tls"`
-	Storage  StorageConfig  `koanf:"storage"`
-	Domains  []DomainConfig `koanf:"domains"`
-	Security SecurityConfig `koanf:"security"`
-	Logging  LoggingConfig  `koanf:"logging"`
-	Queue    QueueConfig    `koanf:"queue"`
-	Delivery DeliveryConfig `koanf:"delivery"`
-	Admin    AdminConfig    `koanf:"admin"`
-	Sieve    SieveConfig    `koanf:"sieve"`
+	Server      ServerConfig      `koanf:"server"`
+	TLS         TLSConfig         `koanf:"tls"`
+	Storage     StorageConfig     `koanf:"storage"`
+	Domains     []DomainConfig    `koanf:"domains"`
+	Security    SecurityConfig    `koanf:"security"`
+	Logging     LoggingConfig     `koanf:"logging"`
+	Queue       QueueConfig       `koanf:"queue"`
+	Delivery    DeliveryConfig    `koanf:"delivery"`
+	Admin       AdminConfig       `koanf:"admin"`
+	Sieve       SieveConfig       `koanf:"sieve"`
+	Autodiscover AutodiscoverConfig `koanf:"autodiscover"`
 }
 
 // ServerConfig holds server-related configuration
@@ -110,6 +111,14 @@ type SieveConfig struct {
 	MaxScriptsPerUser int  `koanf:"max_scripts_per_user"` // Maximum scripts per user
 }
 
+// AutodiscoverConfig holds autodiscover/autoconfig settings
+type AutodiscoverConfig struct {
+	Enabled     bool   `koanf:"enabled"`      // Enable autodiscover endpoints
+	Port        int    `koanf:"port"`         // Autodiscover port (default 8081)
+	Listen      string `koanf:"listen"`       // Listen address (default 0.0.0.0)
+	DisplayName string `koanf:"display_name"` // Display name for email service
+}
+
 // DefaultConfig returns a configuration with sensible defaults
 func DefaultConfig() *Config {
 	return &Config{
@@ -168,6 +177,11 @@ func DefaultConfig() *Config {
 			Enabled:           true,
 			MaxScriptSize:     32768, // 32KB
 			MaxScriptsPerUser: 5,
+		},
+		Autodiscover: AutodiscoverConfig{
+			Enabled: true,
+			Port:    8081,
+			Listen:  "0.0.0.0",
 		},
 	}
 }

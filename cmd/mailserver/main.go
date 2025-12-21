@@ -10,6 +10,7 @@ import (
 
 	"github.com/fenilsonani/email-server/internal/admin"
 	"github.com/fenilsonani/email-server/internal/auth"
+	"github.com/fenilsonani/email-server/internal/autodiscover"
 	"github.com/fenilsonani/email-server/internal/config"
 	"github.com/fenilsonani/email-server/internal/dns"
 	imapserver "github.com/fenilsonani/email-server/internal/imap"
@@ -395,6 +396,29 @@ var serveCmd = &cobra.Command{
 				fmt.Printf("  Admin: http://%s\n", adminAddr)
 				logger.Info("Admin server started", "addr", adminAddr)
 			}
+		}
+
+		// Start autodiscover server if enabled
+		if cfg.Autodiscover.Enabled {
+			displayName := cfg.Autodiscover.DisplayName
+			if displayName == "" {
+				displayName = cfg.Server.Domain + " Mail"
+			}
+			autodiscoverSrv := autodiscover.NewServer(autodiscover.Config{
+				Domain:      cfg.Server.Domain,
+				Hostname:    cfg.Server.Hostname,
+				IMAPPort:    cfg.Server.IMAPSPort,
+				SMTPPort:    cfg.Server.SubmissionPort,
+				DisplayName: displayName,
+			}, logger.Logger)
+			autodiscoverAddr := fmt.Sprintf("%s:%d", cfg.Autodiscover.Listen, cfg.Autodiscover.Port)
+			go func() {
+				if err := autodiscoverSrv.ListenAndServe(context.Background(), autodiscoverAddr); err != nil {
+					logger.Error("Autodiscover server error", "error", err.Error())
+				}
+			}()
+			fmt.Printf("  Autodiscover: http://%s\n", autodiscoverAddr)
+			logger.Info("Autodiscover server started", "addr", autodiscoverAddr)
 		}
 
 		fmt.Println("\nServer is running. Press Ctrl+C to stop.")
