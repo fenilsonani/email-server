@@ -29,29 +29,44 @@ type LocalDeliveryNotifier func(username, mailbox string)
 
 // Backend implements the go-smtp Backend interface
 type Backend struct {
-	config           *config.Config
-	authenticator    *auth.Authenticator
-	store            *maildir.Store
-	deliveryEngine   *delivery.Engine
-	logger           *logging.Logger
-	queuePath        string // Path to store queued message files
-	onLocalDelivery  LocalDeliveryNotifier
-	sieveExecutor    *sieve.Executor
+	config          *config.Config
+	authenticator   *auth.Authenticator
+	store           *maildir.Store
+	deliveryEngine  *delivery.Engine
+	logger          *logging.Logger
+	queuePath       string // Path to store queued message files
+	onLocalDelivery LocalDeliveryNotifier
+	sieveExecutor   *sieve.Executor
 }
 
 // NewBackend creates a new SMTP backend
-func NewBackend(cfg *config.Config, authenticator *auth.Authenticator, store *maildir.Store, deliveryEngine *delivery.Engine, logger *logging.Logger) *Backend {
+func NewBackend(cfg *config.Config, authenticator *auth.Authenticator, store *maildir.Store, deliveryEngine *delivery.Engine, logger *logging.Logger) (*Backend, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("config cannot be nil")
+	}
+	if authenticator == nil {
+		return nil, fmt.Errorf("authenticator cannot be nil")
+	}
+	if store == nil {
+		return nil, fmt.Errorf("store cannot be nil")
+	}
+	if logger == nil {
+		return nil, fmt.Errorf("logger cannot be nil")
+	}
+
 	queuePath := filepath.Join(cfg.Storage.DataDir, "queue")
-	os.MkdirAll(queuePath, 0755)
+	if err := os.MkdirAll(queuePath, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create queue directory: %w", err)
+	}
 
 	return &Backend{
-		config:           cfg,
-		authenticator:    authenticator,
-		store:            store,
-		deliveryEngine:   deliveryEngine,
-		logger:           logger.SMTP(),
-		queuePath:        queuePath,
-	}
+		config:         cfg,
+		authenticator:  authenticator,
+		store:          store,
+		deliveryEngine: deliveryEngine,
+		logger:         logger.SMTP(),
+		queuePath:      queuePath,
+	}, nil
 }
 
 // SetLocalDeliveryNotifier sets the callback for local delivery notifications
@@ -66,6 +81,13 @@ func (b *Backend) SetSieveExecutor(executor *sieve.Executor) {
 
 // NewSession is called when a new SMTP connection is established
 func (b *Backend) NewSession(c *smtp.Conn) (smtp.Session, error) {
+	if b == nil {
+		return nil, fmt.Errorf("backend is nil")
+	}
+	if c == nil {
+		return nil, fmt.Errorf("connection is nil")
+	}
+
 	remoteAddr := ""
 	if c.Conn() != nil {
 		remoteAddr = c.Conn().RemoteAddr().String()
@@ -168,12 +190,29 @@ func (s *Session) Rcpt(to string, opts *smtp.RcptOptions) error {
 
 // Data is called when the DATA command is received
 func (s *Session) Data(r io.Reader) error {
+	// Defensive nil checks
+	if s == nil || s.backend == nil {
+		return fmt.Errorf("session or backend is nil")
+	}
+	if r == nil {
+		return &smtp.SMTPError{
+			Code:         451,
+			EnhancedCode: smtp.EnhancedCode{4, 3, 0},
+			Message:      "Invalid data reader",
+		}
+	}
+
 	if len(s.rcpts) == 0 {
 		return &smtp.SMTPError{
 			Code:         503,
 			EnhancedCode: smtp.EnhancedCode{5, 5, 1},
 			Message:      "No recipients specified",
 		}
+	}
+
+	// Check for context cancellation
+	if err := s.ctx.Err(); err != nil {
+		return fmt.Errorf("operation cancelled: %w", err)
 	}
 
 	// Read message data with size limit
@@ -232,6 +271,11 @@ func (s *Session) handleInbound(data []byte) error {
 func (s *Session) deliverToLocalRecipient(rcpt string, data []byte) error {
 	ctx := s.ctx
 
+	// Check for context cancellation
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("operation cancelled: %w", err)
+	}
+
 	// Check for alias
 	userID, external, err := s.backend.authenticator.ResolveAlias(ctx, rcpt)
 	if err != nil {
@@ -246,7 +290,17 @@ func (s *Session) deliverToLocalRecipient(rcpt string, data []byte) error {
 			if err != nil {
 				return fmt.Errorf("failed to save message for forwarding: %w", err)
 			}
-			return s.backend.deliveryEngine.Enqueue(ctx, s.from, []string{*external}, messagePath)
+			if err := s.backend.deliveryEngine.Enqueue(ctx, s.from, []string{*external}, messagePath); err != nil {
+				// Clean up the orphaned queue file
+				if cleanupErr := os.Remove(messagePath); cleanupErr != nil {
+					s.backend.logger.WarnContext(ctx, "Failed to cleanup queue file after enqueue failure",
+						"path", messagePath,
+						"error", cleanupErr.Error(),
+					)
+				}
+				return err
+			}
+			return nil
 		}
 		s.backend.logger.WarnContext(ctx, "External forwarding not available - delivery engine not configured",
 			"external_addr", *external,
@@ -302,6 +356,13 @@ func (s *Session) deliverToLocalRecipient(rcpt string, data []byte) error {
 					}
 					if err := s.backend.deliveryEngine.Enqueue(ctx, s.from, result.RedirectTo, messagePath); err != nil {
 						s.backend.logger.ErrorContext(ctx, "Failed to enqueue redirected message", err)
+						// Clean up the orphaned queue file
+						if cleanupErr := os.Remove(messagePath); cleanupErr != nil {
+							s.backend.logger.WarnContext(ctx, "Failed to cleanup queue file after enqueue failure",
+								"path", messagePath,
+								"error", cleanupErr.Error(),
+							)
+						}
 					} else {
 						s.backend.logger.InfoContext(ctx, "Message redirected by Sieve",
 							"recipient", rcpt,
@@ -321,7 +382,15 @@ func (s *Session) deliverToLocalRecipient(rcpt string, data []byte) error {
 
 			// Handle vacation response
 			if result.Vacation && result.VacationTo != "" {
-				go s.sendVacationResponse(ctx, result, user)
+				// Launch vacation response in goroutine with panic recovery
+				go func() {
+					defer func() {
+						if r := recover(); r != nil {
+							s.backend.logger.ErrorContext(ctx, "Panic in vacation response goroutine", fmt.Errorf("panic: %v", r))
+						}
+					}()
+					s.sendVacationResponse(ctx, result, user)
+				}()
 			}
 		}
 	}
@@ -360,7 +429,15 @@ func (s *Session) deliverToLocalRecipient(rcpt string, data []byte) error {
 
 	// Notify IMAP clients about new message (for IDLE support) - async for speed
 	if s.backend.onLocalDelivery != nil {
-		go s.backend.onLocalDelivery(user.Email, targetMailbox)
+		// Launch notification in goroutine with panic recovery
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					s.backend.logger.ErrorContext(ctx, "Panic in local delivery notification goroutine", fmt.Errorf("panic: %v", r))
+				}
+			}()
+			s.backend.onLocalDelivery(user.Email, targetMailbox)
+		}()
 	}
 
 	return nil
@@ -368,6 +445,11 @@ func (s *Session) deliverToLocalRecipient(rcpt string, data []byte) error {
 
 // handleOutbound queues mail for external delivery
 func (s *Session) handleOutbound(data []byte) error {
+	// Check for context cancellation
+	if err := s.ctx.Err(); err != nil {
+		return fmt.Errorf("operation cancelled: %w", err)
+	}
+
 	// Separate local and external recipients
 	var localRcpts, externalRcpts []string
 	localDomain := s.backend.config.Server.Domain
@@ -389,6 +471,11 @@ func (s *Session) handleOutbound(data []byte) error {
 			"count", len(localRcpts),
 		)
 		for _, rcpt := range localRcpts {
+			// Check for context cancellation in loop
+			if err := s.ctx.Err(); err != nil {
+				return fmt.Errorf("operation cancelled during local delivery: %w", err)
+			}
+
 			if err := s.deliverToLocalRecipient(rcpt, data); err != nil {
 				s.backend.logger.ErrorContext(s.ctx, "Local delivery failed", err,
 					"recipient", rcpt,
@@ -409,6 +496,11 @@ func (s *Session) handleOutbound(data []byte) error {
 			}
 		}
 
+		// Check for context cancellation before queueing
+		if err := s.ctx.Err(); err != nil {
+			return fmt.Errorf("operation cancelled before queueing: %w", err)
+		}
+
 		// Save message to queue directory
 		messagePath, err := s.saveMessageToQueue(data)
 		if err != nil {
@@ -423,6 +515,13 @@ func (s *Session) handleOutbound(data []byte) error {
 		// Enqueue for delivery
 		if err := s.backend.deliveryEngine.Enqueue(s.ctx, s.from, externalRcpts, messagePath); err != nil {
 			s.backend.logger.ErrorContext(s.ctx, "Failed to enqueue message for delivery", err)
+			// Clean up the orphaned queue file
+			if cleanupErr := os.Remove(messagePath); cleanupErr != nil {
+				s.backend.logger.WarnContext(s.ctx, "Failed to cleanup queue file after enqueue failure",
+					"path", messagePath,
+					"error", cleanupErr.Error(),
+				)
+			}
 			return &smtp.SMTPError{
 				Code:         451,
 				EnhancedCode: smtp.EnhancedCode{4, 3, 0},
@@ -464,13 +563,29 @@ func (s *Session) handleOutbound(data []byte) error {
 
 // saveMessageToQueue saves a message to the queue directory
 func (s *Session) saveMessageToQueue(data []byte) (string, error) {
+	// Defensive nil checks
+	if s == nil || s.backend == nil {
+		return "", fmt.Errorf("session or backend is nil")
+	}
+	if len(data) == 0 {
+		return "", fmt.Errorf("message data is empty")
+	}
+
 	// Generate unique filename
 	filename := fmt.Sprintf("%d-%s.eml", time.Now().UnixNano(), generateID())
 	path := filepath.Join(s.backend.queuePath, filename)
 
-	// Write file
-	if err := os.WriteFile(path, data, 0644); err != nil {
-		return "", err
+	// Write file atomically using a temp file
+	tempPath := path + ".tmp"
+	if err := os.WriteFile(tempPath, data, 0644); err != nil {
+		return "", fmt.Errorf("failed to write temp file: %w", err)
+	}
+
+	// Atomic rename
+	if err := os.Rename(tempPath, path); err != nil {
+		// Clean up temp file on failure
+		os.Remove(tempPath)
+		return "", fmt.Errorf("failed to rename temp file: %w", err)
 	}
 
 	return path, nil
@@ -555,6 +670,14 @@ func (s *Session) parseMessageForSieve(data []byte) *sieve.Message {
 
 // sendVacationResponse sends an automatic vacation reply
 func (s *Session) sendVacationResponse(ctx context.Context, result *sieve.Result, user *auth.User) {
+	// Defensive nil checks
+	if s == nil || s.backend == nil {
+		return
+	}
+	if result == nil || user == nil {
+		s.backend.logger.WarnContext(ctx, "Cannot send vacation response - nil result or user")
+		return
+	}
 	if s.backend.deliveryEngine == nil {
 		s.backend.logger.WarnContext(ctx, "Cannot send vacation response - delivery engine not configured")
 		return
@@ -583,6 +706,13 @@ func (s *Session) sendVacationResponse(ctx context.Context, result *sieve.Result
 
 	if err := s.backend.deliveryEngine.Enqueue(ctx, user.Email, []string{result.VacationTo}, messagePath); err != nil {
 		s.backend.logger.ErrorContext(ctx, "Failed to enqueue vacation response", err)
+		// Clean up the orphaned queue file
+		if cleanupErr := os.Remove(messagePath); cleanupErr != nil {
+			s.backend.logger.WarnContext(ctx, "Failed to cleanup queue file after vacation enqueue failure",
+				"path", messagePath,
+				"error", cleanupErr.Error(),
+			)
+		}
 		return
 	}
 

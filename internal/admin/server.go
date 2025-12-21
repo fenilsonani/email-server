@@ -4,10 +4,15 @@ import (
 	"context"
 	"database/sql"
 	"embed"
+	"errors"
 	"fmt"
 	"html/template"
 	"net/http"
+	"os"
+	"os/signal"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/fenilsonani/email-server/internal/auth"
@@ -30,6 +35,7 @@ type Server struct {
 	logger        *logging.Logger
 	templates     map[string]*template.Template
 	httpServer    *http.Server
+	shutdownOnce  sync.Once
 }
 
 // NewServer creates a new admin server
@@ -120,24 +126,92 @@ func (s *Server) Start(listen string) error {
 	mux.HandleFunc("/admin/logs/delivery", s.withAuth(s.handleDeliveryLogs))
 	mux.HandleFunc("/admin/api/stats", s.withAuth(s.handleAPIStats))
 
+	// Build middleware chain (order matters: innermost first, then wrapping outward)
+	// The execution order will be: logging -> panic recovery -> CSRF -> routes
+	handler := s.withCSRF(mux)
+	handler = s.withPanicRecovery(handler)
+	handler = s.withRequestLogging(handler)
+
 	s.httpServer = &http.Server{
 		Addr:         listen,
-		Handler:      s.withCSRF(mux),
+		Handler:      handler,
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 30 * time.Second,
 		IdleTimeout:  120 * time.Second,
+		// Enhance with better defaults for reliability
+		MaxHeaderBytes:    1 << 20, // 1 MB
+		ReadHeaderTimeout: 10 * time.Second,
 	}
 
 	s.logger.Info("Starting admin server", "listen", listen)
-	return s.httpServer.ListenAndServe()
+
+	// Start cleanup goroutine
+	CleanupExpiredSessions()
+
+	// Start server in a goroutine for graceful shutdown
+	serverErr := make(chan error, 1)
+	go func() {
+		if err := s.httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serverErr <- err
+		}
+		close(serverErr)
+	}()
+
+	// Setup signal handling for graceful shutdown
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+
+	// Wait for shutdown signal or server error
+	select {
+	case err := <-serverErr:
+		if err != nil {
+			return fmt.Errorf("server error: %w", err)
+		}
+		return nil
+	case sig := <-sigChan:
+		s.logger.Info("Received shutdown signal", "signal", sig.String())
+
+		// Create shutdown context with timeout
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		return s.Shutdown(shutdownCtx)
+	}
 }
 
 // Shutdown gracefully stops the admin server
 func (s *Server) Shutdown(ctx context.Context) error {
-	if s.httpServer != nil {
-		return s.httpServer.Shutdown(ctx)
-	}
-	return nil
+	var err error
+	s.shutdownOnce.Do(func() {
+		s.logger.Info("Shutting down admin server")
+
+		// Shutdown HTTP server
+		if s.httpServer != nil {
+			if shutdownErr := s.httpServer.Shutdown(ctx); shutdownErr != nil {
+				s.logger.Error("Error shutting down HTTP server", "error", shutdownErr.Error())
+				err = shutdownErr
+			}
+		}
+
+		// Clean up sessions
+		s.logger.Info("Cleaning up sessions")
+		sessionsMu.Lock()
+		for token := range sessions {
+			delete(sessions, token)
+		}
+		sessionsMu.Unlock()
+
+		// Clean up CSRF tokens
+		csrfTokensMu.Lock()
+		for token := range csrfTokens {
+			delete(csrfTokens, token)
+		}
+		csrfTokensMu.Unlock()
+
+		// Note: Database connection is managed by the caller, not closed here
+		s.logger.Info("Admin server shutdown complete")
+	})
+	return err
 }
 
 // Stats holds dashboard statistics
@@ -223,9 +297,15 @@ func (s *Server) renderTemplate(w http.ResponseWriter, name string, data map[str
 		return
 	}
 
-	// Execute template by its name
+	// Set content type before executing template
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+
+	// Execute template with proper error handling
+	// We can't set headers after writing body, so we need to handle errors carefully
 	if err := tmpl.ExecuteTemplate(w, name, data); err != nil {
 		s.logger.Error("Failed to render template", "template", name, "error", err.Error())
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		// If headers already sent, we can't send error page
+		// Log the error and let connection close
+		return
 	}
 }

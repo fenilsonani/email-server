@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/fenilsonani/email-server/internal/validation"
 )
 
 // handleDashboard shows the main dashboard
@@ -122,6 +124,7 @@ func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var u User
 		if err := rows.Scan(&u.ID, &u.Username, &u.Domain, &u.IsAdmin, &u.CreatedAt); err != nil {
+			s.logger.ErrorContext(r.Context(), "Failed to scan user row", err)
 			continue
 		}
 		u.Email = u.Username + "@" + u.Domain
@@ -138,7 +141,12 @@ func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleUserAdd(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
 		// Get domains for dropdown
-		rows, _ := s.db.QueryContext(r.Context(), "SELECT id, name FROM domains ORDER BY name")
+		rows, err := s.db.QueryContext(r.Context(), "SELECT id, name FROM domains ORDER BY name")
+		if err != nil {
+			s.logger.ErrorContext(r.Context(), "Failed to query domains", err)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
 		defer rows.Close()
 
 		type Domain struct {
@@ -148,7 +156,10 @@ func (s *Server) handleUserAdd(w http.ResponseWriter, r *http.Request) {
 		var domains []Domain
 		for rows.Next() {
 			var d Domain
-			rows.Scan(&d.ID, &d.Name)
+			if err := rows.Scan(&d.ID, &d.Name); err != nil {
+				s.logger.ErrorContext(r.Context(), "Failed to scan domain row", err)
+				continue
+			}
 			domains = append(domains, d)
 		}
 
@@ -167,11 +178,30 @@ func (s *Server) handleUserAdd(w http.ResponseWriter, r *http.Request) {
 
 	username := r.FormValue("username")
 	password := r.FormValue("password")
-	domainID, _ := strconv.ParseInt(r.FormValue("domain_id"), 10, 64)
+	domainIDStr := r.FormValue("domain_id")
 	isAdmin := r.FormValue("is_admin") == "on"
 
-	if username == "" || password == "" || domainID == 0 {
-		http.Error(w, "Missing required fields", http.StatusBadRequest)
+	// Validate domain_id parsing
+	domainID, err := strconv.ParseInt(domainIDStr, 10, 64)
+	if err != nil {
+		http.Error(w, "Invalid domain ID format", http.StatusBadRequest)
+		return
+	}
+
+	// Validate username
+	if err := validation.Username(username); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Validate password
+	if err := validation.Password(password); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if domainID == 0 {
+		http.Error(w, "Domain is required", http.StatusBadRequest)
 		return
 	}
 
@@ -203,7 +233,11 @@ func (s *Server) handleUserEdit(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	userID, _ := strconv.ParseInt(parts[4], 10, 64)
+	userID, err := strconv.ParseInt(parts[4], 10, 64)
+	if err != nil {
+		http.Error(w, "Invalid user ID format", http.StatusBadRequest)
+		return
+	}
 
 	if r.Method == http.MethodGet {
 		var username, domain string
@@ -237,14 +271,20 @@ func (s *Server) handleUserEdit(w http.ResponseWriter, r *http.Request) {
 	isAdmin := r.FormValue("is_admin") == "on"
 
 	// Update admin status
-	_, err := s.db.ExecContext(r.Context(), "UPDATE users SET is_admin = ? WHERE id = ?", isAdmin, userID)
-	if err != nil {
+	var updateErr error
+	_, updateErr = s.db.ExecContext(r.Context(), "UPDATE users SET is_admin = ? WHERE id = ?", isAdmin, userID)
+	if updateErr != nil {
 		http.Error(w, "Failed to update user", http.StatusInternalServerError)
 		return
 	}
 
 	// Update password if provided
 	if password != "" {
+		// Validate password
+		if err := validation.Password(password); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		if err := s.authenticator.UpdatePassword(r.Context(), userID, password); err != nil {
 			http.Error(w, "Failed to update password", http.StatusInternalServerError)
 			return
@@ -267,10 +307,15 @@ func (s *Server) handleUserDelete(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	userID, _ := strconv.ParseInt(parts[4], 10, 64)
-
-	_, err := s.db.ExecContext(r.Context(), "DELETE FROM users WHERE id = ?", userID)
+	userID, err := strconv.ParseInt(parts[4], 10, 64)
 	if err != nil {
+		http.Error(w, "Invalid user ID format", http.StatusBadRequest)
+		return
+	}
+
+	var deleteErr error
+	_, deleteErr = s.db.ExecContext(r.Context(), "DELETE FROM users WHERE id = ?", userID)
+	if deleteErr != nil {
 		http.Error(w, "Failed to delete user", http.StatusInternalServerError)
 		return
 	}
@@ -304,6 +349,7 @@ func (s *Server) handleDomains(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var d Domain
 		if err := rows.Scan(&d.ID, &d.Name, &d.CreatedAt, &d.UserCount); err != nil {
+			s.logger.ErrorContext(r.Context(), "Failed to scan domain row", err)
 			continue
 		}
 		domains = append(domains, d)
@@ -323,7 +369,11 @@ func (s *Server) handleSieve(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	userID, _ := strconv.ParseInt(parts[3], 10, 64)
+	userID, err := strconv.ParseInt(parts[3], 10, 64)
+	if err != nil {
+		http.Error(w, "Invalid user ID format", http.StatusBadRequest)
+		return
+	}
 
 	if s.sieveStore == nil {
 		http.Error(w, "Sieve not configured", http.StatusServiceUnavailable)
@@ -410,6 +460,7 @@ func (s *Server) handleAuthLogs(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var l LogEntry
 		if err := rows.Scan(&l.ID, &l.Username, &l.RemoteAddr, &l.Protocol, &l.Success, &l.FailureReason, &l.CreatedAt); err != nil {
+			s.logger.ErrorContext(r.Context(), "Failed to scan auth log row", err)
 			continue
 		}
 		logs = append(logs, l)
@@ -451,6 +502,7 @@ func (s *Server) handleDeliveryLogs(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var l LogEntry
 		if err := rows.Scan(&l.ID, &l.MessageID, &l.Sender, &l.Recipient, &l.Status, &l.SMTPCode, &l.ErrorMessage, &l.CreatedAt); err != nil {
+			s.logger.ErrorContext(r.Context(), "Failed to scan delivery log row", err)
 			continue
 		}
 		logs = append(logs, l)
@@ -478,10 +530,12 @@ func (s *Server) handleDomainAdd(w http.ResponseWriter, r *http.Request) {
 	}
 
 	name := strings.TrimSpace(strings.ToLower(r.FormValue("name")))
-	if name == "" {
+
+	// Validate domain name
+	if err := validation.Domain(name); err != nil {
 		s.renderTemplate(w, "domain_form.html", map[string]interface{}{
 			"Title": "Add Domain",
-			"Error": "Domain name is required",
+			"Error": err.Error(),
 		})
 		return
 	}
@@ -527,12 +581,17 @@ func (s *Server) handleDomainDelete(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	domainID, _ := strconv.ParseInt(parts[4], 10, 64)
+	domainID, err := strconv.ParseInt(parts[4], 10, 64)
+	if err != nil {
+		http.Error(w, "Invalid domain ID format", http.StatusBadRequest)
+		return
+	}
 
 	// Delete domain (users will be cascade deleted due to foreign key)
-	_, err := s.db.ExecContext(r.Context(), "DELETE FROM domains WHERE id = ?", domainID)
-	if err != nil {
-		s.logger.ErrorContext(r.Context(), "Failed to delete domain", err)
+	var deleteDomainErr error
+	_, deleteDomainErr = s.db.ExecContext(r.Context(), "DELETE FROM domains WHERE id = ?", domainID)
+	if deleteDomainErr != nil {
+		s.logger.ErrorContext(r.Context(), "Failed to delete domain", deleteDomainErr)
 		http.Error(w, "Failed to delete domain", http.StatusInternalServerError)
 		return
 	}

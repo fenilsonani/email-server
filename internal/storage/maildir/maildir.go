@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -75,17 +76,22 @@ func (s *Store) CreateMailbox(ctx context.Context, userID int64, name string, sp
 		userID, name, uidValidity, string(specialUse),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create mailbox: %w", err)
+		return nil, fmt.Errorf("failed to create mailbox %s for user %d: %w", name, userID, err)
 	}
 
-	id, _ := result.LastInsertId()
+	id, err := result.LastInsertId()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get last insert id: %w", err)
+	}
 
 	// Create maildir on filesystem
 	path := s.getUserMaildirPath(userID, name)
 	if _, err := s.ensureMaildir(path); err != nil {
-		// Rollback database insert
-		s.db.ExecContext(ctx, "DELETE FROM mailboxes WHERE id = ?", id)
-		return nil, err
+		// Rollback database insert on filesystem error
+		if _, rollbackErr := s.db.ExecContext(ctx, "DELETE FROM mailboxes WHERE id = ?", id); rollbackErr != nil {
+			return nil, fmt.Errorf("failed to create maildir and rollback failed: maildir_err=%w, rollback_err=%v", err, rollbackErr)
+		}
+		return nil, fmt.Errorf("failed to create maildir: %w", err)
 	}
 
 	return &storage.Mailbox{
@@ -138,10 +144,10 @@ func (s *Store) GetMailbox(ctx context.Context, userID int64, name string) (*sto
 		&specialUse, &mb.Subscribed, &mb.CreatedAt)
 
 	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("mailbox not found: %s", name)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("mailbox not found: user=%d name=%s", userID, name)
 		}
-		return nil, err
+		return nil, fmt.Errorf("failed to query mailbox user=%d name=%s: %w", userID, name, err)
 	}
 
 	mb.SpecialUse = storage.SpecialUse(specialUse.String)
@@ -161,10 +167,10 @@ func (s *Store) GetMailboxByID(ctx context.Context, id int64) (*storage.Mailbox,
 		&specialUse, &mb.Subscribed, &mb.CreatedAt)
 
 	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("mailbox not found: %d", id)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("mailbox not found: id=%d", id)
 		}
-		return nil, err
+		return nil, fmt.Errorf("failed to query mailbox id=%d: %w", id, err)
 	}
 
 	mb.SpecialUse = storage.SpecialUse(specialUse.String)
@@ -271,7 +277,7 @@ func (s *Store) SubscribeMailbox(ctx context.Context, userID int64, name string,
 	return err
 }
 
-// AppendMessage stores a new message in the mailbox
+// AppendMessage stores a new message in the mailbox with atomic file operations
 func (s *Store) AppendMessage(ctx context.Context, mailboxID int64, flags []storage.Flag, date time.Time, body io.Reader) (*storage.Message, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -279,7 +285,7 @@ func (s *Store) AppendMessage(ctx context.Context, mailboxID int64, flags []stor
 	// Get mailbox info
 	mb, err := s.GetMailboxByID(ctx, mailboxID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to get mailbox %d: %w", mailboxID, err)
 	}
 
 	// Generate unique maildir key
@@ -289,23 +295,39 @@ func (s *Store) AppendMessage(ctx context.Context, mailboxID int64, flags []stor
 	path := s.getUserMaildirPath(mb.UserID, mb.Name)
 	dir, err := s.ensureMaildir(path)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to ensure maildir: %w", err)
 	}
 
-	// Write to tmp first
+	// Write to tmp first (atomic write pattern)
 	tmpPath := filepath.Join(path, "tmp", key)
-	f, err := os.Create(tmpPath)
+	f, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create tmp file: %w", err)
 	}
 
-	size, err := io.Copy(f, body)
-	if err != nil {
-		f.Close()
-		os.Remove(tmpPath)
-		return nil, fmt.Errorf("failed to write message: %w", err)
+	// Ensure file is closed and cleaned up on error
+	var size int64
+	writeErr := func() error {
+		defer f.Close()
+
+		written, err := io.Copy(f, body)
+		if err != nil {
+			return fmt.Errorf("failed to write message: %w", err)
+		}
+		size = written
+
+		// Sync to disk for durability
+		if err := f.Sync(); err != nil {
+			return fmt.Errorf("failed to sync message to disk: %w", err)
+		}
+
+		return nil
+	}()
+
+	if writeErr != nil {
+		os.Remove(tmpPath) // Clean up on error
+		return nil, writeErr
 	}
-	f.Close()
 
 	// Determine destination (new or cur based on \Seen flag)
 	destDir := "new"
@@ -323,25 +345,31 @@ func (s *Store) AppendMessage(ctx context.Context, mailboxID int64, flags []stor
 		finalKey = key + ":2," + flagSuffix
 	}
 
-	// Move to destination
+	// Atomically move to destination
 	destPath := filepath.Join(path, destDir, finalKey)
 	if err := os.Rename(tmpPath, destPath); err != nil {
-		os.Remove(tmpPath)
-		return nil, fmt.Errorf("failed to move message: %w", err)
+		os.Remove(tmpPath) // Clean up temp file
+		return nil, fmt.Errorf("failed to move message to destination: %w", err)
 	}
 
 	// Get next UID
 	uid := mb.UIDNext
 
 	// Update UID next
-	_, err = s.db.ExecContext(ctx,
+	result, err := s.db.ExecContext(ctx,
 		"UPDATE mailboxes SET uidnext = uidnext + 1 WHERE id = ?",
 		mailboxID,
 	)
 	if err != nil {
-		// Try to clean up
+		// Try to clean up file
 		os.Remove(destPath)
-		return nil, err
+		return nil, fmt.Errorf("failed to update mailbox uidnext: %w", err)
+	}
+
+	affected, _ := result.RowsAffected()
+	if affected == 0 {
+		os.Remove(destPath)
+		return nil, fmt.Errorf("mailbox %d not found or deleted", mailboxID)
 	}
 
 	// Parse message headers for metadata (simplified)
@@ -349,26 +377,27 @@ func (s *Store) AppendMessage(ctx context.Context, mailboxID int64, flags []stor
 	flagsStr := flagsToString(flags)
 
 	// Insert message metadata
-	result, err := s.db.ExecContext(ctx,
+	dbResult, err := s.db.ExecContext(ctx,
 		`INSERT INTO messages (mailbox_id, uid, maildir_key, size, internal_date, flags)
 		 VALUES (?, ?, ?, ?, ?, ?)`,
 		mailboxID, uid, finalKey, size, date, flagsStr,
 	)
 	if err != nil {
+		// Clean up file on database error
 		os.Remove(destPath)
-		return nil, err
+		return nil, fmt.Errorf("failed to insert message metadata: %w", err)
 	}
 
-	msgID, err := result.LastInsertId()
+	msgID, err := dbResult.LastInsertId()
 	if err != nil {
-		// Non-fatal, but log it
+		// Non-fatal error - message is already stored
 		msgID = 0
 	}
 
-	// Update user quota
+	// Update user quota (best effort - don't fail if this fails)
 	if err := s.UpdateUserQuota(ctx, mb.UserID, size); err != nil {
-		// Log but don't fail - message was already stored
-		// In production, you might want to handle this differently
+		// Log warning but don't fail - message was successfully stored
+		// In production, implement proper logging here
 	}
 
 	// Notify IDLE listeners via the maildir
@@ -402,10 +431,10 @@ func (s *Store) GetMessage(ctx context.Context, mailboxID int64, uid uint32) (*s
 		&fromAddr, &toAddrs, &msg.CreatedAt)
 
 	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("message not found: %d", uid)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("message not found: mailbox=%d uid=%d", mailboxID, uid)
 		}
-		return nil, err
+		return nil, fmt.Errorf("failed to query message mailbox=%d uid=%d: %w", mailboxID, uid, err)
 	}
 
 	msg.MessageID = messageID.String

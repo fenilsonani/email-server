@@ -1,9 +1,12 @@
 package admin
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"net/http"
+	"runtime/debug"
 	"sync"
 	"time"
 )
@@ -37,6 +40,11 @@ func (s *Server) createSession(userID int64) string {
 
 // validateSession checks if a session token is valid
 func (s *Server) validateSession(token string) (int64, bool) {
+	// Validate token format: must be valid hex and minimum length
+	if !isValidToken(token) {
+		return 0, false
+	}
+
 	sessionsMu.RLock()
 	sess, exists := sessions[token]
 	sessionsMu.RUnlock()
@@ -45,9 +53,14 @@ func (s *Server) validateSession(token string) (int64, bool) {
 		return 0, false
 	}
 
-	if time.Now().After(sess.expiresAt) {
+	// Check expiration with proper locking
+	now := time.Now()
+	if now.After(sess.expiresAt) {
 		sessionsMu.Lock()
-		delete(sessions, token)
+		// Double-check after acquiring write lock (may have been deleted)
+		if s, ok := sessions[token]; ok && now.After(s.expiresAt) {
+			delete(sessions, token)
+		}
 		sessionsMu.Unlock()
 		return 0, false
 	}
@@ -110,18 +123,28 @@ func (s *Server) withCSRF(next http.Handler) http.Handler {
 			token = r.Header.Get("X-CSRF-Token")
 		}
 
-		csrfTokensMu.RLock()
-		expiry, exists := csrfTokens[token]
-		csrfTokensMu.RUnlock()
-
-		if !exists || time.Now().After(expiry) {
+		// Validate token format
+		if !isValidToken(token) {
 			http.Error(w, "Invalid or expired CSRF token", http.StatusForbidden)
 			return
 		}
 
-		// Remove used token
+		csrfTokensMu.RLock()
+		expiry, exists := csrfTokens[token]
+		csrfTokensMu.RUnlock()
+
+		now := time.Now()
+		if !exists || now.After(expiry) {
+			http.Error(w, "Invalid or expired CSRF token", http.StatusForbidden)
+			return
+		}
+
+		// Remove used token with proper locking
 		csrfTokensMu.Lock()
-		delete(csrfTokens, token)
+		// Double-check it still exists
+		if exp, ok := csrfTokens[token]; ok && !now.After(exp) {
+			delete(csrfTokens, token)
+		}
 		csrfTokensMu.Unlock()
 
 		// Generate new token for response
@@ -170,4 +193,121 @@ func CleanupExpiredSessions() {
 			csrfTokensMu.Unlock()
 		}
 	}()
+}
+
+// isValidToken validates token format (must be hex and minimum 32 chars)
+func isValidToken(token string) bool {
+	// Minimum length check (32 hex chars = 16 bytes)
+	if len(token) < 32 {
+		return false
+	}
+	// Maximum length check to prevent DoS
+	if len(token) > 128 {
+		return false
+	}
+	// Validate hex encoding
+	_, err := hex.DecodeString(token)
+	return err == nil
+}
+
+// withTimeout adds a timeout to requests
+func (s *Server) withTimeout(timeout time.Duration) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ctx, cancel := context.WithTimeout(r.Context(), timeout)
+			defer cancel()
+
+			// Create a channel to signal completion
+			done := make(chan struct{})
+
+			// Run the handler in a goroutine
+			go func() {
+				defer close(done)
+				next.ServeHTTP(w, r.WithContext(ctx))
+			}()
+
+			// Wait for either completion or timeout
+			select {
+			case <-done:
+				// Request completed successfully
+				return
+			case <-ctx.Done():
+				// Timeout occurred
+				if ctx.Err() == context.DeadlineExceeded {
+					http.Error(w, "Request timeout", http.StatusGatewayTimeout)
+				}
+				return
+			}
+		})
+	}
+}
+
+// withPanicRecovery adds panic recovery to prevent crashes
+func (s *Server) withPanicRecovery(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if err := recover(); err != nil {
+				// Log the panic with stack trace
+				stack := debug.Stack()
+				s.logger.Error(
+					"Panic recovered in HTTP handler",
+					"error", fmt.Sprintf("%v", err),
+					"path", r.URL.Path,
+					"method", r.Method,
+					"remote_addr", r.RemoteAddr,
+					"stack", string(stack),
+				)
+
+				// Return 500 error to client
+				http.Error(w, "Internal server error", http.StatusInternalServerError)
+			}
+		}()
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+// withRequestLogging logs all HTTP requests
+func (s *Server) withRequestLogging(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+
+		// Create a response writer wrapper to capture status code
+		wrapper := &responseWriterWrapper{
+			ResponseWriter: w,
+			statusCode:     http.StatusOK,
+		}
+
+		// Log request
+		s.logger.Info(
+			"HTTP request",
+			"method", r.Method,
+			"path", r.URL.Path,
+			"remote_addr", r.RemoteAddr,
+			"user_agent", r.UserAgent(),
+		)
+
+		next.ServeHTTP(wrapper, r)
+
+		// Log response
+		duration := time.Since(start)
+		s.logger.Info(
+			"HTTP response",
+			"method", r.Method,
+			"path", r.URL.Path,
+			"status", wrapper.statusCode,
+			"duration_ms", duration.Milliseconds(),
+		)
+	})
+}
+
+// responseWriterWrapper wraps http.ResponseWriter to capture status code
+type responseWriterWrapper struct {
+	http.ResponseWriter
+	statusCode int
+}
+
+func (w *responseWriterWrapper) WriteHeader(code int) {
+	w.statusCode = code
+	w.ResponseWriter.WriteHeader(code)
 }
