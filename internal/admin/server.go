@@ -56,24 +56,23 @@ func NewServer(cfg *config.Config, db *sql.DB, authenticator *auth.Authenticator
 	}
 
 	for _, page := range pages {
-		// Create a fresh template for each page
-		tmpl := template.New("base")
-
-		// Parse base template
-		tmpl, err = tmpl.Parse(string(baseContent))
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse base for %s: %w", page, err)
-		}
-
-		// Read and parse page template
+		// Read page template content
 		pageContent, err := templatesFS.ReadFile("templates/" + page)
 		if err != nil {
 			return nil, fmt.Errorf("failed to read template %s: %w", page, err)
 		}
 
+		// Create a fresh template and parse page first (defines "content")
+		tmpl := template.New(page)
 		tmpl, err = tmpl.Parse(string(pageContent))
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse template %s: %w", page, err)
+		}
+
+		// Then parse base template (references "content")
+		tmpl, err = tmpl.Parse(string(baseContent))
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse base for %s: %w", page, err)
 		}
 
 		templates[page] = tmpl
