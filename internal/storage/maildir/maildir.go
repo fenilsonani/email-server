@@ -100,6 +100,31 @@ func (s *Store) CreateMailbox(ctx context.Context, userID int64, name string, sp
 	}, nil
 }
 
+// InitializeUserMailboxes creates the default mailboxes for a new user
+func (s *Store) InitializeUserMailboxes(ctx context.Context, userID int64) error {
+	// Create default mailboxes with their special uses
+	defaultMailboxes := []struct {
+		name       string
+		specialUse storage.SpecialUse
+	}{
+		{"INBOX", ""},
+		{"Drafts", storage.SpecialUseDrafts},
+		{"Sent", storage.SpecialUseSent},
+		{"Junk", storage.SpecialUseJunk},
+		{"Trash", storage.SpecialUseTrash},
+		{"Archive", storage.SpecialUseArchive},
+	}
+
+	for _, mb := range defaultMailboxes {
+		_, err := s.CreateMailbox(ctx, userID, mb.name, mb.specialUse)
+		if err != nil {
+			return fmt.Errorf("failed to create %s mailbox: %w", mb.name, err)
+		}
+	}
+
+	return nil
+}
+
 // GetMailbox retrieves a mailbox by name
 func (s *Store) GetMailbox(ctx context.Context, userID int64, name string) (*storage.Mailbox, error) {
 	var mb storage.Mailbox

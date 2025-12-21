@@ -182,6 +182,12 @@ func (s *Server) handleUserAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Initialize default mailboxes for the new user
+	if err := s.store.InitializeUserMailboxes(r.Context(), user.ID); err != nil {
+		s.logger.ErrorContext(r.Context(), "Failed to initialize mailboxes", err)
+		// User was created but mailboxes failed - log but don't fail the request
+	}
+
 	if isAdmin {
 		s.db.ExecContext(r.Context(), "UPDATE users SET is_admin = TRUE WHERE id = ?", user.ID)
 	}
