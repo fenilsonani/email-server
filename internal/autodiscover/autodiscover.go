@@ -241,7 +241,7 @@ const appleMobileconfigTemplate = `<?xml version="1.0" encoding="UTF-8"?>
             <key>OutgoingMailServerHostName</key>
             <string>{{.Hostname}}</string>
             <key>OutgoingMailServerPortNumber</key>
-            <integer>{{.SMTPPort}}</integer>
+            <integer>465</integer>
             <key>OutgoingMailServerUseSSL</key>
             <true/>
             <key>OutgoingMailServerUsername</key>
