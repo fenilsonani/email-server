@@ -175,7 +175,7 @@ func (s *Server) handleUserAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, err := s.authenticator.CreateUser(r.Context(), username, password, domainID)
+	user, err := s.authenticator.CreateUser(r.Context(), username, password, domainID)
 	if err != nil {
 		s.logger.ErrorContext(r.Context(), "Failed to create user", err)
 		http.Error(w, "Failed to create user: "+err.Error(), http.StatusInternalServerError)
@@ -183,7 +183,7 @@ func (s *Server) handleUserAdd(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if isAdmin {
-		s.db.ExecContext(r.Context(), "UPDATE users SET is_admin = TRUE WHERE username = ?", username)
+		s.db.ExecContext(r.Context(), "UPDATE users SET is_admin = TRUE WHERE id = ?", user.ID)
 	}
 
 	http.Redirect(w, r, "/admin/users", http.StatusSeeOther)

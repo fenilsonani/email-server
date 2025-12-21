@@ -226,12 +226,10 @@ func (a *Authenticator) CreateUser(ctx context.Context, username, password strin
 		return nil, ErrDomainNotFound
 	}
 
-	email := fmt.Sprintf("%s@%s", strings.ToLower(username), domainName)
-
 	result, err := a.db.ExecContext(ctx, `
-		INSERT INTO users (domain_id, username, password_hash, email, is_active, created_at, updated_at)
-		VALUES (?, ?, ?, ?, TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-	`, domainID, strings.ToLower(username), passwordHash, email)
+		INSERT INTO users (domain_id, username, password_hash, is_active, created_at, updated_at)
+		VALUES (?, ?, ?, TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+	`, domainID, strings.ToLower(username), passwordHash)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create user: %w", err)
 	}
@@ -246,7 +244,7 @@ func (a *Authenticator) CreateUser(ctx context.Context, username, password strin
 		DomainID: domainID,
 		Username: strings.ToLower(username),
 		Domain:   domainName,
-		Email:    email,
+		Email:    fmt.Sprintf("%s@%s", strings.ToLower(username), domainName),
 		IsActive: true,
 	}, nil
 }
