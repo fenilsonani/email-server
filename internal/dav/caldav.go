@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -14,9 +15,17 @@ type CalDAVBackend struct {
 	db *sql.DB
 }
 
+var (
+	// ErrRandomGeneration is returned when random number generation fails
+	ErrRandomGeneration = errors.New("failed to generate random data")
+)
+
 // NewCalDAVBackend creates a new CalDAV backend
-func NewCalDAVBackend(db *sql.DB) *CalDAVBackend {
-	return &CalDAVBackend{db: db}
+func NewCalDAVBackend(db *sql.DB) (*CalDAVBackend, error) {
+	if db == nil {
+		return nil, ErrNilDB
+	}
+	return &CalDAVBackend{db: db}, nil
 }
 
 // Calendar represents a CalDAV calendar
@@ -54,7 +63,10 @@ type CalendarEvent struct {
 
 // CreateCalendar creates a new calendar for a user
 func (b *CalDAVBackend) CreateCalendar(ctx context.Context, userID int64, name, description string) (*Calendar, error) {
-	uid := generateUID()
+	uid, err := generateUID()
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate UID: %w", err)
+	}
 	ctag := generateCTag()
 
 	result, err := b.db.ExecContext(ctx,
@@ -66,7 +78,10 @@ func (b *CalDAVBackend) CreateCalendar(ctx context.Context, userID int64, name, 
 		return nil, fmt.Errorf("failed to create calendar: %w", err)
 	}
 
-	id, _ := result.LastInsertId()
+	id, err := result.LastInsertId()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get last insert ID: %w", err)
+	}
 
 	return &Calendar{
 		ID:          id,
@@ -174,11 +189,18 @@ func (b *CalDAVBackend) CreateEvent(ctx context.Context, calendarUID string, eve
 	var calID int64
 	err := b.db.QueryRowContext(ctx, "SELECT id FROM calendars WHERE uid = ?", calendarUID).Scan(&calID)
 	if err != nil {
-		return fmt.Errorf("calendar not found: %s", calendarUID)
+		if err == sql.ErrNoRows {
+			return fmt.Errorf("calendar not found: %s", calendarUID)
+		}
+		return fmt.Errorf("failed to query calendar: %w", err)
 	}
 
 	event.CalendarID = calID
-	event.ETag = generateETag()
+	etag, err := generateETag()
+	if err != nil {
+		return fmt.Errorf("failed to generate ETag: %w", err)
+	}
+	event.ETag = etag
 
 	_, err = b.db.ExecContext(ctx,
 		`INSERT INTO calendar_events (calendar_id, uid, etag, icalendar_data, summary, description, location, start_time, end_time, all_day, recurrence_rule)
@@ -191,8 +213,14 @@ func (b *CalDAVBackend) CreateEvent(ctx context.Context, calendarUID string, eve
 	}
 
 	// Update calendar ctag
-	b.db.ExecContext(ctx, "UPDATE calendars SET ctag = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-		generateCTag(), calID)
+	ctag := generateCTag()
+	_, err = b.db.ExecContext(ctx, "UPDATE calendars SET ctag = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+		ctag, calID)
+	if err != nil {
+		// Log but don't fail the operation - event was created successfully
+		// In production, this should be logged properly
+		return fmt.Errorf("event created but failed to update calendar ctag: %w", err)
+	}
 
 	return nil
 }
@@ -300,7 +328,11 @@ func (b *CalDAVBackend) ListEventsInRange(ctx context.Context, calendarUID strin
 
 // UpdateEvent updates an existing event
 func (b *CalDAVBackend) UpdateEvent(ctx context.Context, calendarUID string, event *CalendarEvent) error {
-	event.ETag = generateETag()
+	etag, err := generateETag()
+	if err != nil {
+		return fmt.Errorf("failed to generate ETag: %w", err)
+	}
+	event.ETag = etag
 
 	result, err := b.db.ExecContext(ctx,
 		`UPDATE calendar_events SET etag = ?, icalendar_data = ?, summary = ?, description = ?,
@@ -310,18 +342,25 @@ func (b *CalDAVBackend) UpdateEvent(ctx context.Context, calendarUID string, eve
 		event.StartTime, event.EndTime, event.AllDay, event.Recurrence, event.UID, calendarUID,
 	)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to update event: %w", err)
 	}
 
-	affected, _ := result.RowsAffected()
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get affected rows: %w", err)
+	}
 	if affected == 0 {
 		return fmt.Errorf("event not found: %s", event.UID)
 	}
 
 	// Update calendar ctag
-	b.db.ExecContext(ctx,
+	ctag := generateCTag()
+	_, err = b.db.ExecContext(ctx,
 		"UPDATE calendars SET ctag = ?, updated_at = CURRENT_TIMESTAMP WHERE uid = ?",
-		generateCTag(), calendarUID)
+		ctag, calendarUID)
+	if err != nil {
+		return fmt.Errorf("event updated but failed to update calendar ctag: %w", err)
+	}
 
 	return nil
 }
@@ -334,36 +373,55 @@ func (b *CalDAVBackend) DeleteEvent(ctx context.Context, calendarUID, eventUID s
 		eventUID, calendarUID,
 	)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to delete event: %w", err)
 	}
 
-	affected, _ := result.RowsAffected()
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get affected rows: %w", err)
+	}
 	if affected == 0 {
 		return fmt.Errorf("event not found: %s", eventUID)
 	}
 
 	// Update calendar ctag
-	b.db.ExecContext(ctx,
+	ctag := generateCTag()
+	_, err = b.db.ExecContext(ctx,
 		"UPDATE calendars SET ctag = ?, updated_at = CURRENT_TIMESTAMP WHERE uid = ?",
-		generateCTag(), calendarUID)
+		ctag, calendarUID)
+	if err != nil {
+		return fmt.Errorf("event deleted but failed to update calendar ctag: %w", err)
+	}
 
 	return nil
 }
 
 // Helper functions
 
-func generateUID() string {
+func generateUID() (string, error) {
 	buf := make([]byte, 16)
-	rand.Read(buf)
-	return hex.EncodeToString(buf)
+	n, err := rand.Read(buf)
+	if err != nil {
+		return "", fmt.Errorf("%w: %v", ErrRandomGeneration, err)
+	}
+	if n != len(buf) {
+		return "", fmt.Errorf("%w: insufficient random bytes generated", ErrRandomGeneration)
+	}
+	return hex.EncodeToString(buf), nil
 }
 
 func generateCTag() string {
 	return fmt.Sprintf("%d", time.Now().UnixNano())
 }
 
-func generateETag() string {
+func generateETag() (string, error) {
 	buf := make([]byte, 8)
-	rand.Read(buf)
-	return fmt.Sprintf("\"%s\"", hex.EncodeToString(buf))
+	n, err := rand.Read(buf)
+	if err != nil {
+		return "", fmt.Errorf("%w: %v", ErrRandomGeneration, err)
+	}
+	if n != len(buf) {
+		return "", fmt.Errorf("%w: insufficient random bytes generated", ErrRandomGeneration)
+	}
+	return fmt.Sprintf("\"%s\"", hex.EncodeToString(buf)), nil
 }

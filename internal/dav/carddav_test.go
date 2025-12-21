@@ -88,7 +88,10 @@ func TestCardDAVBackend_CreateAddressBook(t *testing.T) {
 	db, cleanup := setupCardDAVTestDB(t)
 	defer cleanup()
 
-	backend := NewCardDAVBackend(db)
+	backend, err := NewCardDAVBackend(db)
+	if err != nil {
+		t.Fatalf("NewCardDAVBackend failed: %v", err)
+	}
 	ctx := context.Background()
 
 	ab, err := backend.CreateAddressBook(ctx, 1, "Personal Contacts", "My personal contacts")
@@ -117,7 +120,10 @@ func TestCardDAVBackend_GetAddressBook(t *testing.T) {
 	db, cleanup := setupCardDAVTestDB(t)
 	defer cleanup()
 
-	backend := NewCardDAVBackend(db)
+	backend, err := NewCardDAVBackend(db)
+	if err != nil {
+		t.Fatalf("NewCardDAVBackend failed: %v", err)
+	}
 	ctx := context.Background()
 
 	created, _ := backend.CreateAddressBook(ctx, 1, "Test Contacts", "")
@@ -142,7 +148,10 @@ func TestCardDAVBackend_ListAddressBooks(t *testing.T) {
 	db, cleanup := setupCardDAVTestDB(t)
 	defer cleanup()
 
-	backend := NewCardDAVBackend(db)
+	backend, err := NewCardDAVBackend(db)
+	if err != nil {
+		t.Fatalf("NewCardDAVBackend failed: %v", err)
+	}
 	ctx := context.Background()
 
 	backend.CreateAddressBook(ctx, 1, "Personal", "")
@@ -163,13 +172,16 @@ func TestCardDAVBackend_UpdateAddressBook(t *testing.T) {
 	db, cleanup := setupCardDAVTestDB(t)
 	defer cleanup()
 
-	backend := NewCardDAVBackend(db)
+	backend, err := NewCardDAVBackend(db)
+	if err != nil {
+		t.Fatalf("NewCardDAVBackend failed: %v", err)
+	}
 	ctx := context.Background()
 
 	ab, _ := backend.CreateAddressBook(ctx, 1, "Original", "Original description")
 	originalCTag := ab.CTag
 
-	err := backend.UpdateAddressBook(ctx, ab.UID, "Updated", "Updated description")
+	err = backend.UpdateAddressBook(ctx, ab.UID, "Updated", "Updated description")
 	if err != nil {
 		t.Fatalf("UpdateAddressBook failed: %v", err)
 	}
@@ -188,12 +200,15 @@ func TestCardDAVBackend_DeleteAddressBook(t *testing.T) {
 	db, cleanup := setupCardDAVTestDB(t)
 	defer cleanup()
 
-	backend := NewCardDAVBackend(db)
+	backend, err := NewCardDAVBackend(db)
+	if err != nil {
+		t.Fatalf("NewCardDAVBackend failed: %v", err)
+	}
 	ctx := context.Background()
 
 	ab, _ := backend.CreateAddressBook(ctx, 1, "To Delete", "")
 
-	err := backend.DeleteAddressBook(ctx, ab.UID)
+	err = backend.DeleteAddressBook(ctx, ab.UID)
 	if err != nil {
 		t.Fatalf("DeleteAddressBook failed: %v", err)
 	}
@@ -208,7 +223,10 @@ func TestCardDAVBackend_CreateContact(t *testing.T) {
 	db, cleanup := setupCardDAVTestDB(t)
 	defer cleanup()
 
-	backend := NewCardDAVBackend(db)
+	backend, err := NewCardDAVBackend(db)
+	if err != nil {
+		t.Fatalf("NewCardDAVBackend failed: %v", err)
+	}
 	ctx := context.Background()
 
 	ab, _ := backend.CreateAddressBook(ctx, 1, "Contacts", "")
@@ -224,7 +242,7 @@ func TestCardDAVBackend_CreateContact(t *testing.T) {
 		Organization: "ACME Corp",
 	}
 
-	err := backend.CreateContact(ctx, ab.UID, contact)
+	err = backend.CreateContact(ctx, ab.UID, contact)
 	if err != nil {
 		t.Fatalf("CreateContact failed: %v", err)
 	}
@@ -238,7 +256,10 @@ func TestCardDAVBackend_GetContact(t *testing.T) {
 	db, cleanup := setupCardDAVTestDB(t)
 	defer cleanup()
 
-	backend := NewCardDAVBackend(db)
+	backend, err := NewCardDAVBackend(db)
+	if err != nil {
+		t.Fatalf("NewCardDAVBackend failed: %v", err)
+	}
 	ctx := context.Background()
 
 	ab, _ := backend.CreateAddressBook(ctx, 1, "Contacts", "")
@@ -276,7 +297,10 @@ func TestCardDAVBackend_ListContacts(t *testing.T) {
 	db, cleanup := setupCardDAVTestDB(t)
 	defer cleanup()
 
-	backend := NewCardDAVBackend(db)
+	backend, err := NewCardDAVBackend(db)
+	if err != nil {
+		t.Fatalf("NewCardDAVBackend failed: %v", err)
+	}
 	ctx := context.Background()
 
 	ab, _ := backend.CreateAddressBook(ctx, 1, "Contacts", "")
@@ -284,8 +308,9 @@ func TestCardDAVBackend_ListContacts(t *testing.T) {
 	// Create multiple contacts
 	names := []string{"Alice", "Bob", "Charlie", "David", "Eve"}
 	for _, name := range names {
+		uid, _ := generateUID()
 		contact := &Contact{
-			UID:       generateUID(),
+			UID:       uid,
 			VCardData: "BEGIN:VCARD\nEND:VCARD",
 			FullName:  name,
 		}
@@ -306,7 +331,10 @@ func TestCardDAVBackend_SearchContacts(t *testing.T) {
 	db, cleanup := setupCardDAVTestDB(t)
 	defer cleanup()
 
-	backend := NewCardDAVBackend(db)
+	backend, err := NewCardDAVBackend(db)
+	if err != nil {
+		t.Fatalf("NewCardDAVBackend failed: %v", err)
+	}
 	ctx := context.Background()
 
 	ab, _ := backend.CreateAddressBook(ctx, 1, "Contacts", "")
@@ -323,8 +351,9 @@ func TestCardDAVBackend_SearchContacts(t *testing.T) {
 	}
 
 	for _, c := range contacts {
+		uid, _ := generateUID()
 		contact := &Contact{
-			UID:       generateUID(),
+			UID:       uid,
 			VCardData: "BEGIN:VCARD\nEND:VCARD",
 			FullName:  c.name,
 			Emails:    c.emails,
@@ -353,7 +382,10 @@ func TestCardDAVBackend_UpdateContact(t *testing.T) {
 	db, cleanup := setupCardDAVTestDB(t)
 	defer cleanup()
 
-	backend := NewCardDAVBackend(db)
+	backend, err := NewCardDAVBackend(db)
+	if err != nil {
+		t.Fatalf("NewCardDAVBackend failed: %v", err)
+	}
 	ctx := context.Background()
 
 	ab, _ := backend.CreateAddressBook(ctx, 1, "Contacts", "")
@@ -372,7 +404,7 @@ func TestCardDAVBackend_UpdateContact(t *testing.T) {
 	contact.FullName = "Updated Name"
 	contact.VCardData = "BEGIN:VCARD\nUPDATED\nEND:VCARD"
 
-	err := backend.UpdateContact(ctx, ab.UID, contact)
+	err = backend.UpdateContact(ctx, ab.UID, contact)
 	if err != nil {
 		t.Fatalf("UpdateContact failed: %v", err)
 	}
@@ -391,7 +423,10 @@ func TestCardDAVBackend_DeleteContact(t *testing.T) {
 	db, cleanup := setupCardDAVTestDB(t)
 	defer cleanup()
 
-	backend := NewCardDAVBackend(db)
+	backend, err := NewCardDAVBackend(db)
+	if err != nil {
+		t.Fatalf("NewCardDAVBackend failed: %v", err)
+	}
 	ctx := context.Background()
 
 	ab, _ := backend.CreateAddressBook(ctx, 1, "Contacts", "")
@@ -403,7 +438,7 @@ func TestCardDAVBackend_DeleteContact(t *testing.T) {
 	}
 	backend.CreateContact(ctx, ab.UID, contact)
 
-	err := backend.DeleteContact(ctx, ab.UID, "delete-contact")
+	err = backend.DeleteContact(ctx, ab.UID, "delete-contact")
 	if err != nil {
 		t.Fatalf("DeleteContact failed: %v", err)
 	}
@@ -418,15 +453,19 @@ func TestCardDAVBackend_CascadeDelete(t *testing.T) {
 	db, cleanup := setupCardDAVTestDB(t)
 	defer cleanup()
 
-	backend := NewCardDAVBackend(db)
+	backend, err := NewCardDAVBackend(db)
+	if err != nil {
+		t.Fatalf("NewCardDAVBackend failed: %v", err)
+	}
 	ctx := context.Background()
 
 	ab, _ := backend.CreateAddressBook(ctx, 1, "Contacts", "")
 
 	// Create contacts
 	for i := 0; i < 5; i++ {
+		uid, _ := generateUID()
 		contact := &Contact{
-			UID:       generateUID(),
+			UID:       uid,
 			VCardData: "BEGIN:VCARD\nEND:VCARD",
 			FullName:  "Contact",
 		}
@@ -434,7 +473,7 @@ func TestCardDAVBackend_CascadeDelete(t *testing.T) {
 	}
 
 	// Delete address book
-	err := backend.DeleteAddressBook(ctx, ab.UID)
+	err = backend.DeleteAddressBook(ctx, ab.UID)
 	if err != nil {
 		t.Fatalf("DeleteAddressBook failed: %v", err)
 	}
@@ -450,7 +489,10 @@ func TestCardDAVBackend_MultipleAddressBooks(t *testing.T) {
 	db, cleanup := setupCardDAVTestDB(t)
 	defer cleanup()
 
-	backend := NewCardDAVBackend(db)
+	backend, err := NewCardDAVBackend(db)
+	if err != nil {
+		t.Fatalf("NewCardDAVBackend failed: %v", err)
+	}
 	ctx := context.Background()
 
 	ab1, _ := backend.CreateAddressBook(ctx, 1, "Personal", "")
@@ -458,16 +500,18 @@ func TestCardDAVBackend_MultipleAddressBooks(t *testing.T) {
 
 	// Add contacts to each
 	for i := 0; i < 3; i++ {
+		uid, _ := generateUID()
 		backend.CreateContact(ctx, ab1.UID, &Contact{
-			UID:       generateUID(),
+			UID:       uid,
 			VCardData: "BEGIN:VCARD\nEND:VCARD",
 			FullName:  "Personal Contact",
 		})
 	}
 
 	for i := 0; i < 5; i++ {
+		uid, _ := generateUID()
 		backend.CreateContact(ctx, ab2.UID, &Contact{
-			UID:       generateUID(),
+			UID:       uid,
 			VCardData: "BEGIN:VCARD\nEND:VCARD",
 			FullName:  "Work Contact",
 		})

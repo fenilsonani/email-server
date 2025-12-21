@@ -92,7 +92,10 @@ func TestCalDAVBackend_CreateCalendar(t *testing.T) {
 	db, cleanup := setupCalDAVTestDB(t)
 	defer cleanup()
 
-	backend := NewCalDAVBackend(db)
+	backend, err := NewCalDAVBackend(db)
+	if err != nil {
+		t.Fatalf("NewCalDAVBackend failed: %v", err)
+	}
 	ctx := context.Background()
 
 	// Create calendar
@@ -126,7 +129,10 @@ func TestCalDAVBackend_GetCalendar(t *testing.T) {
 	db, cleanup := setupCalDAVTestDB(t)
 	defer cleanup()
 
-	backend := NewCalDAVBackend(db)
+	backend, err := NewCalDAVBackend(db)
+	if err != nil {
+		t.Fatalf("NewCalDAVBackend failed: %v", err)
+	}
 	ctx := context.Background()
 
 	// Create calendar first
@@ -160,7 +166,10 @@ func TestCalDAVBackend_ListCalendars(t *testing.T) {
 	db, cleanup := setupCalDAVTestDB(t)
 	defer cleanup()
 
-	backend := NewCalDAVBackend(db)
+	backend, err := NewCalDAVBackend(db)
+	if err != nil {
+		t.Fatalf("NewCalDAVBackend failed: %v", err)
+	}
 	ctx := context.Background()
 
 	// Create multiple calendars
@@ -183,7 +192,10 @@ func TestCalDAVBackend_UpdateCalendar(t *testing.T) {
 	db, cleanup := setupCalDAVTestDB(t)
 	defer cleanup()
 
-	backend := NewCalDAVBackend(db)
+	backend, err := NewCalDAVBackend(db)
+	if err != nil {
+		t.Fatalf("NewCalDAVBackend failed: %v", err)
+	}
 	ctx := context.Background()
 
 	// Create calendar
@@ -191,7 +203,7 @@ func TestCalDAVBackend_UpdateCalendar(t *testing.T) {
 	originalCTag := cal.CTag
 
 	// Update calendar
-	err := backend.UpdateCalendar(ctx, cal.UID, "New Name", "New description", "#FF0000")
+	err = backend.UpdateCalendar(ctx, cal.UID, "New Name", "New description", "#FF0000")
 	if err != nil {
 		t.Fatalf("UpdateCalendar failed: %v", err)
 	}
@@ -219,14 +231,17 @@ func TestCalDAVBackend_DeleteCalendar(t *testing.T) {
 	db, cleanup := setupCalDAVTestDB(t)
 	defer cleanup()
 
-	backend := NewCalDAVBackend(db)
+	backend, err := NewCalDAVBackend(db)
+	if err != nil {
+		t.Fatalf("NewCalDAVBackend failed: %v", err)
+	}
 	ctx := context.Background()
 
 	// Create calendar
 	cal, _ := backend.CreateCalendar(ctx, 1, "To Delete", "")
 
 	// Delete calendar
-	err := backend.DeleteCalendar(ctx, cal.UID)
+	err = backend.DeleteCalendar(ctx, cal.UID)
 	if err != nil {
 		t.Fatalf("DeleteCalendar failed: %v", err)
 	}
@@ -248,7 +263,10 @@ func TestCalDAVBackend_CreateEvent(t *testing.T) {
 	db, cleanup := setupCalDAVTestDB(t)
 	defer cleanup()
 
-	backend := NewCalDAVBackend(db)
+	backend, err := NewCalDAVBackend(db)
+	if err != nil {
+		t.Fatalf("NewCalDAVBackend failed: %v", err)
+	}
 	ctx := context.Background()
 
 	// Create calendar first
@@ -266,7 +284,7 @@ func TestCalDAVBackend_CreateEvent(t *testing.T) {
 		AllDay:        false,
 	}
 
-	err := backend.CreateEvent(ctx, cal.UID, event)
+	err = backend.CreateEvent(ctx, cal.UID, event)
 	if err != nil {
 		t.Fatalf("CreateEvent failed: %v", err)
 	}
@@ -280,7 +298,10 @@ func TestCalDAVBackend_GetEvent(t *testing.T) {
 	db, cleanup := setupCalDAVTestDB(t)
 	defer cleanup()
 
-	backend := NewCalDAVBackend(db)
+	backend, err := NewCalDAVBackend(db)
+	if err != nil {
+		t.Fatalf("NewCalDAVBackend failed: %v", err)
+	}
 	ctx := context.Background()
 
 	cal, _ := backend.CreateCalendar(ctx, 1, "Events Calendar", "")
@@ -318,15 +339,19 @@ func TestCalDAVBackend_ListEvents(t *testing.T) {
 	db, cleanup := setupCalDAVTestDB(t)
 	defer cleanup()
 
-	backend := NewCalDAVBackend(db)
+	backend, err := NewCalDAVBackend(db)
+	if err != nil {
+		t.Fatalf("NewCalDAVBackend failed: %v", err)
+	}
 	ctx := context.Background()
 
 	cal, _ := backend.CreateCalendar(ctx, 1, "Events Calendar", "")
 
 	// Create multiple events
 	for i := 1; i <= 5; i++ {
+		uid, _ := generateUID()
 		event := &CalendarEvent{
-			UID:           generateUID(),
+			UID:           uid,
 			ICalendarData: "BEGIN:VCALENDAR\nEND:VCALENDAR",
 			Summary:       "Event",
 			StartTime:     time.Now().Add(time.Duration(i) * time.Hour),
@@ -350,7 +375,10 @@ func TestCalDAVBackend_UpdateEvent(t *testing.T) {
 	db, cleanup := setupCalDAVTestDB(t)
 	defer cleanup()
 
-	backend := NewCalDAVBackend(db)
+	backend, err := NewCalDAVBackend(db)
+	if err != nil {
+		t.Fatalf("NewCalDAVBackend failed: %v", err)
+	}
 	ctx := context.Background()
 
 	cal, _ := backend.CreateCalendar(ctx, 1, "Events Calendar", "")
@@ -369,7 +397,7 @@ func TestCalDAVBackend_UpdateEvent(t *testing.T) {
 	event.Summary = "Updated Summary"
 	event.ICalendarData = "BEGIN:VCALENDAR\nUPDATED\nEND:VCALENDAR"
 
-	err := backend.UpdateEvent(ctx, cal.UID, event)
+	err = backend.UpdateEvent(ctx, cal.UID, event)
 	if err != nil {
 		t.Fatalf("UpdateEvent failed: %v", err)
 	}
@@ -389,7 +417,10 @@ func TestCalDAVBackend_DeleteEvent(t *testing.T) {
 	db, cleanup := setupCalDAVTestDB(t)
 	defer cleanup()
 
-	backend := NewCalDAVBackend(db)
+	backend, err := NewCalDAVBackend(db)
+	if err != nil {
+		t.Fatalf("NewCalDAVBackend failed: %v", err)
+	}
 	ctx := context.Background()
 
 	cal, _ := backend.CreateCalendar(ctx, 1, "Events Calendar", "")
@@ -402,7 +433,7 @@ func TestCalDAVBackend_DeleteEvent(t *testing.T) {
 	backend.CreateEvent(ctx, cal.UID, event)
 
 	// Delete event
-	err := backend.DeleteEvent(ctx, cal.UID, "delete-event")
+	err = backend.DeleteEvent(ctx, cal.UID, "delete-event")
 	if err != nil {
 		t.Fatalf("DeleteEvent failed: %v", err)
 	}
@@ -418,7 +449,10 @@ func TestCalDAVBackend_ListEventsInRange(t *testing.T) {
 	db, cleanup := setupCalDAVTestDB(t)
 	defer cleanup()
 
-	backend := NewCalDAVBackend(db)
+	backend, err := NewCalDAVBackend(db)
+	if err != nil {
+		t.Fatalf("NewCalDAVBackend failed: %v", err)
+	}
 	ctx := context.Background()
 
 	cal, _ := backend.CreateCalendar(ctx, 1, "Events Calendar", "")
@@ -427,8 +461,9 @@ func TestCalDAVBackend_ListEventsInRange(t *testing.T) {
 
 	// Create events at different times
 	for i := 0; i < 10; i++ {
+		uid, _ := generateUID()
 		event := &CalendarEvent{
-			UID:           generateUID(),
+			UID:           uid,
 			ICalendarData: "BEGIN:VCALENDAR\nEND:VCALENDAR",
 			Summary:       "Event",
 			StartTime:     baseTime.Add(time.Duration(i*24) * time.Hour),
@@ -456,15 +491,19 @@ func TestCalDAVBackend_CascadeDelete(t *testing.T) {
 	db, cleanup := setupCalDAVTestDB(t)
 	defer cleanup()
 
-	backend := NewCalDAVBackend(db)
+	backend, err := NewCalDAVBackend(db)
+	if err != nil {
+		t.Fatalf("NewCalDAVBackend failed: %v", err)
+	}
 	ctx := context.Background()
 
 	cal, _ := backend.CreateCalendar(ctx, 1, "Events Calendar", "")
 
 	// Create events
 	for i := 0; i < 5; i++ {
+		uid, _ := generateUID()
 		event := &CalendarEvent{
-			UID:           generateUID(),
+			UID:           uid,
 			ICalendarData: "BEGIN:VCALENDAR\nEND:VCALENDAR",
 			Summary:       "Event",
 		}
@@ -472,7 +511,7 @@ func TestCalDAVBackend_CascadeDelete(t *testing.T) {
 	}
 
 	// Delete calendar
-	err := backend.DeleteCalendar(ctx, cal.UID)
+	err = backend.DeleteCalendar(ctx, cal.UID)
 	if err != nil {
 		t.Fatalf("DeleteCalendar failed: %v", err)
 	}

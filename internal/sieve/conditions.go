@@ -47,6 +47,10 @@ type HeaderCondition struct {
 }
 
 func (c *HeaderCondition) Evaluate(msg *Message) bool {
+	if c == nil || msg == nil {
+		return false
+	}
+
 	for _, headerName := range c.Headers {
 		headerValues := c.getHeaderValues(msg, headerName)
 
@@ -62,6 +66,10 @@ func (c *HeaderCondition) Evaluate(msg *Message) bool {
 }
 
 func (c *HeaderCondition) getHeaderValues(msg *Message, headerName string) []string {
+	if msg == nil {
+		return nil
+	}
+
 	normalizedName := strings.ToLower(headerName)
 
 	// Check common headers first
@@ -84,21 +92,9 @@ func (c *HeaderCondition) getHeaderValues(msg *Message, headerName string) []str
 		return []string{msg.Subject}
 	}
 
-	// Check Headers map
-	if vals, ok := msg.Headers[headerName]; ok {
-		if c.IsAddress {
-			var parts []string
-			for _, v := range vals {
-				parts = append(parts, extractAddressPart(v, c.AddressPart))
-			}
-			return parts
-		}
-		return vals
-	}
-
-	// Try case-insensitive lookup
-	for k, vals := range msg.Headers {
-		if strings.EqualFold(k, headerName) {
+	// Check Headers map with nil safety
+	if msg.Headers != nil {
+		if vals, ok := msg.Headers[headerName]; ok {
 			if c.IsAddress {
 				var parts []string
 				for _, v := range vals {
@@ -107,6 +103,20 @@ func (c *HeaderCondition) getHeaderValues(msg *Message, headerName string) []str
 				return parts
 			}
 			return vals
+		}
+
+		// Try case-insensitive lookup
+		for k, vals := range msg.Headers {
+			if strings.EqualFold(k, headerName) {
+				if c.IsAddress {
+					var parts []string
+					for _, v := range vals {
+						parts = append(parts, extractAddressPart(v, c.AddressPart))
+					}
+					return parts
+				}
+				return vals
+			}
 		}
 	}
 
@@ -126,7 +136,11 @@ func (c *HeaderCondition) match(value, pattern string) bool {
 	case "matches":
 		// Convert Sieve glob pattern to regex
 		re := globToRegex(pattern)
-		matched, _ := regexp.MatchString(re, value)
+		matched, err := regexp.MatchString(re, value)
+		if err != nil {
+			// Invalid regex, fail closed
+			return false
+		}
 		return matched
 	default:
 		return value == pattern
@@ -176,6 +190,9 @@ type SizeCondition struct {
 }
 
 func (c *SizeCondition) Evaluate(msg *Message) bool {
+	if c == nil || msg == nil {
+		return false
+	}
 	if c.Over {
 		return msg.Size > c.Size
 	}
@@ -188,6 +205,10 @@ type ExistsCondition struct {
 }
 
 func (c *ExistsCondition) Evaluate(msg *Message) bool {
+	if c == nil || msg == nil {
+		return false
+	}
+
 	for _, headerName := range c.Headers {
 		found := false
 
@@ -200,15 +221,17 @@ func (c *ExistsCondition) Evaluate(msg *Message) bool {
 		case "subject":
 			found = msg.Subject != ""
 		default:
-			// Check Headers map
-			if _, ok := msg.Headers[headerName]; ok {
-				found = true
-			} else {
-				// Case-insensitive check
-				for k := range msg.Headers {
-					if strings.EqualFold(k, headerName) {
-						found = true
-						break
+			// Check Headers map with nil safety
+			if msg.Headers != nil {
+				if _, ok := msg.Headers[headerName]; ok {
+					found = true
+				} else {
+					// Case-insensitive check
+					for k := range msg.Headers {
+						if strings.EqualFold(k, headerName) {
+							found = true
+							break
+						}
 					}
 				}
 			}

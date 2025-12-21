@@ -2,8 +2,10 @@ package dns
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -34,15 +36,42 @@ type Checker struct {
 	resolver   *net.Resolver
 }
 
+var (
+	// ErrInvalidDomain is returned when domain validation fails
+	ErrInvalidDomain = errors.New("invalid domain name")
+	// ErrInvalidMailServer is returned when mail server validation fails
+	ErrInvalidMailServer = errors.New("invalid mail server name")
+	// domainRegex validates domain names (RFC 1035)
+	domainRegex = regexp.MustCompile(`^([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)*[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?$`)
+)
+
 // NewChecker creates a new DNS checker for the given domain
-func NewChecker(domain, mailServer string) *Checker {
+func NewChecker(domain, mailServer string) (*Checker, error) {
+	// Validate inputs
+	if domain == "" {
+		return nil, fmt.Errorf("%w: domain cannot be empty", ErrInvalidDomain)
+	}
+	if mailServer == "" {
+		return nil, fmt.Errorf("%w: mail server cannot be empty", ErrInvalidMailServer)
+	}
+
+	// Validate domain format
+	if !domainRegex.MatchString(domain) {
+		return nil, fmt.Errorf("%w: %s", ErrInvalidDomain, domain)
+	}
+
+	// Validate mail server format
+	if !domainRegex.MatchString(mailServer) {
+		return nil, fmt.Errorf("%w: %s", ErrInvalidMailServer, mailServer)
+	}
+
 	return &Checker{
 		domain:     domain,
 		mailServer: mailServer,
 		resolver: &net.Resolver{
 			PreferGo: true,
 		},
-	}
+	}, nil
 }
 
 // CheckAll runs all DNS checks
@@ -60,16 +89,52 @@ func (c *Checker) CheckAll(ctx context.Context) []CheckResult {
 
 // CheckMX checks MX records
 func (c *Checker) CheckMX(ctx context.Context) CheckResult {
+	// Check parent context first
+	if err := ctx.Err(); err != nil {
+		return CheckResult{
+			RecordType: "MX",
+			Status:     StatusFail,
+			Message:    fmt.Sprintf("Context error: %v", err),
+		}
+	}
+
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	records, err := c.resolver.LookupMX(ctx, c.domain)
 	if err != nil {
+		// Differentiate between timeout and DNS errors
+		if ctx.Err() == context.DeadlineExceeded {
+			return CheckResult{
+				RecordType: "MX",
+				Status:     StatusFail,
+				Expected:   c.mailServer,
+				Message:    "DNS lookup timeout",
+			}
+		}
+		// Check for DNS-specific errors
+		var dnsErr *net.DNSError
+		if errors.As(err, &dnsErr) {
+			if dnsErr.IsNotFound {
+				return CheckResult{
+					RecordType: "MX",
+					Status:     StatusMissing,
+					Expected:   c.mailServer,
+					Message:    "No MX records found",
+				}
+			}
+			return CheckResult{
+				RecordType: "MX",
+				Status:     StatusFail,
+				Expected:   c.mailServer,
+				Message:    fmt.Sprintf("DNS error: %v", dnsErr),
+			}
+		}
 		return CheckResult{
 			RecordType: "MX",
-			Status:     StatusMissing,
+			Status:     StatusFail,
 			Expected:   c.mailServer,
-			Message:    "No MX records found",
+			Message:    fmt.Sprintf("Lookup failed: %v", err),
 		}
 	}
 
@@ -103,15 +168,39 @@ func (c *Checker) CheckMX(ctx context.Context) CheckResult {
 
 // CheckSPF checks SPF record
 func (c *Checker) CheckSPF(ctx context.Context) CheckResult {
+	// Check parent context first
+	if err := ctx.Err(); err != nil {
+		return CheckResult{
+			RecordType: "SPF",
+			Status:     StatusFail,
+			Message:    fmt.Sprintf("Context error: %v", err),
+		}
+	}
+
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	records, err := c.resolver.LookupTXT(ctx, c.domain)
 	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return CheckResult{
+				RecordType: "SPF",
+				Status:     StatusFail,
+				Message:    "DNS lookup timeout",
+			}
+		}
+		var dnsErr *net.DNSError
+		if errors.As(err, &dnsErr) && dnsErr.IsNotFound {
+			return CheckResult{
+				RecordType: "SPF",
+				Status:     StatusMissing,
+				Message:    "No TXT records found",
+			}
+		}
 		return CheckResult{
 			RecordType: "SPF",
-			Status:     StatusMissing,
-			Message:    "Failed to lookup TXT records",
+			Status:     StatusFail,
+			Message:    fmt.Sprintf("Failed to lookup TXT records: %v", err),
 		}
 	}
 
@@ -146,6 +235,15 @@ func (c *Checker) CheckSPF(ctx context.Context) CheckResult {
 
 // CheckDKIM checks DKIM record
 func (c *Checker) CheckDKIM(ctx context.Context) CheckResult {
+	// Check parent context first
+	if err := ctx.Err(); err != nil {
+		return CheckResult{
+			RecordType: "DKIM",
+			Status:     StatusFail,
+			Message:    fmt.Sprintf("Context error: %v", err),
+		}
+	}
+
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
@@ -153,10 +251,32 @@ func (c *Checker) CheckDKIM(ctx context.Context) CheckResult {
 	selectors := []string{"mail", "default", "selector1", "dkim"}
 
 	for _, selector := range selectors {
+		// Check context on each iteration
+		if ctx.Err() != nil {
+			return CheckResult{
+				RecordType: "DKIM",
+				Status:     StatusFail,
+				Message:    "DNS lookup timeout",
+			}
+		}
+
 		dkimHost := fmt.Sprintf("%s._domainkey.%s", selector, c.domain)
 		records, err := c.resolver.LookupTXT(ctx, dkimHost)
 		if err != nil {
-			continue
+			// Only continue on NotFound errors, fail on others
+			var dnsErr *net.DNSError
+			if errors.As(err, &dnsErr) && dnsErr.IsNotFound {
+				continue
+			}
+			// For other errors (timeout, network), return failure
+			if ctx.Err() == context.DeadlineExceeded {
+				return CheckResult{
+					RecordType: "DKIM",
+					Status:     StatusFail,
+					Message:    "DNS lookup timeout",
+				}
+			}
+			continue // Continue checking other selectors
 		}
 
 		for _, record := range records {
@@ -180,16 +300,40 @@ func (c *Checker) CheckDKIM(ctx context.Context) CheckResult {
 
 // CheckDMARC checks DMARC record
 func (c *Checker) CheckDMARC(ctx context.Context) CheckResult {
+	// Check parent context first
+	if err := ctx.Err(); err != nil {
+		return CheckResult{
+			RecordType: "DMARC",
+			Status:     StatusFail,
+			Message:    fmt.Sprintf("Context error: %v", err),
+		}
+	}
+
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	dmarcHost := fmt.Sprintf("_dmarc.%s", c.domain)
 	records, err := c.resolver.LookupTXT(ctx, dmarcHost)
 	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return CheckResult{
+				RecordType: "DMARC",
+				Status:     StatusFail,
+				Message:    "DNS lookup timeout",
+			}
+		}
+		var dnsErr *net.DNSError
+		if errors.As(err, &dnsErr) && dnsErr.IsNotFound {
+			return CheckResult{
+				RecordType: "DMARC",
+				Status:     StatusMissing,
+				Message:    "No DMARC record found",
+			}
+		}
 		return CheckResult{
 			RecordType: "DMARC",
-			Status:     StatusMissing,
-			Message:    "No DMARC record found",
+			Status:     StatusFail,
+			Message:    fmt.Sprintf("DNS lookup failed: %v", err),
 		}
 	}
 
@@ -226,16 +370,32 @@ func (c *Checker) CheckDMARC(ctx context.Context) CheckResult {
 
 // CheckPTR checks reverse DNS for mail server
 func (c *Checker) CheckPTR(ctx context.Context) CheckResult {
+	// Check parent context first
+	if err := ctx.Err(); err != nil {
+		return CheckResult{
+			RecordType: "PTR",
+			Status:     StatusFail,
+			Message:    fmt.Sprintf("Context error: %v", err),
+		}
+	}
+
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	// First, resolve the mail server to IP
 	ips, err := c.resolver.LookupIPAddr(ctx, c.mailServer)
 	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return CheckResult{
+				RecordType: "PTR",
+				Status:     StatusFail,
+				Message:    "DNS lookup timeout",
+			}
+		}
 		return CheckResult{
 			RecordType: "PTR",
 			Status:     StatusFail,
-			Message:    fmt.Sprintf("Failed to resolve mail server %s", c.mailServer),
+			Message:    fmt.Sprintf("Failed to resolve mail server %s: %v", c.mailServer, err),
 		}
 	}
 
@@ -251,12 +411,31 @@ func (c *Checker) CheckPTR(ctx context.Context) CheckResult {
 	ip := ips[0].IP.String()
 	names, err := c.resolver.LookupAddr(ctx, ip)
 	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return CheckResult{
+				RecordType: "PTR",
+				Status:     StatusFail,
+				Expected:   c.mailServer,
+				Actual:     ip,
+				Message:    "DNS lookup timeout",
+			}
+		}
+		var dnsErr *net.DNSError
+		if errors.As(err, &dnsErr) && dnsErr.IsNotFound {
+			return CheckResult{
+				RecordType: "PTR",
+				Status:     StatusWarning,
+				Expected:   c.mailServer,
+				Actual:     ip,
+				Message:    "No PTR record found for mail server IP",
+			}
+		}
 		return CheckResult{
 			RecordType: "PTR",
-			Status:     StatusWarning,
+			Status:     StatusFail,
 			Expected:   c.mailServer,
 			Actual:     ip,
-			Message:    "No PTR record found for mail server IP",
+			Message:    fmt.Sprintf("PTR lookup failed: %v", err),
 		}
 	}
 

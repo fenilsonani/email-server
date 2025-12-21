@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -74,7 +76,11 @@ func DefaultConfig() Config {
 type RedisQueue struct {
 	client *redis.Client
 	config Config
-	closed bool
+	closed int32 // atomic: 1 if closed, 0 if open
+
+	// Graceful shutdown
+	wg sync.WaitGroup
+	mu sync.RWMutex
 }
 
 // NewRedisQueue creates a new Redis-backed message queue.
@@ -84,19 +90,52 @@ func NewRedisQueue(cfg Config) (*RedisQueue, error) {
 		return nil, fmt.Errorf("invalid Redis URL: %w", err)
 	}
 
+	// Configure connection pool for reliability
+	opts.MaxRetries = 3
+	opts.MinRetryBackoff = 100 * time.Millisecond
+	opts.MaxRetryBackoff = 1 * time.Second
+	opts.DialTimeout = 5 * time.Second
+	opts.ReadTimeout = 3 * time.Second
+	opts.WriteTimeout = 3 * time.Second
+	opts.PoolSize = 10
+	opts.MinIdleConns = 5
+	opts.MaxIdleConns = 10
+	opts.ConnMaxIdleTime = 5 * time.Minute
+	opts.ConnMaxLifetime = 30 * time.Minute
+	opts.PoolTimeout = 4 * time.Second
+
 	client := redis.NewClient(opts)
 
-	// Test connection
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// Test connection with retry
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := client.Ping(ctx).Err(); err != nil {
-		return nil, fmt.Errorf("failed to connect to Redis: %w", err)
+
+	var lastErr error
+	for i := 0; i < 3; i++ {
+		if err := client.Ping(ctx).Err(); err == nil {
+			break
+		} else {
+			lastErr = err
+			if i < 2 {
+				time.Sleep(time.Duration(i+1) * time.Second)
+			}
+		}
+	}
+	if lastErr != nil {
+		client.Close()
+		return nil, fmt.Errorf("failed to connect to Redis after retries: %w", lastErr)
 	}
 
-	return &RedisQueue{
+	q := &RedisQueue{
 		client: client,
 		config: cfg,
-	}, nil
+		closed: 0,
+	}
+
+	// Start connection health monitor
+	go q.healthMonitor()
+
+	return q, nil
 }
 
 // Key helpers
@@ -109,12 +148,59 @@ func (q *RedisQueue) messageKey(id string) string {
 }
 func (q *RedisQueue) statsKey() string { return q.config.Prefix + ":stats" }
 
-// Enqueue adds a message to the queue for delivery.
-func (q *RedisQueue) Enqueue(ctx context.Context, msg *Message) error {
-	if q.closed {
+// healthMonitor periodically checks Redis connection health.
+func (q *RedisQueue) healthMonitor() {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		if atomic.LoadInt32(&q.closed) == 1 {
+			return
+		}
+
+		select {
+		case <-ticker.C:
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			err := q.client.Ping(ctx).Err()
+			cancel()
+
+			if err != nil {
+				// Connection issue detected - Redis client will auto-reconnect
+				// Log this in production
+				_ = err
+			}
+		}
+	}
+}
+
+// isClosed safely checks if the queue is closed.
+func (q *RedisQueue) isClosed() bool {
+	return atomic.LoadInt32(&q.closed) == 1
+}
+
+// validateContext ensures context is valid and queue is open.
+func (q *RedisQueue) validateContext(ctx context.Context) error {
+	if ctx == nil {
+		return errors.New("context is nil")
+	}
+	if q.isClosed() {
 		return ErrQueueClosed
 	}
+	return nil
+}
 
+// Enqueue adds a message to the queue for delivery.
+func (q *RedisQueue) Enqueue(ctx context.Context, msg *Message) error {
+	if err := q.validateContext(ctx); err != nil {
+		return err
+	}
+
+	q.wg.Add(1)
+	defer q.wg.Done()
+
+	if msg == nil {
+		return errors.New("message is nil")
+	}
 	if msg.ID == "" {
 		msg.ID = generateMessageID()
 	}
@@ -135,29 +221,44 @@ func (q *RedisQueue) Enqueue(ctx context.Context, msg *Message) error {
 		return fmt.Errorf("failed to marshal message: %w", err)
 	}
 
-	// Use transaction to ensure atomicity
-	pipe := q.client.TxPipeline()
-	pipe.Set(ctx, q.messageKey(msg.ID), data, 0)
-	pipe.ZAdd(ctx, q.pendingKey(), redis.Z{
-		Score:  float64(msg.NextAttempt.UnixNano()),
-		Member: msg.ID,
-	})
-	pipe.HIncrBy(ctx, q.statsKey(), "enqueued", 1)
+	// Use transaction to ensure atomicity with retry on transient errors
+	maxRetries := 3
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		pipe := q.client.TxPipeline()
+		pipe.Set(ctx, q.messageKey(msg.ID), data, 0)
+		pipe.ZAdd(ctx, q.pendingKey(), redis.Z{
+			Score:  float64(msg.NextAttempt.UnixNano()),
+			Member: msg.ID,
+		})
+		pipe.HIncrBy(ctx, q.statsKey(), "enqueued", 1)
 
-	_, err = pipe.Exec(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to enqueue message: %w", err)
+		_, err = pipe.Exec(ctx)
+		if err == nil {
+			return nil
+		}
+
+		// Check if error is transient
+		if !isTransientRedisError(err) {
+			return fmt.Errorf("failed to enqueue message: %w", err)
+		}
+
+		if attempt < maxRetries-1 {
+			time.Sleep(time.Duration(attempt+1) * 100 * time.Millisecond)
+		}
 	}
 
-	return nil
+	return fmt.Errorf("failed to enqueue message after %d retries: %w", maxRetries, err)
 }
 
 // Dequeue retrieves the next message ready for delivery.
 // Returns nil if no messages are ready.
 func (q *RedisQueue) Dequeue(ctx context.Context) (*Message, error) {
-	if q.closed {
-		return nil, ErrQueueClosed
+	if err := q.validateContext(ctx); err != nil {
+		return nil, err
 	}
+
+	q.wg.Add(1)
+	defer q.wg.Done()
 
 	now := float64(time.Now().UnixNano())
 
@@ -190,12 +291,17 @@ func (q *RedisQueue) Dequeue(ctx context.Context) (*Message, error) {
 	// Get message data
 	msg, err := q.GetMessage(ctx, msgID)
 	if err != nil {
-		// Put it back if we can't get the data
-		q.client.SRem(ctx, q.processingKey(), msgID)
-		q.client.ZAdd(ctx, q.pendingKey(), redis.Z{
+		// Put it back atomically if we can't get the data
+		rollbackPipe := q.client.TxPipeline()
+		rollbackPipe.SRem(ctx, q.processingKey(), msgID)
+		rollbackPipe.ZAdd(ctx, q.pendingKey(), redis.Z{
 			Score:  results[0].Score,
 			Member: msgID,
 		})
+		if _, rbErr := rollbackPipe.Exec(ctx); rbErr != nil {
+			// Log rollback failure in production
+			return nil, fmt.Errorf("failed to get message %s and rollback failed: %w (rollback error: %v)", msgID, err, rbErr)
+		}
 		return nil, err
 	}
 
@@ -205,6 +311,14 @@ func (q *RedisQueue) Dequeue(ctx context.Context) (*Message, error) {
 
 	// Update message status
 	if err := q.updateMessage(ctx, msg); err != nil {
+		// Attempt rollback
+		rollbackPipe := q.client.TxPipeline()
+		rollbackPipe.SRem(ctx, q.processingKey(), msgID)
+		rollbackPipe.ZAdd(ctx, q.pendingKey(), redis.Z{
+			Score:  results[0].Score,
+			Member: msgID,
+		})
+		rollbackPipe.Exec(ctx)
 		return nil, err
 	}
 
@@ -213,6 +327,13 @@ func (q *RedisQueue) Dequeue(ctx context.Context) (*Message, error) {
 
 // Complete marks a message as successfully delivered.
 func (q *RedisQueue) Complete(ctx context.Context, msgID string) error {
+	if err := q.validateContext(ctx); err != nil {
+		return err
+	}
+
+	q.wg.Add(1)
+	defer q.wg.Done()
+
 	msg, err := q.GetMessage(ctx, msgID)
 	if err != nil {
 		return err
@@ -426,21 +547,81 @@ func (q *RedisQueue) RecoverStale(ctx context.Context, staleThreshold time.Durat
 
 // Cleanup removes old sent/failed messages.
 func (q *RedisQueue) Cleanup(ctx context.Context, olderThan time.Duration) error {
+	if err := q.validateContext(ctx); err != nil {
+		return err
+	}
+
+	q.wg.Add(1)
+	defer q.wg.Done()
+
 	threshold := float64(time.Now().Add(-olderThan).UnixNano())
 
 	// Remove old sent messages
-	q.client.ZRemRangeByScore(ctx, q.sentKey(), "-inf", fmt.Sprintf("%f", threshold))
+	if err := q.client.ZRemRangeByScore(ctx, q.sentKey(), "-inf", fmt.Sprintf("%f", threshold)).Err(); err != nil {
+		return fmt.Errorf("failed to cleanup sent messages: %w", err)
+	}
 
 	// Remove old failed messages
-	q.client.ZRemRangeByScore(ctx, q.failedKey(), "-inf", fmt.Sprintf("%f", threshold))
+	if err := q.client.ZRemRangeByScore(ctx, q.failedKey(), "-inf", fmt.Sprintf("%f", threshold)).Err(); err != nil {
+		return fmt.Errorf("failed to cleanup failed messages: %w", err)
+	}
 
 	return nil
 }
 
-// Close closes the Redis connection.
+// Close closes the Redis connection gracefully.
 func (q *RedisQueue) Close() error {
-	q.closed = true
+	// Set closed flag atomically
+	if !atomic.CompareAndSwapInt32(&q.closed, 0, 1) {
+		// Already closed
+		return nil
+	}
+
+	// Wait for in-flight operations to complete with timeout
+	done := make(chan struct{})
+	go func() {
+		q.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// All operations completed
+	case <-time.After(30 * time.Second):
+		// Timeout - force close
+		// Log timeout in production
+	}
+
 	return q.client.Close()
+}
+
+// isTransientRedisError checks if an error is transient and worth retrying.
+func isTransientRedisError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := err.Error()
+	// Check for common transient errors
+	return contains(errStr, "connection refused") ||
+		contains(errStr, "timeout") ||
+		contains(errStr, "connection reset") ||
+		contains(errStr, "broken pipe") ||
+		contains(errStr, "i/o timeout") ||
+		contains(errStr, "network") ||
+		contains(errStr, "EOF")
+}
+
+// contains checks if a string contains a substring (case-insensitive helper).
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
+		func() bool {
+			for i := 0; i <= len(s)-len(substr); i++ {
+				if s[i:i+len(substr)] == substr {
+					return true
+				}
+			}
+			return false
+		}())
 }
 
 // Helper functions

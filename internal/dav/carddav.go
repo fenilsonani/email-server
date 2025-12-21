@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -13,8 +14,11 @@ type CardDAVBackend struct {
 }
 
 // NewCardDAVBackend creates a new CardDAV backend
-func NewCardDAVBackend(db *sql.DB) *CardDAVBackend {
-	return &CardDAVBackend{db: db}
+func NewCardDAVBackend(db *sql.DB) (*CardDAVBackend, error) {
+	if db == nil {
+		return nil, ErrNilDB
+	}
+	return &CardDAVBackend{db: db}, nil
 }
 
 // AddressBook represents a CardDAV address book
@@ -50,7 +54,10 @@ type Contact struct {
 
 // CreateAddressBook creates a new address book for a user
 func (b *CardDAVBackend) CreateAddressBook(ctx context.Context, userID int64, name, description string) (*AddressBook, error) {
-	uid := generateUID()
+	uid, err := generateUID()
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate UID: %w", err)
+	}
 	ctag := generateCTag()
 
 	result, err := b.db.ExecContext(ctx,
@@ -62,7 +69,10 @@ func (b *CardDAVBackend) CreateAddressBook(ctx context.Context, userID int64, na
 		return nil, fmt.Errorf("failed to create address book: %w", err)
 	}
 
-	id, _ := result.LastInsertId()
+	id, err := result.LastInsertId()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get last insert ID: %w", err)
+	}
 
 	return &AddressBook{
 		ID:          id,
@@ -170,11 +180,18 @@ func (b *CardDAVBackend) CreateContact(ctx context.Context, addressBookUID strin
 	var abID int64
 	err := b.db.QueryRowContext(ctx, "SELECT id FROM addressbooks WHERE uid = ?", addressBookUID).Scan(&abID)
 	if err != nil {
-		return fmt.Errorf("address book not found: %s", addressBookUID)
+		if err == sql.ErrNoRows {
+			return fmt.Errorf("address book not found: %s", addressBookUID)
+		}
+		return fmt.Errorf("failed to query address book: %w", err)
 	}
 
 	contact.AddressBookID = abID
-	contact.ETag = generateETag()
+	etag, err := generateETag()
+	if err != nil {
+		return fmt.Errorf("failed to generate ETag: %w", err)
+	}
+	contact.ETag = etag
 
 	_, err = b.db.ExecContext(ctx,
 		`INSERT INTO contacts (addressbook_id, uid, etag, vcard_data, full_name, given_name, family_name, nickname, emails, phones, organization)
@@ -187,8 +204,12 @@ func (b *CardDAVBackend) CreateContact(ctx context.Context, addressBookUID strin
 	}
 
 	// Update address book ctag
-	b.db.ExecContext(ctx, "UPDATE addressbooks SET ctag = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-		generateCTag(), abID)
+	ctag := generateCTag()
+	_, err = b.db.ExecContext(ctx, "UPDATE addressbooks SET ctag = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+		ctag, abID)
+	if err != nil {
+		return fmt.Errorf("contact created but failed to update address book ctag: %w", err)
+	}
 
 	return nil
 }
@@ -262,6 +283,12 @@ func (b *CardDAVBackend) ListContacts(ctx context.Context, addressBookUID string
 
 // SearchContacts searches contacts by name or email
 func (b *CardDAVBackend) SearchContacts(ctx context.Context, addressBookUID, query string) ([]*Contact, error) {
+	// Sanitize query to prevent SQL injection
+	// Escape SQL LIKE special characters using ! as escape char
+	query = strings.ReplaceAll(query, "!", "!!")
+	query = strings.ReplaceAll(query, "%", "!%")
+	query = strings.ReplaceAll(query, "_", "!_")
+
 	searchPattern := "%" + query + "%"
 
 	rows, err := b.db.QueryContext(ctx,
@@ -269,7 +296,7 @@ func (b *CardDAVBackend) SearchContacts(ctx context.Context, addressBookUID, que
 		        c.family_name, c.nickname, c.emails, c.phones, c.organization, c.created_at, c.updated_at
 		 FROM contacts c
 		 JOIN addressbooks ab ON c.addressbook_id = ab.id
-		 WHERE ab.uid = ? AND (c.full_name LIKE ? OR c.emails LIKE ?)
+		 WHERE ab.uid = ? AND (c.full_name LIKE ? ESCAPE '!' OR c.emails LIKE ? ESCAPE '!')
 		 ORDER BY c.full_name`,
 		addressBookUID, searchPattern, searchPattern,
 	)
@@ -301,7 +328,11 @@ func (b *CardDAVBackend) SearchContacts(ctx context.Context, addressBookUID, que
 
 // UpdateContact updates an existing contact
 func (b *CardDAVBackend) UpdateContact(ctx context.Context, addressBookUID string, contact *Contact) error {
-	contact.ETag = generateETag()
+	etag, err := generateETag()
+	if err != nil {
+		return fmt.Errorf("failed to generate ETag: %w", err)
+	}
+	contact.ETag = etag
 
 	result, err := b.db.ExecContext(ctx,
 		`UPDATE contacts SET etag = ?, vcard_data = ?, full_name = ?, given_name = ?, family_name = ?,
@@ -311,18 +342,25 @@ func (b *CardDAVBackend) UpdateContact(ctx context.Context, addressBookUID strin
 		contact.Nickname, contact.Emails, contact.Phones, contact.Organization, contact.UID, addressBookUID,
 	)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to update contact: %w", err)
 	}
 
-	affected, _ := result.RowsAffected()
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get affected rows: %w", err)
+	}
 	if affected == 0 {
 		return fmt.Errorf("contact not found: %s", contact.UID)
 	}
 
 	// Update address book ctag
-	b.db.ExecContext(ctx,
+	ctag := generateCTag()
+	_, err = b.db.ExecContext(ctx,
 		"UPDATE addressbooks SET ctag = ?, updated_at = CURRENT_TIMESTAMP WHERE uid = ?",
-		generateCTag(), addressBookUID)
+		ctag, addressBookUID)
+	if err != nil {
+		return fmt.Errorf("contact updated but failed to update address book ctag: %w", err)
+	}
 
 	return nil
 }
@@ -335,18 +373,25 @@ func (b *CardDAVBackend) DeleteContact(ctx context.Context, addressBookUID, cont
 		contactUID, addressBookUID,
 	)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to delete contact: %w", err)
 	}
 
-	affected, _ := result.RowsAffected()
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get affected rows: %w", err)
+	}
 	if affected == 0 {
 		return fmt.Errorf("contact not found: %s", contactUID)
 	}
 
 	// Update address book ctag
-	b.db.ExecContext(ctx,
+	ctag := generateCTag()
+	_, err = b.db.ExecContext(ctx,
 		"UPDATE addressbooks SET ctag = ?, updated_at = CURRENT_TIMESTAMP WHERE uid = ?",
-		generateCTag(), addressBookUID)
+		ctag, addressBookUID)
+	if err != nil {
+		return fmt.Errorf("contact deleted but failed to update address book ctag: %w", err)
+	}
 
 	return nil
 }

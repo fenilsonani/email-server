@@ -4,7 +4,10 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/base64"
+	"errors"
 	"fmt"
+	"net"
+	"regexp"
 	"strings"
 )
 
@@ -20,30 +23,80 @@ type Record struct {
 
 // Generator creates DNS record recommendations
 type Generator struct {
-	domain      string
-	mailServer  string
-	serverIP    string
-	dkimKey     *rsa.PublicKey
-	dkimKeyPEM  string
+	domain     string
+	mailServer string
+	serverIP   string
+	dkimKey    *rsa.PublicKey
+	dkimKeyPEM string
 }
 
+var (
+	// ErrInvalidIP is returned when IP validation fails
+	ErrInvalidIP = errors.New("invalid IP address")
+	// ipv4Regex validates IPv4 addresses
+	ipv4Regex = regexp.MustCompile(`^(\d{1,3}\.){3}\d{1,3}$`)
+)
+
 // NewGenerator creates a new DNS record generator
-func NewGenerator(domain, mailServer, serverIP string) *Generator {
+func NewGenerator(domain, mailServer, serverIP string) (*Generator, error) {
+	// Validate inputs
+	if domain == "" {
+		return nil, fmt.Errorf("%w: domain cannot be empty", ErrInvalidDomain)
+	}
+	if mailServer == "" {
+		return nil, fmt.Errorf("%w: mail server cannot be empty", ErrInvalidMailServer)
+	}
+	if serverIP == "" {
+		return nil, fmt.Errorf("%w: server IP cannot be empty", ErrInvalidIP)
+	}
+
+	// Validate domain format
+	if !domainRegex.MatchString(domain) {
+		return nil, fmt.Errorf("%w: %s", ErrInvalidDomain, domain)
+	}
+
+	// Validate mail server format
+	if !domainRegex.MatchString(mailServer) {
+		return nil, fmt.Errorf("%w: %s", ErrInvalidMailServer, mailServer)
+	}
+
+	// Validate IP address
+	ip := net.ParseIP(serverIP)
+	if ip == nil {
+		return nil, fmt.Errorf("%w: %s", ErrInvalidIP, serverIP)
+	}
+
 	return &Generator{
 		domain:     domain,
 		mailServer: mailServer,
 		serverIP:   serverIP,
-	}
+	}, nil
 }
 
 // SetDKIMKey sets the DKIM public key for record generation
-func (g *Generator) SetDKIMKey(key *rsa.PublicKey) {
+func (g *Generator) SetDKIMKey(key *rsa.PublicKey) error {
+	if key == nil {
+		return errors.New("DKIM key cannot be nil")
+	}
+	// Validate key size (minimum 1024 bits for security)
+	if key.N.BitLen() < 1024 {
+		return fmt.Errorf("DKIM key too short: %d bits (minimum 1024)", key.N.BitLen())
+	}
 	g.dkimKey = key
+	return nil
 }
 
 // SetDKIMKeyPEM sets the DKIM public key from PEM format
-func (g *Generator) SetDKIMKeyPEM(pem string) {
+func (g *Generator) SetDKIMKeyPEM(pem string) error {
+	if pem == "" {
+		return errors.New("PEM string cannot be empty")
+	}
+	// Basic validation of PEM format
+	if !strings.Contains(pem, "-----BEGIN") || !strings.Contains(pem, "-----END") {
+		return errors.New("invalid PEM format: missing header or footer")
+	}
 	g.dkimKeyPEM = pem
+	return nil
 }
 
 // GenerateAll generates all required DNS records
@@ -106,7 +159,10 @@ func (g *Generator) GenerateDKIM() Record {
 	if g.dkimKey != nil {
 		// Generate from RSA public key
 		pubBytes, err := x509.MarshalPKIXPublicKey(g.dkimKey)
-		if err == nil {
+		if err != nil {
+			// Log error and use placeholder - don't silently fail
+			value = fmt.Sprintf("v=DKIM1; k=rsa; p=<ERROR_MARSHALING_KEY:%s>", err.Error())
+		} else {
 			pubB64 := base64.StdEncoding.EncodeToString(pubBytes)
 			value = fmt.Sprintf("v=DKIM1; k=rsa; p=%s", pubB64)
 		}
@@ -119,7 +175,11 @@ func (g *Generator) GenerateDKIM() Record {
 				keyData.WriteString(strings.TrimSpace(line))
 			}
 		}
-		value = fmt.Sprintf("v=DKIM1; k=rsa; p=%s", keyData.String())
+		if keyData.Len() == 0 {
+			value = "v=DKIM1; k=rsa; p=<INVALID_PEM_NO_KEY_DATA>"
+		} else {
+			value = fmt.Sprintf("v=DKIM1; k=rsa; p=%s", keyData.String())
+		}
 	} else {
 		value = "v=DKIM1; k=rsa; p=<YOUR_DKIM_PUBLIC_KEY_HERE>"
 	}

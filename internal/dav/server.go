@@ -4,7 +4,10 @@ import (
 	"context"
 	"crypto/tls"
 	"database/sql"
+	"errors"
 	"fmt"
+	"html"
+	"io"
 	"log"
 	"net/http"
 	"strings"
@@ -15,21 +18,58 @@ import (
 
 // Server handles CalDAV and CardDAV requests
 type Server struct {
-	config        *config.Config
-	authenticator *auth.Authenticator
-	caldavBackend *CalDAVBackend
+	config         *config.Config
+	authenticator  *auth.Authenticator
+	caldavBackend  *CalDAVBackend
 	carddavBackend *CardDAVBackend
-	httpServer    *http.Server
+	httpServer     *http.Server
 }
 
+const (
+	// Maximum request body size (10MB)
+	maxRequestBodySize = 10 * 1024 * 1024
+)
+
+var (
+	// ErrNilConfig is returned when config is nil
+	ErrNilConfig = errors.New("config cannot be nil")
+	// ErrNilAuthenticator is returned when authenticator is nil
+	ErrNilAuthenticator = errors.New("authenticator cannot be nil")
+	// ErrNilDB is returned when database is nil
+	ErrNilDB = errors.New("database cannot be nil")
+	// ErrRequestTooLarge is returned when request body exceeds limit
+	ErrRequestTooLarge = errors.New("request body too large")
+)
+
 // NewServer creates a new DAV server
-func NewServer(cfg *config.Config, authenticator *auth.Authenticator, db *sql.DB) *Server {
+func NewServer(cfg *config.Config, authenticator *auth.Authenticator, db *sql.DB) (*Server, error) {
+	// Validate inputs
+	if cfg == nil {
+		return nil, ErrNilConfig
+	}
+	if authenticator == nil {
+		return nil, ErrNilAuthenticator
+	}
+	if db == nil {
+		return nil, ErrNilDB
+	}
+
+	caldavBackend, err := NewCalDAVBackend(db)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create CalDAV backend: %w", err)
+	}
+
+	carddavBackend, err := NewCardDAVBackend(db)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create CardDAV backend: %w", err)
+	}
+
 	return &Server{
 		config:         cfg,
 		authenticator:  authenticator,
-		caldavBackend:  NewCalDAVBackend(db),
-		carddavBackend: NewCardDAVBackend(db),
-	}
+		caldavBackend:  caldavBackend,
+		carddavBackend: carddavBackend,
+	}, nil
 }
 
 // Start starts the DAV server
@@ -84,6 +124,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 
 		username, password, ok := r.BasicAuth()
 		if !ok {
+			log.Printf("DAV authentication failed: no credentials provided from %s", r.RemoteAddr)
 			w.Header().Set("WWW-Authenticate", `Basic realm="Mail Server"`)
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
@@ -91,10 +132,13 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 
 		user, err := s.authenticator.Authenticate(r.Context(), username, password)
 		if err != nil {
+			log.Printf("DAV authentication failed for user %s from %s: %v", username, r.RemoteAddr, err)
 			w.Header().Set("WWW-Authenticate", `Basic realm="Mail Server"`)
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
+
+		log.Printf("DAV authentication successful for user %s from %s", username, r.RemoteAddr)
 
 		// Store user in context
 		ctx := context.WithValue(r.Context(), userContextKey, user)
@@ -109,6 +153,43 @@ const userContextKey contextKey = "user"
 func getUserFromContext(ctx context.Context) *auth.User {
 	user, _ := ctx.Value(userContextKey).(*auth.User)
 	return user
+}
+
+// safeReadBody reads the request body with size limit and ensures proper closure
+func safeReadBody(r *http.Request, maxSize int64) ([]byte, error) {
+	if r.ContentLength > maxSize {
+		return nil, fmt.Errorf("%w: %d bytes exceeds limit of %d", ErrRequestTooLarge, r.ContentLength, maxSize)
+	}
+
+	// Use LimitReader to prevent reading beyond maxSize
+	limitedReader := io.LimitReader(r.Body, maxSize+1)
+	data, err := io.ReadAll(limitedReader)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read request body: %w", err)
+	}
+
+	if int64(len(data)) > maxSize {
+		return nil, fmt.Errorf("%w: body exceeds %d bytes", ErrRequestTooLarge, maxSize)
+	}
+
+	return data, nil
+}
+
+// escapeXML escapes user data for safe XML output
+func escapeXML(s string) string {
+	return html.EscapeString(s)
+}
+
+// validatePath validates and sanitizes URL paths
+func validatePath(path string) error {
+	if path == "" {
+		return errors.New("path cannot be empty")
+	}
+	// Check for path traversal attempts
+	if strings.Contains(path, "..") {
+		return errors.New("path traversal not allowed")
+	}
+	return nil
 }
 
 // wellKnownCalDAV handles CalDAV auto-discovery
@@ -139,9 +220,9 @@ func (s *Server) handlePrincipal(w http.ResponseWriter, r *http.Request) {
 
 // handlePrincipalPropfind responds to PROPFIND on principal
 func (s *Server) handlePrincipalPropfind(w http.ResponseWriter, r *http.Request, user *auth.User) {
-	principalURL := fmt.Sprintf("/principals/%s/", user.Email)
-	calendarHomeURL := fmt.Sprintf("/calendars/%s/", user.Email)
-	addressbookHomeURL := fmt.Sprintf("/addressbooks/%s/", user.Email)
+	principalURL := fmt.Sprintf("/principals/%s/", escapeXML(user.Email))
+	calendarHomeURL := fmt.Sprintf("/calendars/%s/", escapeXML(user.Email))
+	addressbookHomeURL := fmt.Sprintf("/addressbooks/%s/", escapeXML(user.Email))
 
 	response := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav" xmlns:A="urn:ietf:params:xml:ns:carddav">
@@ -167,7 +248,7 @@ func (s *Server) handlePrincipalPropfind(w http.ResponseWriter, r *http.Request,
       <D:status>HTTP/1.1 200 OK</D:status>
     </D:propstat>
   </D:response>
-</D:multistatus>`, principalURL, user.DisplayName, calendarHomeURL, addressbookHomeURL, principalURL)
+</D:multistatus>`, principalURL, escapeXML(user.DisplayName), calendarHomeURL, addressbookHomeURL, principalURL)
 
 	w.Header().Set("Content-Type", "application/xml; charset=utf-8")
 	w.WriteHeader(http.StatusMultiStatus)
@@ -345,6 +426,12 @@ func (s *Server) handleCalDAVGet(w http.ResponseWriter, r *http.Request, user *a
 
 // handleCalDAVPut creates or updates an event
 func (s *Server) handleCalDAVPut(w http.ResponseWriter, r *http.Request, user *auth.User) {
+	// Validate path
+	if err := validatePath(r.URL.Path); err != nil {
+		http.Error(w, fmt.Sprintf("Invalid path: %v", err), http.StatusBadRequest)
+		return
+	}
+
 	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 	if len(parts) < 3 {
 		http.Error(w, "Invalid path", http.StatusBadRequest)
@@ -354,10 +441,13 @@ func (s *Server) handleCalDAVPut(w http.ResponseWriter, r *http.Request, user *a
 	calendarUID := parts[len(parts)-2]
 	eventUID := strings.TrimSuffix(parts[len(parts)-1], ".ics")
 
-	// Read body
-	buf := make([]byte, r.ContentLength)
-	r.Body.Read(buf)
-	icalData := string(buf)
+	// Read body safely with size limit
+	data, err := safeReadBody(r, maxRequestBodySize)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to read request body: %v", err), http.StatusBadRequest)
+		return
+	}
+	icalData := string(data)
 
 	ctx := r.Context()
 
@@ -369,15 +459,15 @@ func (s *Server) handleCalDAVPut(w http.ResponseWriter, r *http.Request, user *a
 		ICalendarData: icalData,
 	}
 
-	var err error
+	var updateErr error
 	if existing != nil {
-		err = s.caldavBackend.UpdateEvent(ctx, calendarUID, event)
+		updateErr = s.caldavBackend.UpdateEvent(ctx, calendarUID, event)
 	} else {
-		err = s.caldavBackend.CreateEvent(ctx, calendarUID, event)
+		updateErr = s.caldavBackend.CreateEvent(ctx, calendarUID, event)
 	}
 
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	if updateErr != nil {
+		http.Error(w, updateErr.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -598,6 +688,12 @@ func (s *Server) handleCardDAVGet(w http.ResponseWriter, r *http.Request, user *
 
 // handleCardDAVPut creates or updates a contact
 func (s *Server) handleCardDAVPut(w http.ResponseWriter, r *http.Request, user *auth.User) {
+	// Validate path
+	if err := validatePath(r.URL.Path); err != nil {
+		http.Error(w, fmt.Sprintf("Invalid path: %v", err), http.StatusBadRequest)
+		return
+	}
+
 	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 	if len(parts) < 3 {
 		http.Error(w, "Invalid path", http.StatusBadRequest)
@@ -607,10 +703,13 @@ func (s *Server) handleCardDAVPut(w http.ResponseWriter, r *http.Request, user *
 	addressBookUID := parts[len(parts)-2]
 	contactUID := strings.TrimSuffix(parts[len(parts)-1], ".vcf")
 
-	// Read body
-	buf := make([]byte, r.ContentLength)
-	r.Body.Read(buf)
-	vcardData := string(buf)
+	// Read body safely with size limit
+	data, err := safeReadBody(r, maxRequestBodySize)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to read request body: %v", err), http.StatusBadRequest)
+		return
+	}
+	vcardData := string(data)
 
 	ctx := r.Context()
 
@@ -622,15 +721,15 @@ func (s *Server) handleCardDAVPut(w http.ResponseWriter, r *http.Request, user *
 		VCardData: vcardData,
 	}
 
-	var err error
+	var updateErr error
 	if existing != nil {
-		err = s.carddavBackend.UpdateContact(ctx, addressBookUID, contact)
+		updateErr = s.carddavBackend.UpdateContact(ctx, addressBookUID, contact)
 	} else {
-		err = s.carddavBackend.CreateContact(ctx, addressBookUID, contact)
+		updateErr = s.carddavBackend.CreateContact(ctx, addressBookUID, contact)
 	}
 
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	if updateErr != nil {
+		http.Error(w, updateErr.Error(), http.StatusInternalServerError)
 		return
 	}
 

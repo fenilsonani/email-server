@@ -25,6 +25,7 @@ type Session struct {
 	tracker  *imapserver.SessionTracker
 	updates  chan any
 	mu       sync.RWMutex
+	closed   bool
 }
 
 // NewSession creates a new IMAP session
@@ -38,37 +39,64 @@ func NewSession(server *Server, conn *imapserver.Conn) *Session {
 
 // Close cleans up the session
 func (s *Session) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Prevent double close
+	if s.closed {
+		return nil
+	}
+	s.closed = true
+
 	if s.tracker != nil {
 		s.tracker.Close()
+		s.tracker = nil
 	}
-	close(s.updates)
+
+	// Close channel safely
+	if s.updates != nil {
+		close(s.updates)
+		s.updates = nil
+	}
+
 	return nil
 }
 
 // Login authenticates the user
 func (s *Session) Login(username, password string) error {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
 	log.Printf("IMAP v2: Login attempt for %s", username)
 
 	user, err := s.server.authenticator.Authenticate(ctx, username, password)
 	if err != nil {
-		log.Printf("IMAP v2: Login failed for %s", username)
+		log.Printf("IMAP v2: Login failed for %s: %v", username, err)
 		return imapserver.ErrAuthFailed
 	}
 
+	s.mu.Lock()
 	s.user = user
+	s.mu.Unlock()
+
 	log.Printf("IMAP v2: Login successful for %s", username)
 	return nil
 }
 
 // Select opens a mailbox
 func (s *Session) Select(name string, options *imap.SelectOptions) (*imap.SelectData, error) {
-	if s.user == nil {
+	s.mu.RLock()
+	user := s.user
+	s.mu.RUnlock()
+
+	if user == nil {
 		return nil, fmt.Errorf("not authenticated")
 	}
 
-	ctx := context.Background()
-	mb, err := s.server.store.GetMailbox(ctx, s.user.ID, name)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	mb, err := s.server.store.GetMailbox(ctx, user.ID, name)
 	if err != nil {
 		return nil, &imap.Error{
 			Type: imap.StatusResponseTypeNo,
@@ -79,7 +107,7 @@ func (s *Session) Select(name string, options *imap.SelectOptions) (*imap.Select
 
 	stats, err := s.server.store.GetMailboxStats(ctx, mb.ID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to get mailbox stats: %w", err)
 	}
 
 	s.mu.Lock()
@@ -114,18 +142,28 @@ func (s *Session) Unselect() error {
 
 // Create creates a new mailbox
 func (s *Session) Create(name string, options *imap.CreateOptions) error {
-	if s.user == nil {
+	s.mu.RLock()
+	user := s.user
+	s.mu.RUnlock()
+
+	if user == nil {
 		return fmt.Errorf("not authenticated")
 	}
 
-	ctx := context.Background()
-	_, err := s.server.store.CreateMailbox(ctx, s.user.ID, name, "")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	_, err := s.server.store.CreateMailbox(ctx, user.ID, name, "")
 	return err
 }
 
 // Delete removes a mailbox
 func (s *Session) Delete(name string) error {
-	if s.user == nil {
+	s.mu.RLock()
+	user := s.user
+	s.mu.RUnlock()
+
+	if user == nil {
 		return fmt.Errorf("not authenticated")
 	}
 
@@ -136,13 +174,19 @@ func (s *Session) Delete(name string) error {
 		}
 	}
 
-	ctx := context.Background()
-	return s.server.store.DeleteMailbox(ctx, s.user.ID, name)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	return s.server.store.DeleteMailbox(ctx, user.ID, name)
 }
 
 // Rename renames a mailbox
 func (s *Session) Rename(oldName, newName string, options *imap.RenameOptions) error {
-	if s.user == nil {
+	s.mu.RLock()
+	user := s.user
+	s.mu.RUnlock()
+
+	if user == nil {
 		return fmt.Errorf("not authenticated")
 	}
 
@@ -153,40 +197,60 @@ func (s *Session) Rename(oldName, newName string, options *imap.RenameOptions) e
 		}
 	}
 
-	ctx := context.Background()
-	return s.server.store.RenameMailbox(ctx, s.user.ID, oldName, newName)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	return s.server.store.RenameMailbox(ctx, user.ID, oldName, newName)
 }
 
 // Subscribe subscribes to a mailbox
 func (s *Session) Subscribe(name string) error {
-	if s.user == nil {
+	s.mu.RLock()
+	user := s.user
+	s.mu.RUnlock()
+
+	if user == nil {
 		return fmt.Errorf("not authenticated")
 	}
 
-	ctx := context.Background()
-	return s.server.store.SubscribeMailbox(ctx, s.user.ID, name, true)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	return s.server.store.SubscribeMailbox(ctx, user.ID, name, true)
 }
 
 // Unsubscribe unsubscribes from a mailbox
 func (s *Session) Unsubscribe(name string) error {
-	if s.user == nil {
+	s.mu.RLock()
+	user := s.user
+	s.mu.RUnlock()
+
+	if user == nil {
 		return fmt.Errorf("not authenticated")
 	}
 
-	ctx := context.Background()
-	return s.server.store.SubscribeMailbox(ctx, s.user.ID, name, false)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	return s.server.store.SubscribeMailbox(ctx, user.ID, name, false)
 }
 
 // List lists mailboxes
 func (s *Session) List(w *imapserver.ListWriter, ref string, patterns []string, options *imap.ListOptions) error {
-	if s.user == nil {
+	s.mu.RLock()
+	user := s.user
+	s.mu.RUnlock()
+
+	if user == nil {
 		return fmt.Errorf("not authenticated")
 	}
 
-	ctx := context.Background()
-	mailboxes, err := s.server.store.ListMailboxes(ctx, s.user.ID)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	mailboxes, err := s.server.store.ListMailboxes(ctx, user.ID)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to list mailboxes: %w", err)
 	}
 
 	for _, mb := range mailboxes {
@@ -224,12 +288,18 @@ func (s *Session) List(w *imapserver.ListWriter, ref string, patterns []string, 
 
 // Status returns mailbox status
 func (s *Session) Status(name string, options *imap.StatusOptions) (*imap.StatusData, error) {
-	if s.user == nil {
+	s.mu.RLock()
+	user := s.user
+	s.mu.RUnlock()
+
+	if user == nil {
 		return nil, fmt.Errorf("not authenticated")
 	}
 
-	ctx := context.Background()
-	mb, err := s.server.store.GetMailbox(ctx, s.user.ID, name)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	mb, err := s.server.store.GetMailbox(ctx, user.ID, name)
 	if err != nil {
 		return nil, &imap.Error{
 			Type: imap.StatusResponseTypeNo,
@@ -240,7 +310,7 @@ func (s *Session) Status(name string, options *imap.StatusOptions) (*imap.Status
 
 	stats, err := s.server.store.GetMailboxStats(ctx, mb.ID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to get mailbox stats: %w", err)
 	}
 
 	numMessages := uint32(stats.Messages)
@@ -257,12 +327,18 @@ func (s *Session) Status(name string, options *imap.StatusOptions) (*imap.Status
 
 // Append adds a message to a mailbox
 func (s *Session) Append(mailbox string, r imap.LiteralReader, options *imap.AppendOptions) (*imap.AppendData, error) {
-	if s.user == nil {
+	s.mu.RLock()
+	user := s.user
+	s.mu.RUnlock()
+
+	if user == nil {
 		return nil, fmt.Errorf("not authenticated")
 	}
 
-	ctx := context.Background()
-	mb, err := s.server.store.GetMailbox(ctx, s.user.ID, mailbox)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	mb, err := s.server.store.GetMailbox(ctx, user.ID, mailbox)
 	if err != nil {
 		return nil, &imap.Error{
 			Type: imap.StatusResponseTypeNo,
@@ -272,19 +348,22 @@ func (s *Session) Append(mailbox string, r imap.LiteralReader, options *imap.App
 	}
 
 	// Convert flags
-	flags := make([]storage.Flag, len(options.Flags))
-	for i, f := range options.Flags {
-		flags[i] = storage.Flag(f)
+	var flags []storage.Flag
+	if options != nil && len(options.Flags) > 0 {
+		flags = make([]storage.Flag, len(options.Flags))
+		for i, f := range options.Flags {
+			flags[i] = storage.Flag(f)
+		}
 	}
 
 	date := time.Now()
-	if !options.Time.IsZero() {
+	if options != nil && !options.Time.IsZero() {
 		date = options.Time
 	}
 
 	msg, err := s.server.store.AppendMessage(ctx, mb.ID, flags, date, r)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to append message: %w", err)
 	}
 
 	// Notify other sessions about new message
@@ -312,6 +391,7 @@ func (s *Session) Poll(w *imapserver.UpdateWriter, allowExpunge bool) error {
 func (s *Session) Idle(w *imapserver.UpdateWriter, stop <-chan struct{}) error {
 	s.mu.RLock()
 	tracker := s.tracker
+	user := s.user
 	s.mu.RUnlock()
 
 	if tracker == nil {
@@ -319,8 +399,14 @@ func (s *Session) Idle(w *imapserver.UpdateWriter, stop <-chan struct{}) error {
 		return nil
 	}
 
-	log.Printf("IMAP v2: IDLE started for %s", s.user.Email)
-	defer log.Printf("IMAP v2: IDLE ended for %s", s.user.Email)
+	// Safely log user email with nil check
+	userEmail := "unknown"
+	if user != nil {
+		userEmail = user.Email
+	}
+
+	log.Printf("IMAP v2: IDLE started for %s", userEmail)
+	defer log.Printf("IMAP v2: IDLE ended for %s", userEmail)
 
 	return tracker.Idle(w, stop)
 }
@@ -335,12 +421,13 @@ func (s *Session) Fetch(w *imapserver.FetchWriter, numSet imap.NumSet, options *
 		return fmt.Errorf("no mailbox selected")
 	}
 
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
 	// Get all messages to build seq->uid mapping
 	messages, err := s.server.store.ListMessages(ctx, selected.ID, 0, 0)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to list messages: %w", err)
 	}
 
 	// Build mappings
@@ -406,10 +493,16 @@ func (s *Session) Fetch(w *imapserver.FetchWriter, numSet imap.NumSet, options *
 		if options.Envelope {
 			body, err := s.server.store.GetMessageBody(ctx, msg)
 			if err == nil {
-				defer body.Close()
-				data, _ := io.ReadAll(body)
-				envelope := extractEnvelope(data)
-				respWriter.WriteEnvelope(envelope)
+				data, readErr := io.ReadAll(body)
+				body.Close() // Close immediately, not deferred in loop
+				if readErr == nil {
+					envelope := extractEnvelope(data)
+					respWriter.WriteEnvelope(envelope)
+				} else {
+					log.Printf("IMAP: Failed to read message body for envelope: %v", readErr)
+				}
+			} else {
+				log.Printf("IMAP: Failed to get message body for envelope: %v", err)
 			}
 		}
 
@@ -417,15 +510,23 @@ func (s *Session) Fetch(w *imapserver.FetchWriter, numSet imap.NumSet, options *
 		for _, bs := range options.BodySection {
 			body, err := s.server.store.GetMessageBody(ctx, msg)
 			if err != nil {
+				log.Printf("IMAP: Failed to get message body for section: %v", err)
 				continue
 			}
 
-			data, _ := io.ReadAll(body)
-			body.Close()
+			data, readErr := io.ReadAll(body)
+			body.Close() // Close immediately after reading
+
+			if readErr != nil {
+				log.Printf("IMAP: Failed to read message body for section: %v", readErr)
+				continue
+			}
 
 			sectionData := extractBodySection(data, bs)
 			bsw := respWriter.WriteBodySection(bs, int64(len(sectionData)))
-			bsw.Write(sectionData)
+			if _, err := bsw.Write(sectionData); err != nil {
+				log.Printf("IMAP: Failed to write body section: %v", err)
+			}
 			bsw.Close()
 		}
 
@@ -445,12 +546,17 @@ func (s *Session) Store(w *imapserver.FetchWriter, numSet imap.NumSet, flags *im
 		return fmt.Errorf("no mailbox selected")
 	}
 
-	ctx := context.Background()
+	if flags == nil {
+		return fmt.Errorf("flags cannot be nil")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
 	// Get all messages for mapping
 	messages, err := s.server.store.ListMessages(ctx, selected.ID, 0, 0)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to list messages: %w", err)
 	}
 
 	uidToSeq := make(map[uint32]uint32)
@@ -500,6 +606,7 @@ func (s *Session) Store(w *imapserver.FetchWriter, numSet imap.NumSet, flags *im
 		}
 
 		if err != nil {
+			log.Printf("IMAP: Failed to update flags for message UID %d: %v", msg.UID, err)
 			continue
 		}
 
@@ -507,8 +614,10 @@ func (s *Session) Store(w *imapserver.FetchWriter, numSet imap.NumSet, flags *im
 		if !flags.Silent {
 			respWriter := w.CreateMessage(seqNum)
 			// Get updated message
-			updatedMsg, _ := s.server.store.GetMessage(ctx, selected.ID, msg.UID)
-			if updatedMsg != nil {
+			updatedMsg, err := s.server.store.GetMessage(ctx, selected.ID, msg.UID)
+			if err != nil {
+				log.Printf("IMAP: Failed to get updated message UID %d: %v", msg.UID, err)
+			} else if updatedMsg != nil {
 				newFlags := make([]imap.Flag, len(updatedMsg.Flags))
 				for i, f := range updatedMsg.Flags {
 					newFlags[i] = imap.Flag(f)
@@ -532,14 +641,25 @@ func (s *Session) Expunge(w *imapserver.ExpungeWriter, uids *imap.UIDSet) error 
 		return fmt.Errorf("no mailbox selected")
 	}
 
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
 	expunged, err := s.server.store.ExpungeMailbox(ctx, selected.ID)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to expunge mailbox: %w", err)
 	}
 
 	// Get current message list for seq mapping
-	messages, _ := s.server.store.ListMessages(ctx, selected.ID, 0, 0)
+	messages, err := s.server.store.ListMessages(ctx, selected.ID, 0, 0)
+	if err != nil {
+		log.Printf("IMAP: Failed to list messages after expunge: %v", err)
+		// Still report expunged messages even if we can't get seq numbers
+		for _, uid := range expunged {
+			w.WriteExpunge(uid)
+		}
+		return nil
+	}
+
 	uidToSeq := make(map[uint32]uint32)
 	for i, msg := range messages {
 		uidToSeq[msg.UID] = uint32(i + 1)
@@ -558,16 +678,22 @@ func (s *Session) Expunge(w *imapserver.ExpungeWriter, uids *imap.UIDSet) error 
 func (s *Session) Copy(numSet imap.NumSet, dest string) (*imap.CopyData, error) {
 	s.mu.RLock()
 	selected := s.selected
+	user := s.user
 	s.mu.RUnlock()
 
 	if selected == nil {
 		return nil, fmt.Errorf("no mailbox selected")
 	}
 
-	ctx := context.Background()
+	if user == nil {
+		return nil, fmt.Errorf("not authenticated")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
 	// Get destination mailbox
-	destMb, err := s.server.store.GetMailbox(ctx, s.user.ID, dest)
+	destMb, err := s.server.store.GetMailbox(ctx, user.ID, dest)
 	if err != nil {
 		return nil, &imap.Error{
 			Type: imap.StatusResponseTypeNo,
@@ -579,7 +705,7 @@ func (s *Session) Copy(numSet imap.NumSet, dest string) (*imap.CopyData, error) 
 	// Get messages
 	messages, err := s.server.store.ListMessages(ctx, selected.ID, 0, 0)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to list messages: %w", err)
 	}
 
 	var srcUIDs, destUIDs []imap.UID
@@ -599,6 +725,8 @@ func (s *Session) Copy(numSet imap.NumSet, dest string) (*imap.CopyData, error) 
 			if err == nil {
 				srcUIDs = append(srcUIDs, imap.UID(msg.UID))
 				destUIDs = append(destUIDs, imap.UID(newMsg.UID))
+			} else {
+				log.Printf("IMAP: Failed to copy message UID %d: %v", msg.UID, err)
 			}
 		}
 	}
@@ -623,7 +751,8 @@ func (s *Session) Search(kind imapserver.NumKind, criteria *imap.SearchCriteria,
 		return nil, fmt.Errorf("no mailbox selected")
 	}
 
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
 	// Convert criteria to our format
 	storageCriteria := &storage.SearchCriteria{}
@@ -644,7 +773,7 @@ func (s *Session) Search(kind imapserver.NumKind, criteria *imap.SearchCriteria,
 
 	uids, err := s.server.store.SearchMessages(ctx, selected.ID, storageCriteria)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to search messages: %w", err)
 	}
 
 	if kind == imapserver.NumKindUID {
@@ -658,7 +787,11 @@ func (s *Session) Search(kind imapserver.NumKind, criteria *imap.SearchCriteria,
 	}
 
 	// Convert UIDs to sequence numbers
-	messages, _ := s.server.store.ListMessages(ctx, selected.ID, 0, 0)
+	messages, err := s.server.store.ListMessages(ctx, selected.ID, 0, 0)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list messages for seq conversion: %w", err)
+	}
+
 	uidToSeq := make(map[uint32]uint32)
 	for i, msg := range messages {
 		uidToSeq[msg.UID] = uint32(i + 1)

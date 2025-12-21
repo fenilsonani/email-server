@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapserver"
@@ -27,10 +28,16 @@ type Server struct {
 	// Mailbox trackers for IDLE notifications
 	trackersMu sync.RWMutex
 	trackers   map[int64]*imapserver.MailboxTracker
+
+	// Shutdown coordination
+	ctx        context.Context
+	cancel     context.CancelFunc
+	shutdownWg sync.WaitGroup
 }
 
 // NewServer creates a new IMAP v2 server
 func NewServer(authenticator *auth.Authenticator, store *maildir.Store, addr, tlsAddr string, tlsConfig *tls.Config) *Server {
+	ctx, cancel := context.WithCancel(context.Background())
 	s := &Server{
 		authenticator: authenticator,
 		store:         store,
@@ -38,6 +45,8 @@ func NewServer(authenticator *auth.Authenticator, store *maildir.Store, addr, tl
 		addr:          addr,
 		tlsAddr:       tlsAddr,
 		trackers:      make(map[int64]*imapserver.MailboxTracker),
+		ctx:           ctx,
+		cancel:        cancel,
 	}
 
 	// Create IMAP server with v2 API
@@ -92,11 +101,13 @@ func (s *Server) NotifyMailboxUpdate(mailboxID int64) {
 		return
 	}
 
-	// Get current message count
-	// The tracker will notify all IDLE sessions
-	ctx := context.Background()
+	// Get current message count with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
 	stats, err := s.store.GetMailboxStats(ctx, mailboxID)
 	if err != nil {
+		log.Printf("IMAP v2: Failed to get mailbox stats for notification: %v", err)
 		return
 	}
 
@@ -106,7 +117,8 @@ func (s *Server) NotifyMailboxUpdate(mailboxID int64) {
 
 // NotifyMailboxUpdateByName notifies by username and mailbox name
 func (s *Server) NotifyMailboxUpdateByName(username, mailboxName string) {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 
 	// Look up user
 	user, err := s.authenticator.LookupUser(ctx, username)
@@ -136,9 +148,17 @@ func (s *Server) ListenAndServe() error {
 
 		log.Printf("IMAP server listening on %s", s.addr)
 
+		s.shutdownWg.Add(1)
 		go func() {
+			defer s.shutdownWg.Done()
 			if err := s.imapServer.Serve(listener); err != nil {
-				log.Printf("IMAP server error: %v", err)
+				select {
+				case <-s.ctx.Done():
+					// Server is shutting down, expected error
+					log.Printf("IMAP server stopped")
+				default:
+					log.Printf("IMAP server error: %v", err)
+				}
 			}
 		}()
 	}
@@ -157,9 +177,17 @@ func (s *Server) ListenAndServeTLS(tlsConfig *tls.Config) error {
 
 		log.Printf("IMAPS server listening on %s", s.tlsAddr)
 
+		s.shutdownWg.Add(1)
 		go func() {
+			defer s.shutdownWg.Done()
 			if err := s.imapServer.Serve(listener); err != nil {
-				log.Printf("IMAPS server error: %v", err)
+				select {
+				case <-s.ctx.Done():
+					// Server is shutting down, expected error
+					log.Printf("IMAPS server stopped")
+				default:
+					log.Printf("IMAPS server error: %v", err)
+				}
 			}
 		}()
 	}
@@ -167,13 +195,64 @@ func (s *Server) ListenAndServeTLS(tlsConfig *tls.Config) error {
 	return nil
 }
 
-// Close stops the server
+// Close stops the server gracefully
 func (s *Server) Close() error {
+	// Signal shutdown to all goroutines
+	if s.cancel != nil {
+		s.cancel()
+	}
+
+	var closeErr error
+
+	// Close listeners first to stop accepting new connections
 	if s.listener != nil {
-		s.listener.Close()
+		if err := s.listener.Close(); err != nil {
+			log.Printf("IMAP: Error closing listener: %v", err)
+			closeErr = err
+		}
 	}
 	if s.tlsListener != nil {
-		s.tlsListener.Close()
+		if err := s.tlsListener.Close(); err != nil {
+			log.Printf("IMAPS: Error closing TLS listener: %v", err)
+			if closeErr == nil {
+				closeErr = err
+			}
+		}
 	}
-	return s.imapServer.Close()
+
+	// Close the IMAP server
+	if s.imapServer != nil {
+		if err := s.imapServer.Close(); err != nil {
+			log.Printf("IMAP: Error closing server: %v", err)
+			if closeErr == nil {
+				closeErr = err
+			}
+		}
+	}
+
+	// Wait for all goroutines to finish with timeout
+	done := make(chan struct{})
+	go func() {
+		s.shutdownWg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		log.Printf("IMAP: All goroutines finished")
+	case <-time.After(10 * time.Second):
+		log.Printf("IMAP: Timeout waiting for goroutines to finish")
+	}
+
+	// Close all trackers
+	s.trackersMu.Lock()
+	for id, tracker := range s.trackers {
+		if tracker != nil {
+			log.Printf("IMAP: Closing tracker for mailbox %d", id)
+		}
+	}
+	s.trackers = make(map[int64]*imapserver.MailboxTracker)
+	s.trackersMu.Unlock()
+
+	return closeErr
 }

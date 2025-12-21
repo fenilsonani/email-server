@@ -66,43 +66,139 @@ var serveCmd = &cobra.Command{
 	Use:   "serve",
 	Short: "Start the mail server",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// Validate configuration before doing anything
 		if err := cfg.Validate(); err != nil {
 			return fmt.Errorf("invalid configuration: %w", err)
 		}
 
+		// Ensure directories exist with proper permissions
 		if err := cfg.EnsureDirectories(); err != nil {
-			return err
+			return fmt.Errorf("failed to create required directories: %w", err)
 		}
 
-		// Open database
-		var err error
-		db, err = metadata.Open(cfg.Storage.DatabasePath)
-		if err != nil {
-			return fmt.Errorf("failed to open database: %w", err)
+		// Track resources for cleanup
+		type resourceTracker struct {
+			db             *metadata.DB
+			redisQueue     *queue.RedisQueue
+			deliveryEngine *delivery.Engine
+			imapSrv        *imapserver.Server
+			smtpSrv        *smtpserver.Server
+			adminSrv       *admin.Server
+			logger         *logging.Logger
 		}
-		defer db.Close()
+		resources := &resourceTracker{}
 
-		// Run migrations
-		if err := db.Migrate(context.Background()); err != nil {
-			return fmt.Errorf("failed to run migrations: %w", err)
+		// Cleanup function - called on both success and error paths
+		cleanup := func() {
+			if resources.logger != nil {
+				resources.logger.Info("Starting graceful shutdown")
+			}
+
+			// Parse shutdown timeout from config
+			shutdownTimeout := 30 * time.Second
+			if cfg.Server.ShutdownTimeout != "" {
+				if t, err := time.ParseDuration(cfg.Server.ShutdownTimeout); err == nil {
+					shutdownTimeout = t
+				}
+			}
+
+			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), shutdownTimeout)
+			defer shutdownCancel()
+
+			// Shutdown in reverse order of initialization
+			// 1. Stop accepting new connections first
+			if resources.adminSrv != nil {
+				if resources.logger != nil {
+					resources.logger.Info("Shutting down admin server")
+				}
+				if err := resources.adminSrv.Shutdown(shutdownCtx); err != nil {
+					if resources.logger != nil {
+						resources.logger.Error("Admin server shutdown error", "error", err.Error())
+					} else {
+						fmt.Fprintf(os.Stderr, "Admin server shutdown error: %v\n", err)
+					}
+				}
+			}
+
+			// 2. Stop SMTP servers (no new mail)
+			if resources.smtpSrv != nil {
+				if resources.logger != nil {
+					resources.logger.Info("Shutting down SMTP servers")
+				}
+				if err := resources.smtpSrv.Close(); err != nil {
+					if resources.logger != nil {
+						resources.logger.Error("SMTP server shutdown error", "error", err.Error())
+					} else {
+						fmt.Fprintf(os.Stderr, "SMTP server shutdown error: %v\n", err)
+					}
+				}
+			}
+
+			// 3. Stop IMAP servers (no new client connections)
+			if resources.imapSrv != nil {
+				if resources.logger != nil {
+					resources.logger.Info("Shutting down IMAP servers")
+				}
+				if err := resources.imapSrv.Close(); err != nil {
+					if resources.logger != nil {
+						resources.logger.Error("IMAP server shutdown error", "error", err.Error())
+					} else {
+						fmt.Fprintf(os.Stderr, "IMAP server shutdown error: %v\n", err)
+					}
+				}
+			}
+
+			// 4. Stop delivery engine (finish in-flight deliveries)
+			if resources.deliveryEngine != nil {
+				if resources.logger != nil {
+					resources.logger.Info("Stopping delivery engine")
+				}
+				resources.deliveryEngine.Stop()
+			}
+
+			// 5. Close Redis queue connection
+			if resources.redisQueue != nil {
+				if resources.logger != nil {
+					resources.logger.Info("Closing Redis queue connection")
+				}
+				if err := resources.redisQueue.Close(); err != nil {
+					if resources.logger != nil {
+						resources.logger.Error("Redis queue close error", "error", err.Error())
+					} else {
+						fmt.Fprintf(os.Stderr, "Redis queue close error: %v\n", err)
+					}
+				}
+			}
+
+			// 6. Close database last (after all users are done)
+			if resources.db != nil {
+				if resources.logger != nil {
+					resources.logger.Info("Closing database")
+				}
+				if err := resources.db.Close(); err != nil {
+					if resources.logger != nil {
+						resources.logger.Error("Database close error", "error", err.Error())
+					} else {
+						fmt.Fprintf(os.Stderr, "Database close error: %v\n", err)
+					}
+				}
+			}
+
+			if resources.logger != nil {
+				resources.logger.Info("Shutdown complete")
+			}
 		}
 
-		// Initialize TLS
-		tlsManager, err := security.NewTLSManager(cfg)
-		if err != nil {
-			return fmt.Errorf("failed to initialize TLS: %w", err)
-		}
+		// Ensure cleanup runs on panic
+		defer func() {
+			if r := recover(); r != nil {
+				fmt.Fprintf(os.Stderr, "PANIC during server operation: %v\n", r)
+				cleanup()
+				panic(r) // Re-panic after cleanup
+			}
+		}()
 
-		// Initialize authenticator
-		authenticator := auth.NewAuthenticator(db.DB)
-
-		// Initialize maildir store
-		store, err := maildir.NewStore(db.DB, cfg.Storage.MaildirPath)
-		if err != nil {
-			return fmt.Errorf("failed to initialize maildir store: %w", err)
-		}
-
-		// Initialize structured logger
+		// Initialize logger early so we can use it for startup errors
 		logger, err := logging.New(logging.Config{
 			Level:  cfg.Logging.Level,
 			Format: cfg.Logging.Format,
@@ -111,11 +207,55 @@ var serveCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("failed to initialize logger: %w", err)
 		}
+		resources.logger = logger
+		logger.Info("Mail server starting", "hostname", cfg.Server.Hostname)
 
-		// Initialize Redis queue for message delivery
+		// Open database with proper error handling
+		db, err = metadata.Open(cfg.Storage.DatabasePath)
+		if err != nil {
+			cleanup()
+			return fmt.Errorf("failed to open database: %w", err)
+		}
+		resources.db = db
+		logger.Info("Database opened", "path", cfg.Storage.DatabasePath)
+
+		// Run migrations with timeout
+		migrateCtx, migrateCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		if err := db.Migrate(migrateCtx); err != nil {
+			migrateCancel()
+			cleanup()
+			return fmt.Errorf("failed to run migrations: %w", err)
+		}
+		migrateCancel()
+		logger.Info("Database migrations complete")
+
+		// Initialize TLS with validation
+		tlsManager, err := security.NewTLSManager(cfg)
+		if err != nil {
+			cleanup()
+			return fmt.Errorf("failed to initialize TLS: %w", err)
+		}
+		if tlsManager.HasTLS() {
+			logger.Info("TLS configured")
+		} else {
+			logger.Warn("TLS not configured - server will run without encryption")
+		}
+
+		// Initialize authenticator
+		authenticator := auth.NewAuthenticator(db.DB)
+
+		// Initialize maildir store
+		store, err := maildir.NewStore(db.DB, cfg.Storage.MaildirPath)
+		if err != nil {
+			cleanup()
+			return fmt.Errorf("failed to initialize maildir store: %w", err)
+		}
+		logger.Info("Maildir store initialized", "path", cfg.Storage.MaildirPath)
+
+		// Initialize Redis queue with connection validation
 		retryMaxAge, _ := time.ParseDuration(cfg.Queue.RetryMaxAge)
 		if retryMaxAge == 0 {
-			retryMaxAge = 7 * 24 * time.Hour // Default 7 days
+			retryMaxAge = 7 * 24 * time.Hour
 		}
 		redisQueue, err := queue.NewRedisQueue(queue.Config{
 			RedisURL:    cfg.Queue.RedisURL,
@@ -124,9 +264,11 @@ var serveCmd = &cobra.Command{
 			RetryMaxAge: retryMaxAge,
 		})
 		if err != nil {
+			cleanup()
 			return fmt.Errorf("failed to initialize Redis queue: %w", err)
 		}
-		defer redisQueue.Close()
+		resources.redisQueue = redisQueue
+		logger.Info("Redis queue connected", "url", cfg.Queue.RedisURL)
 
 		// Initialize DKIM signer pool
 		dkimPool := security.NewDKIMSignerPool()
@@ -161,21 +303,24 @@ var serveCmd = &cobra.Command{
 			VerifyTLS:      cfg.Delivery.VerifyTLS,
 			RelayHost:      cfg.Delivery.RelayHost,
 		}, redisQueue, dkimPool, logger)
+		resources.deliveryEngine = deliveryEngine
 		deliveryEngine.Start()
-		defer deliveryEngine.Stop()
+		logger.Info("Delivery engine started", "workers", cfg.Delivery.Workers)
 
-		// Create IMAP v2 server
+		// Create IMAP server
 		imapAddr := fmt.Sprintf(":%d", cfg.Server.IMAPPort)
 		imapsAddr := fmt.Sprintf(":%d", cfg.Server.IMAPSPort)
 		imapSrv := imapserver.NewServer(authenticator, store, imapAddr, imapsAddr, tlsManager.TLSConfig())
+		resources.imapSrv = imapSrv
 
-		// Create SMTP backend and server with delivery engine
+		// Create SMTP backend and server
 		smtpBackend, err := smtpserver.NewBackend(cfg, authenticator, store, deliveryEngine, logger)
 		if err != nil {
+			cleanup()
 			return fmt.Errorf("failed to create SMTP backend: %w", err)
 		}
 
-		// Wire up SMTP -> IMAP notifications for instant email delivery
+		// Wire up SMTP -> IMAP notifications
 		smtpBackend.SetLocalDeliveryNotifier(func(username, mailbox string) {
 			imapSrv.NotifyMailboxUpdateByName(username, mailbox)
 		})
@@ -190,70 +335,84 @@ var serveCmd = &cobra.Command{
 		}
 
 		smtpSrv := smtpserver.NewServer(smtpBackend, cfg, tlsManager.TLSConfig())
+		resources.smtpSrv = smtpSrv
 
+		// Start all servers with error handling
 		fmt.Printf("Mail server starting on %s\n", cfg.Server.Hostname)
 		fmt.Printf("  SMTP:  %d (MX), %d (submission), %d (SMTPS)\n",
 			cfg.Server.SMTPPort, cfg.Server.SubmissionPort, cfg.Server.SMTPSPort)
 		fmt.Printf("  IMAP:  %d, %d (TLS)\n", cfg.Server.IMAPPort, cfg.Server.IMAPSPort)
-		fmt.Printf("  DAV:   %d\n", cfg.Server.DAVPort)
 
 		// Start IMAP servers
 		if err := imapSrv.ListenAndServe(); err != nil {
+			cleanup()
 			return fmt.Errorf("failed to start IMAP server: %w", err)
 		}
+		logger.Info("IMAP server started", "port", cfg.Server.IMAPPort)
+
 		if tlsManager.HasTLS() {
 			if err := imapSrv.ListenAndServeTLS(tlsManager.TLSConfig()); err != nil {
+				cleanup()
 				return fmt.Errorf("failed to start IMAPS server: %w", err)
 			}
+			logger.Info("IMAPS server started", "port", cfg.Server.IMAPSPort)
 		}
 
 		// Start SMTP servers
 		if err := smtpSrv.ListenAndServe(); err != nil {
+			cleanup()
 			return fmt.Errorf("failed to start SMTP server: %w", err)
 		}
+		logger.Info("SMTP MX server started", "port", cfg.Server.SMTPPort)
+
 		if err := smtpSrv.ListenAndServeSubmission(); err != nil {
+			cleanup()
 			return fmt.Errorf("failed to start SMTP submission server: %w", err)
 		}
+		logger.Info("SMTP submission server started", "port", cfg.Server.SubmissionPort)
+
 		if tlsManager.HasTLS() {
 			if err := smtpSrv.ListenAndServeTLS(); err != nil {
+				cleanup()
 				return fmt.Errorf("failed to start SMTPS server: %w", err)
 			}
+			logger.Info("SMTPS server started", "port", cfg.Server.SMTPSPort)
 		}
 
 		// Start admin server if enabled
-		var adminSrv *admin.Server
 		if cfg.Admin.Enabled {
-			var err error
-			adminSrv, err = admin.NewServer(cfg, db.DB, authenticator, store, sieveStore, logger)
+			adminSrv, err := admin.NewServer(cfg, db.DB, authenticator, store, sieveStore, logger)
 			if err != nil {
 				logger.Warn("Failed to initialize admin server", "error", err.Error())
 			} else {
+				resources.adminSrv = adminSrv
 				adminAddr := fmt.Sprintf("%s:%d", cfg.Admin.Listen, cfg.Admin.Port)
 				go func() {
 					if err := adminSrv.Start(adminAddr); err != nil {
-						logger.Warn("Admin server stopped", "error", err.Error())
+						logger.Error("Admin server error", "error", err.Error())
 					}
 				}()
 				fmt.Printf("  Admin: http://%s\n", adminAddr)
+				logger.Info("Admin server started", "addr", adminAddr)
 			}
 		}
 
 		fmt.Println("\nServer is running. Press Ctrl+C to stop.")
+		logger.Info("All services started successfully")
+
+		// Setup signal handling for graceful shutdown
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 
 		// Wait for shutdown signal
-		sigCh := make(chan os.Signal, 1)
-		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-		<-sigCh
+		sig := <-sigCh
+		logger.Info("Received shutdown signal", "signal", sig.String())
+		fmt.Printf("\nReceived signal %s, shutting down...\n", sig)
 
-		fmt.Println("\nShutting down...")
+		// Perform graceful shutdown
+		cleanup()
 
-		// Graceful shutdown
-		if adminSrv != nil {
-			adminSrv.Shutdown(context.Background())
-		}
-		imapSrv.Close()
-		smtpSrv.Close()
-
+		logger.Info("Server stopped")
 		return nil
 	},
 }
@@ -575,7 +734,10 @@ var dnsCheckCmd = &cobra.Command{
 		domain := args[0]
 		mailServer := cfg.Server.Hostname
 
-		checker := dns.NewChecker(domain, mailServer)
+		checker, err := dns.NewChecker(domain, mailServer)
+		if err != nil {
+			return fmt.Errorf("failed to create DNS checker: %w", err)
+		}
 		results := checker.CheckAll(context.Background())
 
 		fmt.Printf("DNS Check for %s (mail server: %s)\n", domain, mailServer)
@@ -620,7 +782,10 @@ var dnsGenerateCmd = &cobra.Command{
 			serverIP = args[1]
 		}
 
-		generator := dns.NewGenerator(domain, mailServer, serverIP)
+		generator, err := dns.NewGenerator(domain, mailServer, serverIP)
+		if err != nil {
+			return fmt.Errorf("failed to create DNS generator: %w", err)
+		}
 
 		// Try to load DKIM key if configured
 		for _, d := range cfg.Domains {

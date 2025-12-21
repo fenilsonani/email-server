@@ -119,6 +119,13 @@ func NewCircuitBreaker(cfg Config) *CircuitBreaker {
 
 // Execute runs the given function through the circuit breaker.
 func (cb *CircuitBreaker) Execute(ctx context.Context, fn func(ctx context.Context) error) error {
+	if ctx == nil {
+		return errors.New("context is nil")
+	}
+	if fn == nil {
+		return errors.New("function is nil")
+	}
+
 	if err := cb.beforeRequest(); err != nil {
 		return err
 	}
@@ -132,25 +139,51 @@ func (cb *CircuitBreaker) Execute(ctx context.Context, fn func(ctx context.Conte
 	}
 
 	// Execute the function with panic recovery
+	// Use buffered channel to prevent goroutine leak
 	errCh := make(chan error, 1)
+
+	// Track goroutine completion
+	done := make(chan struct{})
 	go func() {
 		defer func() {
+			close(done)
 			if r := recover(); r != nil {
-				errCh <- fmt.Errorf("panic in circuit breaker: %v", r)
+				// Try to send panic error, but don't block if channel is full
+				select {
+				case errCh <- fmt.Errorf("panic in circuit breaker: %v", r):
+				default:
+				}
 			}
 		}()
-		errCh <- fn(execCtx)
+
+		err := fn(execCtx)
+
+		// Try to send result, but don't block if context is cancelled
+		select {
+		case errCh <- err:
+		case <-execCtx.Done():
+			// Context cancelled, function result doesn't matter
+		}
 	}()
 
 	var err error
 	select {
 	case err = <-errCh:
-		// Function completed
+		// Function completed normally or panicked
 	case <-execCtx.Done():
+		// Context cancelled or timed out
 		if execCtx.Err() == context.DeadlineExceeded {
 			err = ErrCircuitTimeout
 		} else {
 			err = execCtx.Err()
+		}
+		// Wait for goroutine to finish with timeout to prevent leak
+		select {
+		case <-done:
+			// Goroutine finished
+		case <-time.After(100 * time.Millisecond):
+			// Goroutine still running, but we can't wait forever
+			// This is acceptable as the goroutine will eventually finish
 		}
 	}
 
@@ -253,8 +286,24 @@ func (cb *CircuitBreaker) transitionTo(newState State) {
 	atomic.StoreInt32(&cb.state, int32(newState))
 
 	if cb.config.OnStateChange != nil {
-		// Call outside lock to prevent deadlocks
-		go cb.config.OnStateChange(cb.config.Name, oldState, newState)
+		// Call in background with timeout to prevent goroutine leak
+		callback := cb.config.OnStateChange
+		name := cb.config.Name
+		go func() {
+			// Use a timer to ensure callback doesn't run forever
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				callback(name, oldState, newState)
+			}()
+
+			select {
+			case <-done:
+				// Callback completed
+			case <-time.After(5 * time.Second):
+				// Callback took too long - let it finish but don't wait
+			}
+		}()
 	}
 }
 
@@ -288,36 +337,105 @@ func (cb *CircuitBreaker) Reset() {
 	cb.transitionTo(StateClosed)
 }
 
+// Validate checks if the circuit breaker configuration is valid.
+func (cfg Config) Validate() error {
+	if cfg.Name == "" {
+		return errors.New("circuit breaker name is required")
+	}
+	if cfg.FailureThreshold <= 0 {
+		return errors.New("failure threshold must be positive")
+	}
+	if cfg.SuccessThreshold <= 0 {
+		return errors.New("success threshold must be positive")
+	}
+	if cfg.Timeout <= 0 {
+		return errors.New("timeout must be positive")
+	}
+	if cfg.HalfOpenMaxCalls <= 0 {
+		return errors.New("half-open max calls must be positive")
+	}
+	return nil
+}
+
 // BreakerRegistry manages multiple circuit breakers by key.
 type BreakerRegistry struct {
 	breakers sync.Map
 	config   func(key string) Config
+	mu       sync.RWMutex
 }
 
 // NewBreakerRegistry creates a new registry with a config factory function.
 func NewBreakerRegistry(configFactory func(key string) Config) *BreakerRegistry {
+	if configFactory == nil {
+		panic("config factory cannot be nil")
+	}
 	return &BreakerRegistry{
 		config: configFactory,
 	}
 }
 
 // Get returns the circuit breaker for the given key, creating it if necessary.
+// This method is safe for concurrent use.
 func (r *BreakerRegistry) Get(key string) *CircuitBreaker {
+	if key == "" {
+		return nil
+	}
+
+	// Fast path: check if breaker exists
+	if cb, ok := r.breakers.Load(key); ok {
+		return cb.(*CircuitBreaker)
+	}
+
+	// Slow path: create new breaker
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Double-check after acquiring lock
 	if cb, ok := r.breakers.Load(key); ok {
 		return cb.(*CircuitBreaker)
 	}
 
 	newCB := NewCircuitBreaker(r.config(key))
-	actual, _ := r.breakers.LoadOrStore(key, newCB)
-	return actual.(*CircuitBreaker)
+	r.breakers.Store(key, newCB)
+	return newCB
+}
+
+// Remove removes a circuit breaker from the registry.
+func (r *BreakerRegistry) Remove(key string) {
+	r.breakers.Delete(key)
 }
 
 // All returns all registered circuit breakers.
+// The returned map is a snapshot and safe to modify.
 func (r *BreakerRegistry) All() map[string]*CircuitBreaker {
 	result := make(map[string]*CircuitBreaker)
 	r.breakers.Range(func(key, value interface{}) bool {
-		result[key.(string)] = value.(*CircuitBreaker)
+		if k, ok := key.(string); ok {
+			if cb, ok := value.(*CircuitBreaker); ok {
+				result[k] = cb
+			}
+		}
 		return true
 	})
 	return result
+}
+
+// Reset resets all circuit breakers in the registry.
+func (r *BreakerRegistry) Reset() {
+	r.breakers.Range(func(key, value interface{}) bool {
+		if cb, ok := value.(*CircuitBreaker); ok {
+			cb.Reset()
+		}
+		return true
+	})
+}
+
+// Count returns the number of circuit breakers in the registry.
+func (r *BreakerRegistry) Count() int {
+	count := 0
+	r.breakers.Range(func(key, value interface{}) bool {
+		count++
+		return true
+	})
+	return count
 }

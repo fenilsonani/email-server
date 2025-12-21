@@ -1,10 +1,34 @@
 package sieve
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
+)
+
+// Limits to prevent DoS attacks
+const (
+	maxScriptSize      = 1024 * 1024 // 1MB max script size
+	maxTokens          = 100000      // Maximum number of tokens
+	maxStringLength    = 10000       // Maximum string literal length
+	maxArraySize       = 1000        // Maximum array size
+	maxParseDepth      = 100         // Maximum parsing recursion depth
+	maxConditionDepth  = 50          // Maximum condition nesting
+	maxVacationDays    = 365         // Maximum vacation days
+	maxSizeValue       = 1024 * 1024 * 1024 * 10 // 10GB max size value
+)
+
+var (
+	ErrScriptTooLarge    = errors.New("sieve script exceeds maximum size")
+	ErrTooManyTokens     = errors.New("sieve script has too many tokens")
+	ErrStringTooLong     = errors.New("string literal exceeds maximum length")
+	ErrArrayTooLarge     = errors.New("array exceeds maximum size")
+	ErrNestingTooDeep    = errors.New("nesting depth exceeds maximum")
+	ErrInvalidInput      = errors.New("invalid input in script")
+	ErrUnterminatedString = errors.New("unterminated string literal")
+	ErrInvalidSize       = errors.New("invalid size value")
 )
 
 // Parser parses Sieve scripts into executable rules
@@ -12,6 +36,7 @@ type Parser struct {
 	input  string
 	pos    int
 	tokens []token
+	depth  int // Current parsing depth
 }
 
 type token struct {
@@ -63,6 +88,11 @@ const (
 
 // Parse parses a Sieve script string into a ParsedScript
 func Parse(script string) (*ParsedScript, error) {
+	// Validate script size to prevent DoS
+	if len(script) > maxScriptSize {
+		return nil, ErrScriptTooLarge
+	}
+
 	p := &Parser{input: script}
 	if err := p.tokenize(); err != nil {
 		return nil, err
@@ -70,11 +100,52 @@ func Parse(script string) (*ParsedScript, error) {
 	return p.parse()
 }
 
+// peek returns the current token without advancing, or nil if out of bounds
+func (p *Parser) peek() *token {
+	if p.pos >= len(p.tokens) {
+		return nil
+	}
+	return &p.tokens[p.pos]
+}
+
+// current returns the current token or EOF token if out of bounds
+func (p *Parser) current() token {
+	if p.pos >= len(p.tokens) {
+		return token{typ: tokenEOF, val: ""}
+	}
+	return p.tokens[p.pos]
+}
+
+// advance moves to the next token
+func (p *Parser) advance() {
+	if p.pos < len(p.tokens) {
+		p.pos++
+	}
+}
+
+// expect checks if current token matches expected type and advances
+func (p *Parser) expect(expected tokenType) error {
+	if p.pos >= len(p.tokens) {
+		return fmt.Errorf("unexpected end of script, expected %v", expected)
+	}
+	if p.tokens[p.pos].typ != expected {
+		return fmt.Errorf("expected %v, got %v", expected, p.tokens[p.pos].typ)
+	}
+	p.pos++
+	return nil
+}
+
 func (p *Parser) tokenize() error {
 	// Simple tokenizer for Sieve subset
 	s := p.input
-	s = regexp.MustCompile(`#[^\n]*`).ReplaceAllString(s, "") // Remove comments
-	s = regexp.MustCompile(`/\*[\s\S]*?\*/`).ReplaceAllString(s, "") // Remove block comments
+
+	// Remove comments with safe regex
+	commentRegex := regexp.MustCompile(`#[^\n]*`)
+	s = commentRegex.ReplaceAllString(s, "")
+
+	// Remove block comments with safe regex
+	blockCommentRegex := regexp.MustCompile(`/\*[\s\S]*?\*/`)
+	s = blockCommentRegex.ReplaceAllString(s, "")
 
 	// Keywords regex
 	keywords := map[string]tokenType{
@@ -106,7 +177,21 @@ func (p *Parser) tokenize() error {
 	}
 
 	i := 0
+	iterations := 0
+	maxIterations := len(s) + 1000 // Safety limit
+
 	for i < len(s) {
+		// Prevent infinite loops
+		iterations++
+		if iterations > maxIterations {
+			return ErrInvalidInput
+		}
+
+		// Check token limit
+		if len(p.tokens) >= maxTokens {
+			return ErrTooManyTokens
+		}
+
 		// Skip whitespace
 		for i < len(s) && (s[i] == ' ' || s[i] == '\t' || s[i] == '\n' || s[i] == '\r') {
 			i++
@@ -161,13 +246,24 @@ func (p *Parser) tokenize() error {
 		if ch == '"' {
 			i++
 			start := i
+			stringIterations := 0
 			for i < len(s) && s[i] != '"' {
+				stringIterations++
+				if stringIterations > maxStringLength {
+					return ErrStringTooLong
+				}
 				if s[i] == '\\' && i+1 < len(s) {
 					i++ // Skip escaped char
 				}
 				i++
 			}
+			if i >= len(s) {
+				return ErrUnterminatedString
+			}
 			val := s[start:i]
+			if len(val) > maxStringLength {
+				return ErrStringTooLong
+			}
 			val = strings.ReplaceAll(val, `\"`, `"`)
 			val = strings.ReplaceAll(val, `\\`, `\`)
 			p.tokens = append(p.tokens, token{tokenString, val})
@@ -178,7 +274,12 @@ func (p *Parser) tokenize() error {
 		// Number
 		if ch >= '0' && ch <= '9' {
 			start := i
+			numLen := 0
 			for i < len(s) && ((s[i] >= '0' && s[i] <= '9') || s[i] == 'K' || s[i] == 'M' || s[i] == 'G') {
+				numLen++
+				if numLen > 100 {
+					return ErrInvalidInput
+				}
 				i++
 			}
 			p.tokens = append(p.tokens, token{tokenNumber, s[start:i]})
@@ -188,7 +289,12 @@ func (p *Parser) tokenize() error {
 		// Keyword or identifier
 		if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '_' {
 			start := i
+			identLen := 0
 			for i < len(s) && ((s[i] >= 'a' && s[i] <= 'z') || (s[i] >= 'A' && s[i] <= 'Z') || (s[i] >= '0' && s[i] <= '9') || s[i] == '_') {
+				identLen++
+				if identLen > 1000 {
+					return ErrInvalidInput
+				}
 				i++
 			}
 			word := strings.ToLower(s[start:i])
@@ -209,9 +315,19 @@ func (p *Parser) tokenize() error {
 
 func (p *Parser) parse() (*ParsedScript, error) {
 	script := &ParsedScript{}
+	iterations := 0
 
-	for p.pos < len(p.tokens) && p.tokens[p.pos].typ != tokenEOF {
-		tok := p.tokens[p.pos]
+	for p.pos < len(p.tokens) {
+		// Prevent infinite loops
+		iterations++
+		if iterations > maxTokens {
+			return nil, ErrInvalidInput
+		}
+
+		tok := p.current()
+		if tok.typ == tokenEOF {
+			break
+		}
 
 		switch tok.typ {
 		case tokenRequire:
@@ -226,10 +342,12 @@ func (p *Parser) parse() (*ParsedScript, error) {
 			if err != nil {
 				return nil, err
 			}
-			script.Rules = append(script.Rules, *rule)
+			if rule != nil {
+				script.Rules = append(script.Rules, *rule)
+			}
 
 		default:
-			p.pos++
+			p.advance()
 		}
 	}
 
@@ -237,35 +355,55 @@ func (p *Parser) parse() (*ParsedScript, error) {
 }
 
 func (p *Parser) parseRequire() ([]string, error) {
-	p.pos++ // skip 'require'
+	p.advance() // skip 'require'
 
 	var reqs []string
+	tok := p.current()
 
-	if p.tokens[p.pos].typ == tokenLBracket {
+	if tok.typ == tokenLBracket {
 		// Array of requirements
-		p.pos++
-		for p.tokens[p.pos].typ != tokenRBracket && p.tokens[p.pos].typ != tokenEOF {
-			if p.tokens[p.pos].typ == tokenString {
-				reqs = append(reqs, p.tokens[p.pos].val)
+		p.advance()
+		arrayCount := 0
+		for {
+			tok = p.current()
+			if tok.typ == tokenRBracket || tok.typ == tokenEOF {
+				break
 			}
-			p.pos++
+			arrayCount++
+			if arrayCount > maxArraySize {
+				return nil, ErrArrayTooLarge
+			}
+			if tok.typ == tokenString {
+				reqs = append(reqs, tok.val)
+			}
+			p.advance()
 		}
-		p.pos++ // skip ']'
-	} else if p.tokens[p.pos].typ == tokenString {
-		reqs = append(reqs, p.tokens[p.pos].val)
-		p.pos++
+		if tok.typ == tokenRBracket {
+			p.advance() // skip ']'
+		}
+	} else if tok.typ == tokenString {
+		reqs = append(reqs, tok.val)
+		p.advance()
 	}
 
-	if p.tokens[p.pos].typ == tokenSemi {
-		p.pos++
+	tok = p.current()
+	if tok.typ == tokenSemi {
+		p.advance()
 	}
 
 	return reqs, nil
 }
 
 func (p *Parser) parseRule() (*Rule, error) {
+	// Check parsing depth
+	p.depth++
+	if p.depth > maxParseDepth {
+		return nil, ErrNestingTooDeep
+	}
+	defer func() { p.depth-- }()
+
 	rule := &Rule{}
-	p.pos++ // skip 'if'
+	p.advance() // skip 'if'
 
 	// Parse condition
 	cond, allOf, err := p.parseCondition()
@@ -276,12 +414,22 @@ func (p *Parser) parseRule() (*Rule, error) {
 	rule.AllOf = allOf
 
 	// Parse actions block
-	if p.tokens[p.pos].typ != tokenLBrace {
-		return nil, fmt.Errorf("expected '{' after condition")
+	tok := p.current()
+	if tok.typ != tokenLBrace {
+		return nil, fmt.Errorf("expected '{' after condition, got %v", tok.typ)
 	}
-	p.pos++
+	p.advance()
 
-	for p.tokens[p.pos].typ != tokenRBrace && p.tokens[p.pos].typ != tokenEOF {
+	actionCount := 0
+	for {
+		tok = p.current()
+		if tok.typ == tokenRBrace || tok.typ == tokenEOF {
+			break
+		}
+		actionCount++
+		if actionCount > maxArraySize {
+			return nil, ErrArrayTooLarge
+		}
 		action, err := p.parseAction()
 		if err != nil {
 			return nil, err
@@ -290,24 +438,43 @@ func (p *Parser) parseRule() (*Rule, error) {
 			rule.Actions = append(rule.Actions, action)
 		}
 	}
-	p.pos++ // skip '}'
+	if tok.typ == tokenRBrace {
+		p.advance() // skip '}'
+	}
 
 	return rule, nil
 }
 
 func (p *Parser) parseCondition() ([]Condition, bool, error) {
+	// Check condition depth
+	p.depth++
+	if p.depth > maxConditionDepth {
+		return nil, false, ErrNestingTooDeep
+	}
+	defer func() { p.depth-- }()
+
 	var conditions []Condition
 	allOf := true
 
-	tok := p.tokens[p.pos]
+	tok := p.current()
 
 	switch tok.typ {
 	case tokenAllof:
-		p.pos++
+		p.advance()
 		allOf = true
-		if p.tokens[p.pos].typ == tokenLParen {
-			p.pos++
-			for p.tokens[p.pos].typ != tokenRParen && p.tokens[p.pos].typ != tokenEOF {
+		tok = p.current()
+		if tok.typ == tokenLParen {
+			p.advance()
+			condCount := 0
+			for {
+				tok = p.current()
+				if tok.typ == tokenRParen || tok.typ == tokenEOF {
+					break
+				}
+				condCount++
+				if condCount > maxArraySize {
+					return nil, false, ErrArrayTooLarge
+				}
 				cond, err := p.parseSingleCondition()
 				if err != nil {
 					return nil, false, err
@@ -315,19 +482,32 @@ func (p *Parser) parseCondition() ([]Condition, bool, error) {
 				if cond != nil {
 					conditions = append(conditions, cond)
 				}
-				if p.tokens[p.pos].typ == tokenComma {
-					p.pos++
+				tok = p.current()
+				if tok.typ == tokenComma {
+					p.advance()
 				}
 			}
-			p.pos++ // skip ')'
+			if tok.typ == tokenRParen {
+				p.advance() // skip ')'
+			}
 		}
 
 	case tokenAnyof:
-		p.pos++
+		p.advance()
 		allOf = false
-		if p.tokens[p.pos].typ == tokenLParen {
-			p.pos++
-			for p.tokens[p.pos].typ != tokenRParen && p.tokens[p.pos].typ != tokenEOF {
+		tok = p.current()
+		if tok.typ == tokenLParen {
+			p.advance()
+			condCount := 0
+			for {
+				tok = p.current()
+				if tok.typ == tokenRParen || tok.typ == tokenEOF {
+					break
+				}
+				condCount++
+				if condCount > maxArraySize {
+					return nil, false, ErrArrayTooLarge
+				}
 				cond, err := p.parseSingleCondition()
 				if err != nil {
 					return nil, false, err
@@ -335,19 +515,22 @@ func (p *Parser) parseCondition() ([]Condition, bool, error) {
 				if cond != nil {
 					conditions = append(conditions, cond)
 				}
-				if p.tokens[p.pos].typ == tokenComma {
-					p.pos++
+				tok = p.current()
+				if tok.typ == tokenComma {
+					p.advance()
 				}
 			}
-			p.pos++ // skip ')'
+			if tok.typ == tokenRParen {
+				p.advance() // skip ')'
+			}
 		}
 
 	case tokenTrue:
-		p.pos++
+		p.advance()
 		conditions = append(conditions, &TrueCondition{})
 
 	case tokenFalse:
-		p.pos++
+		p.advance()
 		conditions = append(conditions, &FalseCondition{})
 
 	default:
@@ -364,11 +547,18 @@ func (p *Parser) parseCondition() ([]Condition, bool, error) {
 }
 
 func (p *Parser) parseSingleCondition() (Condition, error) {
-	tok := p.tokens[p.pos]
+	// Check recursion depth for NOT conditions
+	p.depth++
+	if p.depth > maxConditionDepth {
+		return nil, ErrNestingTooDeep
+	}
+	defer func() { p.depth-- }()
+
+	tok := p.current()
 
 	switch tok.typ {
 	case tokenNot:
-		p.pos++
+		p.advance()
 		inner, err := p.parseSingleCondition()
 		if err != nil {
 			return nil, err
@@ -385,30 +575,36 @@ func (p *Parser) parseSingleCondition() (Condition, error) {
 		return p.parseExistsCondition()
 
 	case tokenTrue:
-		p.pos++
+		p.advance()
 		return &TrueCondition{}, nil
 
 	case tokenFalse:
-		p.pos++
+		p.advance()
 		return &FalseCondition{}, nil
 	}
 
-	p.pos++
+	p.advance()
 	return nil, nil
 }
 
 func (p *Parser) parseHeaderCondition(isAddress bool) (Condition, error) {
-	p.pos++ // skip 'header' or 'address'
+	p.advance() // skip 'header' or 'address'
 
 	var matchType string
 	var comparator string
 	var addressPart string
 
 	// Parse optional modifiers
-	for p.tokens[p.pos].typ == tokenColon {
-		p.pos++
-		mod := p.tokens[p.pos].val
-		p.pos++
+	modCount := 0
+	for p.current().typ == tokenColon {
+		modCount++
+		if modCount > 10 {
+			return nil, ErrInvalidInput
+		}
+		p.advance()
+		tok := p.current()
+		mod := tok.val
+		p.advance()
 
 		switch mod {
 		case "contains", "is", "matches":
@@ -416,9 +612,10 @@ func (p *Parser) parseHeaderCondition(isAddress bool) (Condition, error) {
 		case "localpart", "domain", "all":
 			addressPart = mod
 		case "comparator":
-			if p.tokens[p.pos].typ == tokenString {
-				comparator = p.tokens[p.pos].val
-				p.pos++
+			tok = p.current()
+			if tok.typ == tokenString {
+				comparator = tok.val
+				p.advance()
 			}
 		}
 	}
@@ -429,34 +626,70 @@ func (p *Parser) parseHeaderCondition(isAddress bool) (Condition, error) {
 
 	// Parse header names
 	var headers []string
-	if p.tokens[p.pos].typ == tokenLBracket {
-		p.pos++
-		for p.tokens[p.pos].typ != tokenRBracket && p.tokens[p.pos].typ != tokenEOF {
-			if p.tokens[p.pos].typ == tokenString {
-				headers = append(headers, p.tokens[p.pos].val)
+	tok := p.current()
+	if tok.typ == tokenLBracket {
+		p.advance()
+		arrayCount := 0
+		for {
+			tok = p.current()
+			if tok.typ == tokenRBracket || tok.typ == tokenEOF {
+				break
 			}
-			p.pos++
+			arrayCount++
+			if arrayCount > maxArraySize {
+				return nil, ErrArrayTooLarge
+			}
+			if tok.typ == tokenString {
+				if len(tok.val) > maxStringLength {
+					return nil, ErrStringTooLong
+				}
+				headers = append(headers, tok.val)
+			}
+			p.advance()
 		}
-		p.pos++
-	} else if p.tokens[p.pos].typ == tokenString {
-		headers = append(headers, p.tokens[p.pos].val)
-		p.pos++
+		if tok.typ == tokenRBracket {
+			p.advance()
+		}
+	} else if tok.typ == tokenString {
+		if len(tok.val) > maxStringLength {
+			return nil, ErrStringTooLong
+		}
+		headers = append(headers, tok.val)
+		p.advance()
 	}
 
 	// Parse values
 	var values []string
-	if p.tokens[p.pos].typ == tokenLBracket {
-		p.pos++
-		for p.tokens[p.pos].typ != tokenRBracket && p.tokens[p.pos].typ != tokenEOF {
-			if p.tokens[p.pos].typ == tokenString {
-				values = append(values, p.tokens[p.pos].val)
+	tok = p.current()
+	if tok.typ == tokenLBracket {
+		p.advance()
+		arrayCount := 0
+		for {
+			tok = p.current()
+			if tok.typ == tokenRBracket || tok.typ == tokenEOF {
+				break
 			}
-			p.pos++
+			arrayCount++
+			if arrayCount > maxArraySize {
+				return nil, ErrArrayTooLarge
+			}
+			if tok.typ == tokenString {
+				if len(tok.val) > maxStringLength {
+					return nil, ErrStringTooLong
+				}
+				values = append(values, tok.val)
+			}
+			p.advance()
 		}
-		p.pos++
-	} else if p.tokens[p.pos].typ == tokenString {
-		values = append(values, p.tokens[p.pos].val)
-		p.pos++
+		if tok.typ == tokenRBracket {
+			p.advance()
+		}
+	} else if tok.typ == tokenString {
+		if len(tok.val) > maxStringLength {
+			return nil, ErrStringTooLong
+		}
+		values = append(values, tok.val)
+		p.advance()
 	}
 
 	return &HeaderCondition{
@@ -470,98 +703,146 @@ func (p *Parser) parseHeaderCondition(isAddress bool) (Condition, error) {
 }
 
 func (p *Parser) parseSizeCondition() (Condition, error) {
-	p.pos++ // skip 'size'
+	p.advance() // skip 'size'
 
 	var over bool
-	if p.tokens[p.pos].typ == tokenColon {
-		p.pos++
-		if p.tokens[p.pos].typ == tokenOver {
+	tok := p.current()
+	if tok.typ == tokenColon {
+		p.advance()
+		tok = p.current()
+		if tok.typ == tokenOver {
 			over = true
 		}
-		p.pos++
+		p.advance()
 	}
 
 	var size int64
-	if p.tokens[p.pos].typ == tokenNumber {
-		size = parseSize(p.tokens[p.pos].val)
-		p.pos++
+	tok = p.current()
+	if tok.typ == tokenNumber {
+		var err error
+		size, err = parseSize(tok.val)
+		if err != nil {
+			return nil, err
+		}
+		p.advance()
 	}
 
 	return &SizeCondition{Size: size, Over: over}, nil
 }
 
 func (p *Parser) parseExistsCondition() (Condition, error) {
-	p.pos++ // skip 'exists'
+	p.advance() // skip 'exists'
 
 	var headers []string
-	if p.tokens[p.pos].typ == tokenLBracket {
-		p.pos++
-		for p.tokens[p.pos].typ != tokenRBracket && p.tokens[p.pos].typ != tokenEOF {
-			if p.tokens[p.pos].typ == tokenString {
-				headers = append(headers, p.tokens[p.pos].val)
+	tok := p.current()
+	if tok.typ == tokenLBracket {
+		p.advance()
+		arrayCount := 0
+		for {
+			tok = p.current()
+			if tok.typ == tokenRBracket || tok.typ == tokenEOF {
+				break
 			}
-			p.pos++
+			arrayCount++
+			if arrayCount > maxArraySize {
+				return nil, ErrArrayTooLarge
+			}
+			if tok.typ == tokenString {
+				if len(tok.val) > maxStringLength {
+					return nil, ErrStringTooLong
+				}
+				headers = append(headers, tok.val)
+			}
+			p.advance()
 		}
-		p.pos++
-	} else if p.tokens[p.pos].typ == tokenString {
-		headers = append(headers, p.tokens[p.pos].val)
-		p.pos++
+		if tok.typ == tokenRBracket {
+			p.advance()
+		}
+	} else if tok.typ == tokenString {
+		if len(tok.val) > maxStringLength {
+			return nil, ErrStringTooLong
+		}
+		headers = append(headers, tok.val)
+		p.advance()
 	}
 
 	return &ExistsCondition{Headers: headers}, nil
 }
 
 func (p *Parser) parseAction() (Action, error) {
-	tok := p.tokens[p.pos]
+	tok := p.current()
 
 	switch tok.typ {
 	case tokenKeep:
-		p.pos++
-		if p.tokens[p.pos].typ == tokenSemi {
-			p.pos++
+		p.advance()
+		tok = p.current()
+		if tok.typ == tokenSemi {
+			p.advance()
 		}
 		return &KeepAction{}, nil
 
 	case tokenFileinto:
-		p.pos++
+		p.advance()
 		var folder string
-		if p.tokens[p.pos].typ == tokenString {
-			folder = p.tokens[p.pos].val
-			p.pos++
+		tok = p.current()
+		if tok.typ == tokenString {
+			if len(tok.val) > maxStringLength {
+				return nil, ErrStringTooLong
+			}
+			folder = tok.val
+			p.advance()
 		}
-		if p.tokens[p.pos].typ == tokenSemi {
-			p.pos++
+		tok = p.current()
+		if tok.typ == tokenSemi {
+			p.advance()
+		}
+		if folder == "" {
+			return nil, fmt.Errorf("fileinto requires a folder name")
 		}
 		return &FileIntoAction{Folder: folder}, nil
 
 	case tokenRedirect:
-		p.pos++
+		p.advance()
 		var address string
-		if p.tokens[p.pos].typ == tokenString {
-			address = p.tokens[p.pos].val
-			p.pos++
+		tok = p.current()
+		if tok.typ == tokenString {
+			if len(tok.val) > maxStringLength {
+				return nil, ErrStringTooLong
+			}
+			address = tok.val
+			p.advance()
 		}
-		if p.tokens[p.pos].typ == tokenSemi {
-			p.pos++
+		tok = p.current()
+		if tok.typ == tokenSemi {
+			p.advance()
+		}
+		if address == "" {
+			return nil, fmt.Errorf("redirect requires an address")
 		}
 		return &RedirectAction{Address: address}, nil
 
 	case tokenDiscard:
-		p.pos++
-		if p.tokens[p.pos].typ == tokenSemi {
-			p.pos++
+		p.advance()
+		tok = p.current()
+		if tok.typ == tokenSemi {
+			p.advance()
 		}
 		return &DiscardAction{}, nil
 
 	case tokenReject:
-		p.pos++
+		p.advance()
 		var message string
-		if p.tokens[p.pos].typ == tokenString {
-			message = p.tokens[p.pos].val
-			p.pos++
+		tok = p.current()
+		if tok.typ == tokenString {
+			if len(tok.val) > maxStringLength {
+				return nil, ErrStringTooLong
+			}
+			message = tok.val
+			p.advance()
 		}
-		if p.tokens[p.pos].typ == tokenSemi {
-			p.pos++
+		tok = p.current()
+		if tok.typ == tokenSemi {
+			p.advance()
 		}
 		return &RejectAction{Message: message}, nil
 
@@ -569,80 +850,122 @@ func (p *Parser) parseAction() (Action, error) {
 		return p.parseVacationAction()
 
 	case tokenStop:
-		p.pos++
-		if p.tokens[p.pos].typ == tokenSemi {
-			p.pos++
+		p.advance()
+		tok = p.current()
+		if tok.typ == tokenSemi {
+			p.advance()
 		}
 		return &StopAction{}, nil
 
 	default:
-		p.pos++
+		p.advance()
 		return nil, nil
 	}
 }
 
 func (p *Parser) parseVacationAction() (Action, error) {
-	p.pos++ // skip 'vacation'
+	p.advance() // skip 'vacation'
 
 	action := &VacationAction{
 		Days: 7, // default
 	}
 
 	// Parse optional parameters
-	for p.tokens[p.pos].typ == tokenColon {
-		p.pos++
-		param := p.tokens[p.pos].val
-		p.pos++
+	paramCount := 0
+	for p.current().typ == tokenColon {
+		paramCount++
+		if paramCount > 20 {
+			return nil, ErrInvalidInput
+		}
+		p.advance()
+		tok := p.current()
+		param := tok.val
+		p.advance()
 
 		switch param {
 		case "days":
-			if p.tokens[p.pos].typ == tokenNumber {
-				days, _ := strconv.Atoi(p.tokens[p.pos].val)
+			tok = p.current()
+			if tok.typ == tokenNumber {
+				days, err := strconv.Atoi(tok.val)
+				if err != nil {
+					return nil, fmt.Errorf("invalid vacation days value: %w", err)
+				}
+				if days < 0 || days > maxVacationDays {
+					return nil, fmt.Errorf("vacation days must be between 0 and %d", maxVacationDays)
+				}
 				action.Days = days
-				p.pos++
+				p.advance()
 			}
 		case "subject":
-			if p.tokens[p.pos].typ == tokenString {
-				action.Subject = p.tokens[p.pos].val
-				p.pos++
+			tok = p.current()
+			if tok.typ == tokenString {
+				if len(tok.val) > maxStringLength {
+					return nil, ErrStringTooLong
+				}
+				action.Subject = tok.val
+				p.advance()
 			}
 		case "from":
-			if p.tokens[p.pos].typ == tokenString {
-				action.From = p.tokens[p.pos].val
-				p.pos++
+			tok = p.current()
+			if tok.typ == tokenString {
+				if len(tok.val) > maxStringLength {
+					return nil, ErrStringTooLong
+				}
+				action.From = tok.val
+				p.advance()
 			}
 		case "addresses":
-			if p.tokens[p.pos].typ == tokenLBracket {
-				p.pos++
-				for p.tokens[p.pos].typ != tokenRBracket && p.tokens[p.pos].typ != tokenEOF {
-					if p.tokens[p.pos].typ == tokenString {
-						action.Addresses = append(action.Addresses, p.tokens[p.pos].val)
+			tok = p.current()
+			if tok.typ == tokenLBracket {
+				p.advance()
+				arrayCount := 0
+				for {
+					tok = p.current()
+					if tok.typ == tokenRBracket || tok.typ == tokenEOF {
+						break
 					}
-					p.pos++
+					arrayCount++
+					if arrayCount > maxArraySize {
+						return nil, ErrArrayTooLarge
+					}
+					if tok.typ == tokenString {
+						if len(tok.val) > maxStringLength {
+							return nil, ErrStringTooLong
+						}
+						action.Addresses = append(action.Addresses, tok.val)
+					}
+					p.advance()
 				}
-				p.pos++
+				if tok.typ == tokenRBracket {
+					p.advance()
+				}
 			}
 		}
 	}
 
 	// Parse message body
-	if p.tokens[p.pos].typ == tokenString {
-		action.Body = p.tokens[p.pos].val
-		p.pos++
+	tok := p.current()
+	if tok.typ == tokenString {
+		if len(tok.val) > maxStringLength {
+			return nil, ErrStringTooLong
+		}
+		action.Body = tok.val
+		p.advance()
 	}
 
-	if p.tokens[p.pos].typ == tokenSemi {
-		p.pos++
+	tok = p.current()
+	if tok.typ == tokenSemi {
+		p.advance()
 	}
 
 	return action, nil
 }
 
 // parseSize parses a size string like "100K" or "1M" into bytes
-func parseSize(s string) int64 {
+func parseSize(s string) (int64, error) {
 	s = strings.TrimSpace(s)
 	if len(s) == 0 {
-		return 0
+		return 0, nil
 	}
 
 	multiplier := int64(1)
@@ -660,6 +983,23 @@ func parseSize(s string) int64 {
 		s = s[:len(s)-1]
 	}
 
-	n, _ := strconv.ParseInt(s, 10, 64)
-	return n * multiplier
+	n, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid size value: %w", err)
+	}
+
+	// Check for overflow
+	if n < 0 {
+		return 0, ErrInvalidSize
+	}
+	if multiplier > 1 && n > maxSizeValue/multiplier {
+		return 0, ErrInvalidSize
+	}
+
+	result := n * multiplier
+	if result < 0 || result > maxSizeValue {
+		return 0, ErrInvalidSize
+	}
+
+	return result, nil
 }

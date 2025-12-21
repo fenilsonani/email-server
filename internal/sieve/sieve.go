@@ -4,6 +4,7 @@ package sieve
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"time"
 )
 
@@ -79,6 +80,17 @@ func NewExecutor(db *sql.DB) *Executor {
 
 // Execute runs the active Sieve script for a user against a message
 func (e *Executor) Execute(ctx context.Context, userID int64, msg *Message) (*Result, error) {
+	// Validate inputs
+	if e == nil {
+		return nil, fmt.Errorf("executor is nil")
+	}
+	if e.store == nil {
+		return nil, fmt.Errorf("store is nil")
+	}
+	if msg == nil {
+		return nil, fmt.Errorf("message is nil")
+	}
+
 	// Get active script for user
 	script, err := e.store.GetActiveScript(ctx, userID)
 	if err != nil {
@@ -106,6 +118,14 @@ func (e *Executor) Execute(ctx context.Context, userID int64, msg *Message) (*Re
 
 // executeScript runs a parsed script against a message
 func (e *Executor) executeScript(ctx context.Context, userID int64, script *ParsedScript, msg *Message) (*Result, error) {
+	// Validate inputs
+	if script == nil {
+		return nil, fmt.Errorf("script is nil")
+	}
+	if msg == nil {
+		return nil, fmt.Errorf("message is nil")
+	}
+
 	result := &Result{Keep: true} // Default action
 
 	for _, rule := range script.Rules {
@@ -115,6 +135,9 @@ func (e *Executor) executeScript(ctx context.Context, userID int64, script *Pars
 		if matched {
 			// Execute actions
 			for _, action := range rule.Actions {
+				if action == nil {
+					continue
+				}
 				if err := action.Apply(ctx, result, msg, e.vacationStore, userID); err != nil {
 					// Log error but continue
 					continue
@@ -136,8 +159,14 @@ func (e *Executor) evaluateConditions(conditions []Condition, allOf bool, msg *M
 	if len(conditions) == 0 {
 		return true
 	}
+	if msg == nil {
+		return false
+	}
 
 	for _, cond := range conditions {
+		if cond == nil {
+			continue
+		}
 		matches := cond.Evaluate(msg)
 
 		if allOf && !matches {

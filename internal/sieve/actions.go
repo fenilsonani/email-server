@@ -3,6 +3,7 @@ package sieve
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"strings"
 	"time"
 )
@@ -26,6 +27,9 @@ type FileIntoAction struct {
 }
 
 func (a *FileIntoAction) Apply(ctx context.Context, result *Result, msg *Message, vs *VacationStore, userID int64) error {
+	if a == nil || result == nil {
+		return fmt.Errorf("action or result is nil")
+	}
 	result.Filed = true
 	result.FileInto = a.Folder
 	result.Keep = false
@@ -38,6 +42,9 @@ type RedirectAction struct {
 }
 
 func (a *RedirectAction) Apply(ctx context.Context, result *Result, msg *Message, vs *VacationStore, userID int64) error {
+	if a == nil || result == nil {
+		return fmt.Errorf("action or result is nil")
+	}
 	result.Redirected = true
 	result.RedirectTo = append(result.RedirectTo, a.Address)
 	result.Keep = false
@@ -84,6 +91,10 @@ type VacationAction struct {
 }
 
 func (a *VacationAction) Apply(ctx context.Context, result *Result, msg *Message, vs *VacationStore, userID int64) error {
+	if a == nil || result == nil || msg == nil {
+		return fmt.Errorf("action, result, or message is nil")
+	}
+
 	// Don't reply to messages that shouldn't get vacation responses
 	if shouldSkipVacation(msg) {
 		return nil
@@ -189,6 +200,10 @@ func NewVacationStore(db *sql.DB) *VacationStore {
 
 // ShouldRespond checks if we should send a vacation response to this sender
 func (s *VacationStore) ShouldRespond(ctx context.Context, userID int64, senderAddr string, days int) (bool, error) {
+	if s == nil || s.db == nil {
+		return false, fmt.Errorf("vacation store or database is nil")
+	}
+
 	senderAddr = extractAddressPart(senderAddr, "all")
 	senderAddr = strings.ToLower(senderAddr)
 
@@ -199,9 +214,13 @@ func (s *VacationStore) ShouldRespond(ctx context.Context, userID int64, senderA
 		WHERE user_id = ? AND sender_address = ?
 	`, userID, senderAddr).Scan(&respondedAt)
 
-	if err != nil {
+	if err == sql.ErrNoRows {
 		// No previous response found
 		return true, nil
+	}
+	if err != nil {
+		// Database error
+		return false, err
 	}
 
 	// Check if enough time has passed
@@ -211,6 +230,10 @@ func (s *VacationStore) ShouldRespond(ctx context.Context, userID int64, senderA
 
 // RecordResponse records that we sent a vacation response to this sender
 func (s *VacationStore) RecordResponse(ctx context.Context, userID int64, senderAddr string) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("vacation store or database is nil")
+	}
+
 	senderAddr = extractAddressPart(senderAddr, "all")
 	senderAddr = strings.ToLower(senderAddr)
 
@@ -226,6 +249,10 @@ func (s *VacationStore) RecordResponse(ctx context.Context, userID int64, sender
 
 // CleanupOldResponses removes old vacation response records
 func (s *VacationStore) CleanupOldResponses(ctx context.Context, maxAge time.Duration) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("vacation store or database is nil")
+	}
+
 	cutoff := time.Now().Add(-maxAge)
 	_, err := s.db.ExecContext(ctx, `
 		DELETE FROM vacation_responses WHERE responded_at < ?

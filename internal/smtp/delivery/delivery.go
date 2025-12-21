@@ -67,12 +67,13 @@ func DefaultConfig() Config {
 
 // Engine handles outbound email delivery.
 type Engine struct {
-	config     Config
-	queue      *queue.RedisQueue
-	mxResolver *MXResolver
-	dkimPool   *security.DKIMSignerPool
-	breakers   *resilience.BreakerRegistry
-	logger     *logging.Logger
+	config         Config
+	queue          *queue.RedisQueue
+	mxResolver     *MXResolver
+	dkimPool       *security.DKIMSignerPool
+	breakers       *resilience.BreakerRegistry
+	logger         *logging.Logger
+	bounceGen      *BounceGenerator
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -83,6 +84,7 @@ type Engine struct {
 	totalSent     int64
 	totalFailed   int64
 	totalRetried  int64
+	totalBounced  int64
 }
 
 // NewEngine creates a new delivery engine.
@@ -104,9 +106,10 @@ func NewEngine(cfg Config, q *queue.RedisQueue, dkim *security.DKIMSignerPool, l
 				ExecutionTimeout: 2 * time.Minute,
 			}
 		}),
-		logger: logger.Delivery(),
-		ctx:    ctx,
-		cancel: cancel,
+		logger:    logger.Delivery(),
+		bounceGen: NewBounceGenerator(cfg.Hostname),
+		ctx:       ctx,
+		cancel:    cancel,
 	}
 }
 
@@ -249,7 +252,17 @@ func (e *Engine) deliverMessage(msg *queue.Message) {
 			e.totalFailed++
 			e.mu.Unlock()
 
-			// TODO: Generate bounce message
+			// Generate and send bounce message
+			if ShouldBounce(msg.Sender) {
+				if bounceErr := e.sendBounce(ctx, msg, err); bounceErr != nil {
+					logger.WarnContext(ctx, "Failed to send bounce message",
+						"error", bounceErr.Error())
+				} else {
+					e.mu.Lock()
+					e.totalBounced++
+					e.mu.Unlock()
+				}
+			}
 
 			// Clean up the original message file
 			if err := e.cleanupMessageFile(msg.MessagePath); err != nil {
@@ -280,6 +293,50 @@ func (e *Engine) deliverMessage(msg *queue.Message) {
 			"path", msg.MessagePath,
 			"error", err.Error())
 	}
+}
+
+// sendBounce generates and sends a bounce message back to the sender.
+func (e *Engine) sendBounce(ctx context.Context, msg *queue.Message, failureErr error) error {
+	// Generate bounce message
+	bounceData, err := e.bounceGen.Generate(msg, failureErr)
+	if err != nil {
+		return fmt.Errorf("failed to generate bounce: %w", err)
+	}
+
+	// Create temporary file for bounce message
+	tmpFile, err := os.CreateTemp(e.config.QueuePath, "bounce-*.eml")
+	if err != nil {
+		return fmt.Errorf("failed to create bounce temp file: %w", err)
+	}
+	bouncePath := tmpFile.Name()
+
+	if _, err := tmpFile.Write(bounceData); err != nil {
+		tmpFile.Close()
+		os.Remove(bouncePath)
+		return fmt.Errorf("failed to write bounce message: %w", err)
+	}
+	tmpFile.Close()
+
+	// Enqueue bounce for delivery (null sender as per RFC)
+	bounceMsg := &queue.Message{
+		Sender:      "", // Null sender for bounces
+		Recipients:  []string{msg.Sender},
+		MessagePath: bouncePath,
+		Size:        int64(len(bounceData)),
+		Domain:      extractDomain(msg.Sender),
+	}
+
+	if err := e.queue.Enqueue(ctx, bounceMsg); err != nil {
+		os.Remove(bouncePath)
+		return fmt.Errorf("failed to enqueue bounce: %w", err)
+	}
+
+	e.logger.InfoContext(ctx, "Bounce message queued",
+		"original_message_id", msg.ID,
+		"bounce_recipient", msg.Sender,
+	)
+
+	return nil
 }
 
 // cleanupMessageFile safely removes a message file after delivery
@@ -368,15 +425,22 @@ func (e *Engine) deliverToRelay(ctx context.Context, msg *queue.Message, data []
 	}
 	defer conn.Close()
 
-	// Set overall deadline
-	conn.SetDeadline(time.Now().Add(e.config.CommandTimeout))
+	// Set overall deadline from context or config timeout
+	deadline := time.Now().Add(e.config.CommandTimeout)
+	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
+		deadline = ctxDeadline
+	}
+	conn.SetDeadline(deadline)
 
 	// Create SMTP client
 	client, err := smtp.NewClient(conn, host)
 	if err != nil {
 		return fmt.Errorf("SMTP client creation failed: %w", err)
 	}
-	defer client.Close()
+	defer func() {
+		client.Quit()
+		client.Close()
+	}()
 
 	// Say hello
 	if err := client.Hello(e.config.Hostname); err != nil {
@@ -388,14 +452,27 @@ func (e *Engine) deliverToRelay(ctx context.Context, msg *queue.Message, data []
 		return classifyError(err)
 	}
 
-	// Set recipients
+	// Set recipients - track successes
+	successfulRecipients := 0
+	var lastRcptErr error
 	for _, rcpt := range msg.Recipients {
 		if err := client.Rcpt(rcpt); err != nil {
+			lastRcptErr = err
 			e.logger.WarnContext(ctx, "RCPT failed",
 				"recipient", rcpt,
 				"error", err.Error(),
 			)
+		} else {
+			successfulRecipients++
 		}
+	}
+
+	// If no recipients accepted, fail
+	if successfulRecipients == 0 {
+		if lastRcptErr != nil {
+			return classifyError(lastRcptErr)
+		}
+		return fmt.Errorf("%w: no recipients accepted", ErrInvalidRecipient)
 	}
 
 	// Send data
@@ -414,7 +491,6 @@ func (e *Engine) deliverToRelay(ctx context.Context, msg *queue.Message, data []
 		return classifyError(err)
 	}
 
-	client.Quit()
 	return nil
 }
 
@@ -457,15 +533,22 @@ func (e *Engine) deliverToHost(ctx context.Context, addr, hostname string, msg *
 	}
 	defer conn.Close()
 
-	// Set overall deadline
-	conn.SetDeadline(time.Now().Add(e.config.CommandTimeout))
+	// Set overall deadline from context or config timeout
+	deadline := time.Now().Add(e.config.CommandTimeout)
+	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
+		deadline = ctxDeadline
+	}
+	conn.SetDeadline(deadline)
 
 	// Create SMTP client
 	client, err := smtp.NewClient(conn, hostname)
 	if err != nil {
 		return fmt.Errorf("SMTP client creation failed: %w", err)
 	}
-	defer client.Close()
+	defer func() {
+		client.Quit()
+		client.Close()
+	}()
 
 	// Say hello
 	if err := client.Hello(e.config.Hostname); err != nil {
@@ -477,6 +560,7 @@ func (e *Engine) deliverToHost(ctx context.Context, addr, hostname string, msg *
 		tlsConfig := &tls.Config{
 			ServerName:         hostname,
 			InsecureSkipVerify: !e.config.VerifyTLS,
+			MinVersion:         tls.VersionTLS12,
 		}
 		if err := client.StartTLS(tlsConfig); err != nil {
 			if e.config.RequireTLS {
@@ -497,15 +581,27 @@ func (e *Engine) deliverToHost(ctx context.Context, addr, hostname string, msg *
 		return classifyError(err)
 	}
 
-	// Set recipients
+	// Set recipients - track successes
+	successfulRecipients := 0
+	var lastRcptErr error
 	for _, rcpt := range msg.Recipients {
 		if err := client.Rcpt(rcpt); err != nil {
-			// Log but continue - partial delivery may still work
+			lastRcptErr = err
 			e.logger.WarnContext(ctx, "RCPT failed",
 				"recipient", rcpt,
 				"error", err.Error(),
 			)
+		} else {
+			successfulRecipients++
 		}
+	}
+
+	// If no recipients accepted, fail
+	if successfulRecipients == 0 {
+		if lastRcptErr != nil {
+			return classifyError(lastRcptErr)
+		}
+		return fmt.Errorf("%w: no recipients accepted", ErrInvalidRecipient)
 	}
 
 	// Send data
@@ -523,9 +619,6 @@ func (e *Engine) deliverToHost(ctx context.Context, addr, hostname string, msg *
 	if err := w.Close(); err != nil {
 		return classifyError(err)
 	}
-
-	// Quit
-	client.Quit()
 
 	return nil
 }
@@ -563,6 +656,7 @@ func (e *Engine) Stats() EngineStats {
 		TotalSent:    e.totalSent,
 		TotalFailed:  e.totalFailed,
 		TotalRetried: e.totalRetried,
+		TotalBounced: e.totalBounced,
 		QueueStats:   queueStats,
 		MXCacheStats: e.mxResolver.CacheStats(),
 	}
@@ -573,6 +667,7 @@ type EngineStats struct {
 	TotalSent    int64
 	TotalFailed  int64
 	TotalRetried int64
+	TotalBounced int64
 	QueueStats   *queue.QueueStats
 	MXCacheStats MXCacheStats
 }

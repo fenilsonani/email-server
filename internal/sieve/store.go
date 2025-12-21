@@ -3,6 +3,7 @@ package sieve
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"time"
 )
 
@@ -18,6 +19,10 @@ func NewStore(db *sql.DB) *Store {
 
 // GetActiveScript returns the active Sieve script for a user
 func (s *Store) GetActiveScript(ctx context.Context, userID int64) (*Script, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("store or database is nil")
+	}
+
 	script := &Script{}
 
 	err := s.db.QueryRowContext(ctx, `
