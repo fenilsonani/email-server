@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"html/template"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/fenilsonani/email-server/internal/auth"
@@ -38,6 +39,7 @@ func NewServer(cfg *config.Config, db *sql.DB, authenticator *auth.Authenticator
 	if err != nil {
 		return nil, fmt.Errorf("failed to read base template: %w", err)
 	}
+	baseStr := string(baseContent)
 
 	// Create template map
 	templates := make(map[string]*template.Template)
@@ -62,17 +64,13 @@ func NewServer(cfg *config.Config, db *sql.DB, authenticator *auth.Authenticator
 			return nil, fmt.Errorf("failed to read template %s: %w", page, err)
 		}
 
-		// Create a fresh template and parse page first (defines "content")
-		tmpl := template.New(page)
-		tmpl, err = tmpl.Parse(string(pageContent))
+		// Replace the placeholder in base template with page content
+		combined := strings.Replace(baseStr, "<!-- CONTENT_PLACEHOLDER -->", string(pageContent), 1)
+
+		// Parse the combined template
+		tmpl, err := template.New(page).Parse(combined)
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse template %s: %w", page, err)
-		}
-
-		// Then parse base template (references "content")
-		tmpl, err = tmpl.Parse(string(baseContent))
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse base for %s: %w", page, err)
 		}
 
 		templates[page] = tmpl
@@ -225,17 +223,8 @@ func (s *Server) renderTemplate(w http.ResponseWriter, name string, data map[str
 		return
 	}
 
-	// For login page, execute the template directly
-	if name == "login.html" {
-		if err := tmpl.ExecuteTemplate(w, "login.html", data); err != nil {
-			s.logger.Error("Failed to render template", "template", name, "error", err.Error())
-			http.Error(w, "Internal server error", http.StatusInternalServerError)
-		}
-		return
-	}
-
-	// For other pages, execute the base template which includes the content
-	if err := tmpl.ExecuteTemplate(w, "base", data); err != nil {
+	// Execute template by its name
+	if err := tmpl.ExecuteTemplate(w, name, data); err != nil {
 		s.logger.Error("Failed to render template", "template", name, "error", err.Error())
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 	}
