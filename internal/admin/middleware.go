@@ -31,7 +31,7 @@ func (s *Server) createSession(userID int64) string {
 	sessions[token] = &session{
 		userID:    userID,
 		createdAt: time.Now(),
-		expiresAt: time.Now().Add(24 * time.Hour),
+		expiresAt: time.Now().Add(7 * 24 * time.Hour), // 7 days session
 	}
 	sessionsMu.Unlock()
 

@@ -18,6 +18,7 @@ import (
 	"github.com/fenilsonani/email-server/internal/auth"
 	"github.com/fenilsonani/email-server/internal/config"
 	"github.com/fenilsonani/email-server/internal/logging"
+	"github.com/fenilsonani/email-server/internal/queue"
 	"github.com/fenilsonani/email-server/internal/sieve"
 	"github.com/fenilsonani/email-server/internal/storage/maildir"
 )
@@ -32,6 +33,7 @@ type Server struct {
 	authenticator *auth.Authenticator
 	store         *maildir.Store
 	sieveStore    *sieve.Store
+	queue         *queue.RedisQueue
 	logger        *logging.Logger
 	templates     map[string]*template.Template
 	httpServer    *http.Server
@@ -39,7 +41,7 @@ type Server struct {
 }
 
 // NewServer creates a new admin server
-func NewServer(cfg *config.Config, db *sql.DB, authenticator *auth.Authenticator, store *maildir.Store, sieveStore *sieve.Store, logger *logging.Logger) (*Server, error) {
+func NewServer(cfg *config.Config, db *sql.DB, authenticator *auth.Authenticator, store *maildir.Store, sieveStore *sieve.Store, q *queue.RedisQueue, logger *logging.Logger) (*Server, error) {
 	// Read base template content
 	baseContent, err := templatesFS.ReadFile("templates/base.html")
 	if err != nil {
@@ -61,6 +63,7 @@ func NewServer(cfg *config.Config, db *sql.DB, authenticator *auth.Authenticator
 		"sieve.html",
 		"auth_logs.html",
 		"delivery_logs.html",
+		"queue.html",
 	}
 
 	for _, page := range pages {
@@ -99,6 +102,7 @@ func NewServer(cfg *config.Config, db *sql.DB, authenticator *auth.Authenticator
 		authenticator: authenticator,
 		store:         store,
 		sieveStore:    sieveStore,
+		queue:         q,
 		logger:        logger,
 		templates:     templates,
 	}
@@ -124,6 +128,9 @@ func (s *Server) Start(listen string) error {
 	mux.HandleFunc("/admin/sieve/", s.withAuth(s.handleSieve))
 	mux.HandleFunc("/admin/logs/auth", s.withAuth(s.handleAuthLogs))
 	mux.HandleFunc("/admin/logs/delivery", s.withAuth(s.handleDeliveryLogs))
+	mux.HandleFunc("/admin/queue", s.withAuth(s.handleQueue))
+	mux.HandleFunc("/admin/queue/retry/", s.withAuth(s.handleQueueRetry))
+	mux.HandleFunc("/admin/queue/delete/", s.withAuth(s.handleQueueDelete))
 	mux.HandleFunc("/admin/api/stats", s.withAuth(s.handleAPIStats))
 
 	// Build middleware chain (order matters: innermost first, then wrapping outward)
@@ -247,6 +254,15 @@ func (s *Server) getStats(ctx context.Context) (*Stats, error) {
 	err = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM domains").Scan(&stats.TotalDomains)
 	if err != nil {
 		return nil, err
+	}
+
+	// Get queue stats if available
+	if s.queue != nil {
+		queueStats, err := s.queue.Stats(ctx)
+		if err == nil {
+			stats.QueuePending = int(queueStats.Pending)
+			stats.QueueFailed = int(queueStats.Failed)
+		}
 	}
 
 	// Get recent auth activity

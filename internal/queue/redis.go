@@ -518,6 +518,78 @@ func (q *RedisQueue) ProcessingCount(ctx context.Context) (int64, error) {
 	return q.client.SCard(ctx, q.processingKey()).Result()
 }
 
+// ListPending returns pending messages up to limit.
+func (q *RedisQueue) ListPending(ctx context.Context, limit int64) ([]*Message, error) {
+	if err := q.validateContext(ctx); err != nil {
+		return nil, err
+	}
+
+	results, err := q.client.ZRangeWithScores(ctx, q.pendingKey(), 0, limit-1).Result()
+	if err != nil {
+		return nil, fmt.Errorf("failed to query pending queue: %w", err)
+	}
+
+	messages := make([]*Message, 0, len(results))
+	for _, r := range results {
+		msgID := r.Member.(string)
+		msg, err := q.GetMessage(ctx, msgID)
+		if err != nil {
+			continue
+		}
+		messages = append(messages, msg)
+	}
+
+	return messages, nil
+}
+
+// ListFailed returns failed messages up to limit.
+func (q *RedisQueue) ListFailed(ctx context.Context, limit int64) ([]*Message, error) {
+	if err := q.validateContext(ctx); err != nil {
+		return nil, err
+	}
+
+	results, err := q.client.ZRevRangeWithScores(ctx, q.failedKey(), 0, limit-1).Result()
+	if err != nil {
+		return nil, fmt.Errorf("failed to query failed queue: %w", err)
+	}
+
+	messages := make([]*Message, 0, len(results))
+	for _, r := range results {
+		msgID := r.Member.(string)
+		msg, err := q.GetMessage(ctx, msgID)
+		if err != nil {
+			continue
+		}
+		messages = append(messages, msg)
+	}
+
+	return messages, nil
+}
+
+// ListSent returns recently sent messages up to limit.
+func (q *RedisQueue) ListSent(ctx context.Context, limit int64) ([]*Message, error) {
+	if err := q.validateContext(ctx); err != nil {
+		return nil, err
+	}
+
+	results, err := q.client.ZRevRangeWithScores(ctx, q.sentKey(), 0, limit-1).Result()
+	if err != nil {
+		return nil, fmt.Errorf("failed to query sent queue: %w", err)
+	}
+
+	messages := make([]*Message, 0, len(results))
+	for _, r := range results {
+		msgID := r.Member.(string)
+		msg, err := q.GetMessage(ctx, msgID)
+		if err != nil {
+			continue
+		}
+		messages = append(messages, msg)
+	}
+
+	return messages, nil
+}
+
 // RecoverStale moves messages stuck in processing back to pending.
 // This handles cases where a worker crashed.
 func (q *RedisQueue) RecoverStale(ctx context.Context, staleThreshold time.Duration) (int, error) {

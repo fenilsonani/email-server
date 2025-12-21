@@ -1,0 +1,172 @@
+<div class="page-header">
+    <h1>Email Queue</h1>
+</div>
+
+{{if .Error}}
+<div class="alert alert-danger">{{.Error}}</div>
+{{else}}
+
+<div class="stats-grid">
+    <div class="card stat-card">
+        <div class="stat-value">{{.Stats.Pending}}</div>
+        <div class="stat-label">Pending</div>
+    </div>
+    <div class="card stat-card">
+        <div class="stat-value">{{.Stats.Processing}}</div>
+        <div class="stat-label">Processing</div>
+    </div>
+    <div class="card stat-card">
+        <div class="stat-value">{{.Stats.Sent}}</div>
+        <div class="stat-label">Sent</div>
+    </div>
+    <div class="card stat-card">
+        <div class="stat-value">{{.Stats.Failed}}</div>
+        <div class="stat-label">Failed</div>
+    </div>
+</div>
+
+<div class="stats-grid" style="margin-bottom: 1.5rem;">
+    <div class="card stat-card">
+        <div class="stat-value" style="font-size: 1.5rem;">{{.Stats.TotalEnqueued}}</div>
+        <div class="stat-label">Total Enqueued</div>
+    </div>
+    <div class="card stat-card">
+        <div class="stat-value" style="font-size: 1.5rem;">{{.Stats.TotalSent}}</div>
+        <div class="stat-label">Total Sent</div>
+    </div>
+    <div class="card stat-card">
+        <div class="stat-value" style="font-size: 1.5rem;">{{.Stats.TotalFailed}}</div>
+        <div class="stat-label">Total Failed</div>
+    </div>
+    <div class="card stat-card">
+        <div class="stat-value" style="font-size: 1.5rem;">{{.Stats.TotalRetried}}</div>
+        <div class="stat-label">Total Retried</div>
+    </div>
+</div>
+
+{{if .PendingMessages}}
+<div class="card">
+    <h2>Pending Messages</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>From</th>
+                <th>To</th>
+                <th>Status</th>
+                <th>Attempts</th>
+                <th>Next Retry</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {{range .PendingMessages}}
+            <tr>
+                <td><code style="font-size: 0.75rem;">{{.ID}}</code></td>
+                <td>{{.Sender}}</td>
+                <td>{{.Recipients}}</td>
+                <td>
+                    {{if eq .Status "pending"}}
+                    <span class="badge badge-warning">Pending</span>
+                    {{else if eq .Status "deferred"}}
+                    <span class="badge badge-warning">Deferred</span>
+                    {{else}}
+                    <span class="badge badge-secondary">{{.Status}}</span>
+                    {{end}}
+                </td>
+                <td>{{.Attempts}}/{{.MaxAttempts}}</td>
+                <td>{{.NextAttempt.Format "Jan 02 15:04:05"}}</td>
+                <td class="actions">
+                    <form method="POST" action="/admin/queue/delete/{{.ID}}" style="display:inline;">
+                        <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                        <button type="submit" class="btn btn-danger btn-sm" onclick="return confirm('Delete this message?')">Delete</button>
+                    </form>
+                </td>
+            </tr>
+            {{if .LastError}}
+            <tr>
+                <td colspan="7" style="padding-top: 0; border-top: none;">
+                    <small style="color: var(--danger);">Error: {{.LastError}}</small>
+                </td>
+            </tr>
+            {{end}}
+            {{end}}
+        </tbody>
+    </table>
+</div>
+{{end}}
+
+{{if .FailedMessages}}
+<div class="card">
+    <h2>Failed Messages</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>From</th>
+                <th>To</th>
+                <th>Attempts</th>
+                <th>Error</th>
+                <th>Created</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {{range .FailedMessages}}
+            <tr>
+                <td><code style="font-size: 0.75rem;">{{.ID}}</code></td>
+                <td>{{.Sender}}</td>
+                <td>{{.Recipients}}</td>
+                <td>{{.Attempts}}</td>
+                <td><small style="color: var(--danger);">{{.LastError}}</small></td>
+                <td>{{.CreatedAt.Format "Jan 02 15:04:05"}}</td>
+                <td class="actions">
+                    <form method="POST" action="/admin/queue/retry/{{.ID}}" style="display:inline;">
+                        <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                        <button type="submit" class="btn btn-primary btn-sm">Retry</button>
+                    </form>
+                </td>
+            </tr>
+            {{end}}
+        </tbody>
+    </table>
+</div>
+{{end}}
+
+{{if .SentMessages}}
+<div class="card">
+    <h2>Recently Sent</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>From</th>
+                <th>To</th>
+                <th>Attempts</th>
+                <th>Sent At</th>
+            </tr>
+        </thead>
+        <tbody>
+            {{range .SentMessages}}
+            <tr>
+                <td><code style="font-size: 0.75rem;">{{.ID}}</code></td>
+                <td>{{.Sender}}</td>
+                <td>{{.Recipients}}</td>
+                <td>{{.Attempts}}</td>
+                <td>{{.CreatedAt.Format "Jan 02 15:04:05"}}</td>
+            </tr>
+            {{end}}
+        </tbody>
+    </table>
+</div>
+{{end}}
+
+{{if and (not .PendingMessages) (not .FailedMessages) (not .SentMessages)}}
+<div class="card">
+    <div class="empty-state">
+        <p>No messages in the queue.</p>
+    </div>
+</div>
+{{end}}
+
+{{end}}

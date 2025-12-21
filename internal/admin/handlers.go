@@ -1,11 +1,13 @@
 package admin
 
 import (
+	"context"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/fenilsonani/email-server/internal/queue"
 	"github.com/fenilsonani/email-server/internal/validation"
 )
 
@@ -78,7 +80,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		HttpOnly: true,
 		Secure:   r.TLS != nil,
 		SameSite: http.SameSiteStrictMode,
-		MaxAge:   86400, // 24 hours
+		MaxAge:   604800, // 7 days
 	})
 
 	http.Redirect(w, r, "/admin/", http.StatusSeeOther)
@@ -612,4 +614,171 @@ func (s *Server) handleAPIStats(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(`{"users":` + strconv.Itoa(stats.TotalUsers) +
 		`,"domains":` + strconv.Itoa(stats.TotalDomains) +
 		`,"messages":` + strconv.Itoa(stats.TotalMessages) + `}`))
+}
+
+// QueueMessage represents a message in the queue for display
+type QueueMessage struct {
+	ID          string
+	Sender      string
+	Recipients  string
+	Status      string
+	Attempts    int
+	MaxAttempts int
+	LastError   string
+	NextAttempt time.Time
+	CreatedAt   time.Time
+}
+
+// handleQueue shows the email queue
+func (s *Server) handleQueue(w http.ResponseWriter, r *http.Request) {
+	if s.queue == nil {
+		s.renderTemplate(w, "queue.html", map[string]interface{}{
+			"Title": "Email Queue",
+			"Error": "Queue not configured - Redis not available",
+		})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	// Get queue statistics
+	stats, err := s.queue.Stats(ctx)
+	if err != nil {
+		s.logger.ErrorContext(r.Context(), "Failed to get queue stats", err)
+		s.renderTemplate(w, "queue.html", map[string]interface{}{
+			"Title": "Email Queue",
+			"Error": "Failed to get queue stats: " + err.Error(),
+		})
+		return
+	}
+
+	// Get pending messages
+	pendingMsgs, err := s.queue.ListPending(ctx, 50)
+	if err != nil {
+		s.logger.ErrorContext(r.Context(), "Failed to get pending messages", err)
+	}
+	pendingMessages := convertQueueMessages(pendingMsgs)
+
+	// Get failed messages
+	failedMsgs, err := s.queue.ListFailed(ctx, 50)
+	if err != nil {
+		s.logger.ErrorContext(r.Context(), "Failed to get failed messages", err)
+	}
+	failedMessages := convertQueueMessages(failedMsgs)
+
+	// Get recently sent messages
+	sentMsgs, err := s.queue.ListSent(ctx, 20)
+	if err != nil {
+		s.logger.ErrorContext(r.Context(), "Failed to get sent messages", err)
+	}
+	sentMessages := convertQueueMessages(sentMsgs)
+
+	s.renderTemplate(w, "queue.html", map[string]interface{}{
+		"Title":           "Email Queue",
+		"Stats":           stats,
+		"PendingMessages": pendingMessages,
+		"FailedMessages":  failedMessages,
+		"SentMessages":    sentMessages,
+	})
+}
+
+// convertQueueMessages converts queue.Message to QueueMessage for display
+func convertQueueMessages(msgs []*queue.Message) []QueueMessage {
+	if msgs == nil {
+		return nil
+	}
+	result := make([]QueueMessage, 0, len(msgs))
+	for _, msg := range msgs {
+		if msg == nil {
+			continue
+		}
+		result = append(result, QueueMessage{
+			ID:          msg.ID,
+			Sender:      msg.Sender,
+			Recipients:  strings.Join(msg.Recipients, ", "),
+			Status:      string(msg.Status),
+			Attempts:    msg.Attempts,
+			MaxAttempts: msg.MaxAttempts,
+			LastError:   msg.LastError,
+			NextAttempt: msg.NextAttempt,
+			CreatedAt:   msg.CreatedAt,
+		})
+	}
+	return result
+}
+
+// handleQueueRetry retries a failed message
+func (s *Server) handleQueueRetry(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if s.queue == nil {
+		http.Error(w, "Queue not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Extract message ID from path
+	parts := strings.Split(r.URL.Path, "/")
+	if len(parts) < 5 {
+		http.NotFound(w, r)
+		return
+	}
+	msgID := parts[4]
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	// Get the message and reschedule it for immediate retry
+	msg, err := s.queue.GetMessage(ctx, msgID)
+	if err != nil {
+		http.Error(w, "Message not found: "+err.Error(), http.StatusNotFound)
+		return
+	}
+
+	// Reset attempts and schedule for immediate retry
+	msg.Attempts = 0
+	msg.NextAttempt = time.Now()
+
+	// Re-enqueue the message
+	if err := s.queue.Enqueue(ctx, msg); err != nil {
+		http.Error(w, "Failed to reschedule message: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	http.Redirect(w, r, "/admin/queue", http.StatusSeeOther)
+}
+
+// handleQueueDelete deletes a message from the queue
+func (s *Server) handleQueueDelete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if s.queue == nil {
+		http.Error(w, "Queue not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Extract message ID from path
+	parts := strings.Split(r.URL.Path, "/")
+	if len(parts) < 5 {
+		http.NotFound(w, r)
+		return
+	}
+	msgID := parts[4]
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	// Mark the message as permanently failed (removes from active queues)
+	if err := s.queue.Fail(ctx, msgID, "Manually deleted by admin"); err != nil {
+		http.Error(w, "Failed to delete message: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	http.Redirect(w, r, "/admin/queue", http.StatusSeeOther)
 }

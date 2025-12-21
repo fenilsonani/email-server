@@ -382,7 +382,7 @@ var serveCmd = &cobra.Command{
 
 		// Start admin server if enabled
 		if cfg.Admin.Enabled {
-			adminSrv, err := admin.NewServer(cfg, db.DB, authenticator, store, sieveStore, logger)
+			adminSrv, err := admin.NewServer(cfg, db.DB, authenticator, store, sieveStore, redisQueue, logger)
 			if err != nil {
 				logger.Warn("Failed to initialize admin server", "error", err.Error())
 			} else {
