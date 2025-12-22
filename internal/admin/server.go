@@ -120,7 +120,16 @@ func NewServer(cfg *config.Config, db *sql.DB, authenticator *auth.Authenticator
 func (s *Server) Start(listen string) error {
 	mux := http.NewServeMux()
 
-	// Routes
+	// Health check endpoints (no auth required) - registered first for highest priority
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		s.logger.Info("Health check called")
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"status":"ok"}`))
+	})
+	mux.HandleFunc("/healthz", s.handleHealth)
+	mux.HandleFunc("/ready", s.handleReady)
+
+	// Admin routes
 	mux.HandleFunc("/admin/", s.withAuth(s.handleDashboard))
 	mux.HandleFunc("/admin/login", s.handleLogin)
 	mux.HandleFunc("/admin/logout", s.handleLogout)
@@ -140,14 +149,6 @@ func (s *Server) Start(listen string) error {
 	mux.HandleFunc("/admin/api/stats", s.withAuth(s.handleAPIStats))
 	mux.HandleFunc("/admin/tools/dns", s.withAuth(s.handleDNSCheck))
 	mux.HandleFunc("/admin/tools/test-email", s.withAuth(s.handleTestEmail))
-
-	// Health check endpoint (no auth required)
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"status":"ok"}`))
-	})
-	mux.HandleFunc("/healthz", s.handleHealth)
-	mux.HandleFunc("/ready", s.handleReady)
 
 	// Build middleware chain (order matters: innermost first, then wrapping outward)
 	// The execution order will be: logging -> security headers -> panic recovery -> CSRF -> routes
