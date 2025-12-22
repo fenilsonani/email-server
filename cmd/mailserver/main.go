@@ -17,6 +17,7 @@ import (
 	"github.com/fenilsonani/email-server/internal/logging"
 	"github.com/fenilsonani/email-server/internal/queue"
 	"github.com/fenilsonani/email-server/internal/security"
+	"github.com/fenilsonani/email-server/internal/setup"
 	"github.com/fenilsonani/email-server/internal/sieve"
 	smtpserver "github.com/fenilsonani/email-server/internal/smtp"
 	"github.com/fenilsonani/email-server/internal/smtp/delivery"
@@ -839,6 +840,50 @@ var versionCmd = &cobra.Command{
 	},
 }
 
+// Setup commands
+var forceSetup bool
+
+var preflightCmd = &cobra.Command{
+	Use:   "preflight",
+	Short: "Check if server is ready for mail server setup",
+	Long:  `Runs preflight checks to verify the server meets all requirements before installation.`,
+	Run: func(cmd *cobra.Command, args []string) {
+		results := setup.RunPreflightWithOptions(forceSetup)
+		results.Print()
+		if !results.Ready {
+			os.Exit(1)
+		}
+	},
+}
+
+var setupCmd = &cobra.Command{
+	Use:   "setup",
+	Short: "Interactive setup wizard for new installations",
+	Long: `Guides you through setting up a new mail server installation step by step.
+
+Use --force to skip non-critical checks (root, OS, systemd) for development/testing.`,
+	Run: func(cmd *cobra.Command, args []string) {
+		if err := setup.RunSetupWithOptions(forceSetup); err != nil {
+			fmt.Fprintf(os.Stderr, "Setup failed: %v\n", err)
+			os.Exit(1)
+		}
+	},
+}
+
+var doctorCmd = &cobra.Command{
+	Use:   "doctor",
+	Short: "Check health of running mail server",
+	Long:  `Runs health checks to diagnose issues with your mail server.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		results := setup.RunDoctor(cfg)
+		results.Print()
+		if !results.Healthy {
+			os.Exit(1)
+		}
+		return nil
+	},
+}
+
 func init() {
 	rootCmd.PersistentFlags().StringVarP(&cfgFile, "config", "c", "config.yaml", "config file path")
 
@@ -861,6 +906,13 @@ func init() {
 	dnsCmd.AddCommand(dnsCheckCmd)
 	dnsCmd.AddCommand(dnsGenerateCmd)
 	rootCmd.AddCommand(dnsCmd)
+
+	// Setup commands
+	preflightCmd.Flags().BoolVarP(&forceSetup, "force", "f", false, "Skip non-critical checks (root, OS, systemd)")
+	setupCmd.Flags().BoolVarP(&forceSetup, "force", "f", false, "Skip non-critical checks (root, OS, systemd)")
+	rootCmd.AddCommand(preflightCmd)
+	rootCmd.AddCommand(setupCmd)
+	rootCmd.AddCommand(doctorCmd)
 }
 
 func splitEmail(email string) []string {

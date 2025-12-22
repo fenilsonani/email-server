@@ -3,7 +3,6 @@ module github.com/fenilsonani/email-server
 go 1.25.3
 
 require (
-	github.com/emersion/go-imap v1.2.1
 	github.com/emersion/go-imap/v2 v2.0.0-beta.7
 	github.com/emersion/go-maildir v0.6.0
 	github.com/emersion/go-msgauth v0.7.0
@@ -15,6 +14,7 @@ require (
 	github.com/redis/go-redis/v9 v9.7.0
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/crypto v0.46.0
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
