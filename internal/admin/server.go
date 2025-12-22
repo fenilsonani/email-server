@@ -153,17 +153,9 @@ func (s *Server) Start(listen string) error {
 	handler = s.withSecurityHeaders(handler)
 	handler = s.withRequestLogging(handler)
 
-	// Wrap with a debug handler to trace routing
-	debugHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Println("DEBUG: debugHandler called for path:", r.URL.Path)
-		w.Header().Set("X-Debug-Trace", "start-"+r.URL.Path)
-		handler.ServeHTTP(w, r)
-		fmt.Println("DEBUG: debugHandler done for path:", r.URL.Path)
-	})
-
 	s.httpServer = &http.Server{
 		Addr:         listen,
-		Handler:      debugHandler,
+		Handler:      handler,
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 30 * time.Second,
 		IdleTimeout:  120 * time.Second,
@@ -179,12 +171,8 @@ func (s *Server) Start(listen string) error {
 
 	// Start server in a goroutine for graceful shutdown
 	serverErr := make(chan error, 1)
-	fmt.Println("DEBUG OUTSIDE: About to start goroutine for", listen)
 	go func() {
-		fmt.Println("DEBUG INSIDE: Starting HTTP server for", listen, "with handler type:", fmt.Sprintf("%T", debugHandler))
-		err := http.ListenAndServe(listen, debugHandler)
-		fmt.Println("DEBUG INSIDE: ListenAndServe returned with err:", err)
-		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := s.httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			serverErr <- err
 		}
 		close(serverErr)
