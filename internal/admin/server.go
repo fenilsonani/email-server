@@ -120,20 +120,10 @@ func NewServer(cfg *config.Config, db *sql.DB, authenticator *auth.Authenticator
 func (s *Server) Start(listen string) error {
 	mux := http.NewServeMux()
 
-	// Debug: catch-all to see what's happening
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		s.logger.Info("Catch-all handler", "path", r.URL.Path)
-		if r.URL.Path == "/health" || r.URL.Path == "/healthz" {
-			w.Header().Set("Content-Type", "application/json")
-			w.Write([]byte(`{"status":"ok"}`))
-			return
-		}
-		if r.URL.Path == "/ready" {
-			w.Write([]byte("ready"))
-			return
-		}
-		http.NotFound(w, r)
-	})
+	// Health check endpoints (no auth required)
+	mux.HandleFunc("/health", s.handleHealth)
+	mux.HandleFunc("/healthz", s.handleHealth)
+	mux.HandleFunc("/ready", s.handleReady)
 
 	// Admin routes
 	mux.HandleFunc("/admin/", s.withAuth(s.handleDashboard))
@@ -163,9 +153,16 @@ func (s *Server) Start(listen string) error {
 	handler = s.withSecurityHeaders(handler)
 	handler = s.withRequestLogging(handler)
 
+	// Wrap with a debug handler to trace routing
+	debugHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.logger.Info("DEBUG: Before handler chain", "path", r.URL.Path, "method", r.Method)
+		handler.ServeHTTP(w, r)
+		s.logger.Info("DEBUG: After handler chain", "path", r.URL.Path)
+	})
+
 	s.httpServer = &http.Server{
 		Addr:         listen,
-		Handler:      handler,
+		Handler:      debugHandler,
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 30 * time.Second,
 		IdleTimeout:  120 * time.Second,
