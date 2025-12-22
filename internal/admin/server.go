@@ -142,9 +142,10 @@ func (s *Server) Start(listen string) error {
 	mux.HandleFunc("/admin/tools/test-email", s.withAuth(s.handleTestEmail))
 
 	// Health check endpoint (no auth required)
-	mux.HandleFunc("/health", s.handleHealth)
-	mux.HandleFunc("/healthz", s.handleHealth)
-	mux.HandleFunc("/ready", s.handleReady)
+	// Use Go 1.22 method-based routing for clarity
+	mux.HandleFunc("GET /health", s.handleHealth)
+	mux.HandleFunc("GET /healthz", s.handleHealth)
+	mux.HandleFunc("GET /ready", s.handleReady)
 
 	// Build middleware chain (order matters: innermost first, then wrapping outward)
 	// The execution order will be: logging -> security headers -> panic recovery -> CSRF -> routes
