@@ -179,9 +179,12 @@ func (s *Server) Start(listen string) error {
 
 	// Start server in a goroutine for graceful shutdown
 	serverErr := make(chan error, 1)
+	fmt.Println("DEBUG OUTSIDE: About to start goroutine for", listen)
 	go func() {
-		fmt.Println("DEBUG: Starting HTTP server with handler type:", fmt.Sprintf("%T", debugHandler))
-		if err := http.ListenAndServe(listen, debugHandler); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		fmt.Println("DEBUG INSIDE: Starting HTTP server for", listen, "with handler type:", fmt.Sprintf("%T", debugHandler))
+		err := http.ListenAndServe(listen, debugHandler)
+		fmt.Println("DEBUG INSIDE: ListenAndServe returned with err:", err)
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			serverErr <- err
 		}
 		close(serverErr)
