@@ -38,6 +38,8 @@ type Server struct {
 	templates     map[string]*template.Template
 	httpServer    *http.Server
 	shutdownOnce  sync.Once
+	rateLimiter   *RateLimiter
+	startTime     time.Time
 }
 
 // NewServer creates a new admin server
@@ -64,6 +66,8 @@ func NewServer(cfg *config.Config, db *sql.DB, authenticator *auth.Authenticator
 		"auth_logs.html",
 		"delivery_logs.html",
 		"queue.html",
+		"dns_check.html",
+		"test_email.html",
 	}
 
 	for _, page := range pages {
@@ -105,6 +109,8 @@ func NewServer(cfg *config.Config, db *sql.DB, authenticator *auth.Authenticator
 		queue:         q,
 		logger:        logger,
 		templates:     templates,
+		rateLimiter:   DefaultRateLimiter(),
+		startTime:     time.Now(),
 	}
 
 	return s, nil
@@ -132,11 +138,19 @@ func (s *Server) Start(listen string) error {
 	mux.HandleFunc("/admin/queue/retry/", s.withAuth(s.handleQueueRetry))
 	mux.HandleFunc("/admin/queue/delete/", s.withAuth(s.handleQueueDelete))
 	mux.HandleFunc("/admin/api/stats", s.withAuth(s.handleAPIStats))
+	mux.HandleFunc("/admin/tools/dns", s.withAuth(s.handleDNSCheck))
+	mux.HandleFunc("/admin/tools/test-email", s.withAuth(s.handleTestEmail))
+
+	// Health check endpoint (no auth required)
+	mux.HandleFunc("/health", s.handleHealth)
+	mux.HandleFunc("/healthz", s.handleHealth)
+	mux.HandleFunc("/ready", s.handleReady)
 
 	// Build middleware chain (order matters: innermost first, then wrapping outward)
-	// The execution order will be: logging -> panic recovery -> CSRF -> routes
+	// The execution order will be: logging -> security headers -> panic recovery -> CSRF -> routes
 	handler := s.withCSRF(mux)
 	handler = s.withPanicRecovery(handler)
+	handler = s.withSecurityHeaders(handler)
 	handler = s.withRequestLogging(handler)
 
 	s.httpServer = &http.Server{

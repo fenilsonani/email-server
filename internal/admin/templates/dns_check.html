@@ -1,0 +1,92 @@
+<div class="page-header">
+    <h1>DNS Check</h1>
+</div>
+
+<div class="card">
+    <h2>Check Domain DNS Configuration</h2>
+    <form method="get" action="/admin/tools/dns">
+        <div class="form-group">
+            <label for="domain">Domain Name</label>
+            <input type="text" id="domain" name="domain" class="form-control"
+                   placeholder="example.com" value="{{.Domain}}" required>
+        </div>
+        <button type="submit" class="btn btn-primary">Check DNS</button>
+    </form>
+</div>
+
+{{if .Results}}
+<div class="card">
+    <h2>Results for {{.Domain}}</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Record</th>
+                <th>Status</th>
+                <th>Expected</th>
+                <th>Actual</th>
+                <th>Details</th>
+            </tr>
+        </thead>
+        <tbody>
+            {{range .Results}}
+            <tr>
+                <td><strong>{{.RecordType}}</strong></td>
+                <td>
+                    {{if eq .Status "pass"}}
+                    <span class="badge badge-success">Pass</span>
+                    {{else if eq .Status "warning"}}
+                    <span class="badge badge-warning">Warning</span>
+                    {{else}}
+                    <span class="badge badge-danger">Fail</span>
+                    {{end}}
+                </td>
+                <td><code style="font-size: 0.75rem;">{{.Expected}}</code></td>
+                <td><code style="font-size: 0.75rem;">{{if .Actual}}{{.Actual}}{{else}}-{{end}}</code></td>
+                <td>{{.Message}}</td>
+            </tr>
+            {{end}}
+        </tbody>
+    </table>
+</div>
+
+<div class="card">
+    <h2>DNS Setup Guide</h2>
+    <p>Make sure your domain has the following DNS records configured:</p>
+    <table>
+        <thead>
+            <tr>
+                <th>Type</th>
+                <th>Name</th>
+                <th>Value</th>
+                <th>Purpose</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>MX</td>
+                <td>{{.Domain}}</td>
+                <td>mail.{{.Domain}}</td>
+                <td>Mail server address</td>
+            </tr>
+            <tr>
+                <td>TXT</td>
+                <td>{{.Domain}}</td>
+                <td>v=spf1 mx -all</td>
+                <td>SPF - Authorize mail server</td>
+            </tr>
+            <tr>
+                <td>TXT</td>
+                <td>mail._domainkey.{{.Domain}}</td>
+                <td>v=DKIM1; k=rsa; p=...</td>
+                <td>DKIM - Email signing</td>
+            </tr>
+            <tr>
+                <td>TXT</td>
+                <td>_dmarc.{{.Domain}}</td>
+                <td>v=DMARC1; p=quarantine; rua=mailto:postmaster@{{.Domain}}</td>
+                <td>DMARC - Policy enforcement</td>
+            </tr>
+        </tbody>
+    </table>
+</div>
+{{end}}

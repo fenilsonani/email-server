@@ -2,7 +2,10 @@ package admin
 
 import (
 	"context"
+	"encoding/json"
+	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -33,8 +36,22 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	s.renderTemplate(w, "dashboard.html", data)
 }
 
-// handleLogin handles admin login
+// handleLogin handles admin login with rate limiting
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	clientIP := getIP(r)
+
+	// Check if IP is blocked
+	if s.rateLimiter.IsBlocked(clientIP) {
+		blockedUntil := s.rateLimiter.BlockedUntil(clientIP)
+		remaining := time.Until(blockedUntil).Round(time.Minute)
+		s.logger.Warn("Blocked login attempt", "ip", clientIP, "blocked_for", remaining.String())
+		s.renderTemplate(w, "login.html", map[string]interface{}{
+			"Title": "Admin Login",
+			"Error": "Too many failed attempts. Please try again in " + remaining.String(),
+		})
+		return
+	}
+
 	if r.Method == http.MethodGet {
 		s.renderTemplate(w, "login.html", map[string]interface{}{
 			"Title": "Admin Login",
@@ -53,9 +70,26 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	user, err := s.authenticator.Authenticate(r.Context(), username, password)
 	if err != nil {
+		// Record failed attempt
+		blocked := s.rateLimiter.RecordFailure(clientIP)
+		remaining := s.rateLimiter.RemainingAttempts(clientIP)
+
+		s.logger.Warn("Failed login attempt",
+			"ip", clientIP,
+			"username", username,
+			"remaining_attempts", remaining,
+			"blocked", blocked)
+
+		errorMsg := "Invalid credentials"
+		if remaining > 0 && remaining < 3 {
+			errorMsg = "Invalid credentials. " + strconv.Itoa(remaining) + " attempts remaining"
+		} else if blocked {
+			errorMsg = "Too many failed attempts. Account temporarily locked"
+		}
+
 		s.renderTemplate(w, "login.html", map[string]interface{}{
 			"Title": "Admin Login",
-			"Error": "Invalid credentials",
+			"Error": errorMsg,
 		})
 		return
 	}
@@ -64,12 +98,16 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	var isAdmin bool
 	err = s.db.QueryRowContext(r.Context(), "SELECT is_admin FROM users WHERE id = ?", user.ID).Scan(&isAdmin)
 	if err != nil || !isAdmin {
+		s.rateLimiter.RecordFailure(clientIP)
 		s.renderTemplate(w, "login.html", map[string]interface{}{
 			"Title": "Admin Login",
 			"Error": "Access denied - admin rights required",
 		})
 		return
 	}
+
+	// Success - clear rate limit for this IP
+	s.rateLimiter.RecordSuccess(clientIP)
 
 	// Create session
 	token := s.createSession(user.ID)
@@ -83,6 +121,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		MaxAge:   604800, // 7 days
 	})
 
+	s.logger.Info("Admin login successful", "ip", clientIP, "username", username)
 	http.Redirect(w, r, "/admin/", http.StatusSeeOther)
 }
 
@@ -781,4 +820,377 @@ func (s *Server) handleQueueDelete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.Redirect(w, r, "/admin/queue", http.StatusSeeOther)
+}
+
+// HealthStatus represents the health check response
+type HealthStatus struct {
+	Status    string            `json:"status"`
+	Timestamp string            `json:"timestamp"`
+	Uptime    string            `json:"uptime"`
+	Services  map[string]string `json:"services"`
+}
+
+// handleHealth returns basic health status
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	status := HealthStatus{
+		Status:    "ok",
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+		Uptime:    time.Since(s.startTime).Round(time.Second).String(),
+		Services:  make(map[string]string),
+	}
+
+	// Check database
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	if err := s.db.PingContext(ctx); err != nil {
+		status.Status = "degraded"
+		status.Services["database"] = "error: " + err.Error()
+	} else {
+		status.Services["database"] = "ok"
+	}
+
+	// Check Redis queue if available
+	if s.queue != nil {
+		if _, err := s.queue.Stats(ctx); err != nil {
+			status.Status = "degraded"
+			status.Services["queue"] = "error: " + err.Error()
+		} else {
+			status.Services["queue"] = "ok"
+		}
+	} else {
+		status.Services["queue"] = "not configured"
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if status.Status != "ok" {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}
+
+	json.NewEncoder(w).Encode(status)
+}
+
+// handleReady returns readiness status for orchestration
+func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+
+	// Check database connection
+	if err := s.db.PingContext(ctx); err != nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		w.Write([]byte("not ready: database unavailable"))
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("ready"))
+}
+
+// DNSCheckResult represents DNS check results
+type DNSCheckResult struct {
+	RecordType string `json:"record_type"`
+	Status     string `json:"status"`
+	Expected   string `json:"expected"`
+	Actual     string `json:"actual"`
+	Message    string `json:"message"`
+}
+
+// handleDNSCheck performs DNS verification for a domain
+func (s *Server) handleDNSCheck(w http.ResponseWriter, r *http.Request) {
+	domain := r.URL.Query().Get("domain")
+	if domain == "" {
+		// Show form
+		s.renderTemplate(w, "dns_check.html", map[string]interface{}{
+			"Title": "DNS Check",
+		})
+		return
+	}
+
+	// Perform DNS checks using the dns package
+	mailServer := s.config.Server.Hostname
+
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+
+	// Use net package for DNS lookups
+	results := []DNSCheckResult{}
+
+	// Check MX records
+	mxRecords, err := net.LookupMX(domain)
+	if err != nil {
+		results = append(results, DNSCheckResult{
+			RecordType: "MX",
+			Status:     "fail",
+			Expected:   mailServer,
+			Actual:     "",
+			Message:    "No MX records found: " + err.Error(),
+		})
+	} else {
+		found := false
+		var actualMX string
+		for _, mx := range mxRecords {
+			actualMX += mx.Host + " "
+			if strings.TrimSuffix(mx.Host, ".") == mailServer {
+				found = true
+			}
+		}
+		if found {
+			results = append(results, DNSCheckResult{
+				RecordType: "MX",
+				Status:     "pass",
+				Expected:   mailServer,
+				Actual:     strings.TrimSpace(actualMX),
+				Message:    "MX record correctly points to mail server",
+			})
+		} else {
+			results = append(results, DNSCheckResult{
+				RecordType: "MX",
+				Status:     "fail",
+				Expected:   mailServer,
+				Actual:     strings.TrimSpace(actualMX),
+				Message:    "MX record does not point to expected mail server",
+			})
+		}
+	}
+
+	// Check SPF record
+	txtRecords, err := net.LookupTXT(domain)
+	if err != nil {
+		results = append(results, DNSCheckResult{
+			RecordType: "SPF",
+			Status:     "fail",
+			Expected:   "v=spf1 ...",
+			Actual:     "",
+			Message:    "No TXT records found: " + err.Error(),
+		})
+	} else {
+		foundSPF := false
+		var spfRecord string
+		for _, txt := range txtRecords {
+			if strings.HasPrefix(txt, "v=spf1") {
+				foundSPF = true
+				spfRecord = txt
+				break
+			}
+		}
+		if foundSPF {
+			results = append(results, DNSCheckResult{
+				RecordType: "SPF",
+				Status:     "pass",
+				Expected:   "v=spf1 ...",
+				Actual:     spfRecord,
+				Message:    "SPF record found",
+			})
+		} else {
+			results = append(results, DNSCheckResult{
+				RecordType: "SPF",
+				Status:     "fail",
+				Expected:   "v=spf1 mx -all",
+				Actual:     "",
+				Message:    "No SPF record found",
+			})
+		}
+	}
+
+	// Check DKIM record
+	dkimDomain := "mail._domainkey." + domain
+	dkimRecords, err := net.LookupTXT(dkimDomain)
+	if err != nil {
+		results = append(results, DNSCheckResult{
+			RecordType: "DKIM",
+			Status:     "fail",
+			Expected:   "v=DKIM1; ...",
+			Actual:     "",
+			Message:    "No DKIM record found at " + dkimDomain,
+		})
+	} else {
+		foundDKIM := false
+		var dkimRecord string
+		for _, txt := range dkimRecords {
+			if strings.Contains(txt, "DKIM1") || strings.Contains(txt, "p=") {
+				foundDKIM = true
+				dkimRecord = txt
+				break
+			}
+		}
+		if foundDKIM {
+			results = append(results, DNSCheckResult{
+				RecordType: "DKIM",
+				Status:     "pass",
+				Expected:   "v=DKIM1; ...",
+				Actual:     dkimRecord[:min(len(dkimRecord), 50)] + "...",
+				Message:    "DKIM record found",
+			})
+		} else {
+			results = append(results, DNSCheckResult{
+				RecordType: "DKIM",
+				Status:     "fail",
+				Expected:   "v=DKIM1; k=rsa; p=...",
+				Actual:     "",
+				Message:    "Invalid DKIM record",
+			})
+		}
+	}
+
+	// Check DMARC record
+	dmarcDomain := "_dmarc." + domain
+	dmarcRecords, err := net.LookupTXT(dmarcDomain)
+	if err != nil {
+		results = append(results, DNSCheckResult{
+			RecordType: "DMARC",
+			Status:     "warning",
+			Expected:   "v=DMARC1; ...",
+			Actual:     "",
+			Message:    "No DMARC record found (recommended)",
+		})
+	} else {
+		foundDMARC := false
+		var dmarcRecord string
+		for _, txt := range dmarcRecords {
+			if strings.HasPrefix(txt, "v=DMARC1") {
+				foundDMARC = true
+				dmarcRecord = txt
+				break
+			}
+		}
+		if foundDMARC {
+			results = append(results, DNSCheckResult{
+				RecordType: "DMARC",
+				Status:     "pass",
+				Expected:   "v=DMARC1; ...",
+				Actual:     dmarcRecord,
+				Message:    "DMARC record found",
+			})
+		} else {
+			results = append(results, DNSCheckResult{
+				RecordType: "DMARC",
+				Status:     "warning",
+				Expected:   "v=DMARC1; p=quarantine; ...",
+				Actual:     "",
+				Message:    "Invalid DMARC record",
+			})
+		}
+	}
+
+	_ = ctx // Use context for future improvements
+
+	s.renderTemplate(w, "dns_check.html", map[string]interface{}{
+		"Title":   "DNS Check",
+		"Domain":  domain,
+		"Results": results,
+	})
+}
+
+// handleTestEmail sends a test email
+func (s *Server) handleTestEmail(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		s.renderTemplate(w, "test_email.html", map[string]interface{}{
+			"Title": "Send Test Email",
+		})
+		return
+	}
+
+	// POST - send test email
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "Bad request", http.StatusBadRequest)
+		return
+	}
+
+	recipient := r.FormValue("recipient")
+	if recipient == "" {
+		s.renderTemplate(w, "test_email.html", map[string]interface{}{
+			"Title": "Send Test Email",
+			"Error": "Recipient email is required",
+		})
+		return
+	}
+
+	// Create a simple test message
+	from := "postmaster@" + s.config.Server.Domain
+	subject := "Test Email from " + s.config.Server.Hostname
+	body := "This is a test email sent from the mail server admin panel.\n\n" +
+		"Server: " + s.config.Server.Hostname + "\n" +
+		"Time: " + time.Now().Format(time.RFC1123) + "\n\n" +
+		"If you received this email, your mail server is working correctly!"
+
+	messageID := generateMessageID(s.config.Server.Domain)
+	msg := "From: " + from + "\r\n" +
+		"To: " + recipient + "\r\n" +
+		"Subject: " + subject + "\r\n" +
+		"Message-ID: <" + messageID + ">\r\n" +
+		"Date: " + time.Now().Format(time.RFC1123Z) + "\r\n" +
+		"MIME-Version: 1.0\r\n" +
+		"Content-Type: text/plain; charset=utf-8\r\n" +
+		"\r\n" +
+		body
+
+	// Queue the message if queue is available
+	if s.queue != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+
+		// Write message to temp file in maildir
+		tmpDir := s.config.Storage.MaildirPath
+		if tmpDir == "" {
+			tmpDir = "/tmp"
+		}
+		tmpFile, err := os.CreateTemp(tmpDir, "test-email-*.eml")
+		if err != nil {
+			s.renderTemplate(w, "test_email.html", map[string]interface{}{
+				"Title": "Send Test Email",
+				"Error": "Failed to create message file: " + err.Error(),
+			})
+			return
+		}
+		tmpFile.WriteString(msg)
+		tmpFile.Close()
+
+		// Extract domain from recipient
+		parts := strings.Split(recipient, "@")
+		recipientDomain := ""
+		if len(parts) == 2 {
+			recipientDomain = parts[1]
+		}
+
+		// Queue the message
+		queueMsg := &queue.Message{
+			Sender:      from,
+			Recipients:  []string{recipient},
+			MessagePath: tmpFile.Name(),
+			Size:        int64(len(msg)),
+			Domain:      recipientDomain,
+		}
+
+		if err := s.queue.Enqueue(ctx, queueMsg); err != nil {
+			os.Remove(tmpFile.Name())
+			s.renderTemplate(w, "test_email.html", map[string]interface{}{
+				"Title": "Send Test Email",
+				"Error": "Failed to queue message: " + err.Error(),
+			})
+			return
+		}
+
+		s.renderTemplate(w, "test_email.html", map[string]interface{}{
+			"Title":   "Send Test Email",
+			"Success": "Test email queued for delivery to " + recipient,
+		})
+	} else {
+		s.renderTemplate(w, "test_email.html", map[string]interface{}{
+			"Title": "Send Test Email",
+			"Error": "Queue not configured - cannot send email",
+		})
+	}
+}
+
+// generateMessageID creates a unique message ID
+func generateMessageID(domain string) string {
+	return time.Now().Format("20060102150405") + "." + strconv.FormatInt(time.Now().UnixNano(), 36) + "@" + domain
+}
+
+// min returns the minimum of two integers
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

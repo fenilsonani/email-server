@@ -1,0 +1,41 @@
+<div class="page-header">
+    <h1>Send Test Email</h1>
+</div>
+
+{{if .Error}}
+<div class="alert alert-danger">{{.Error}}</div>
+{{end}}
+
+{{if .Success}}
+<div class="alert alert-success">{{.Success}}</div>
+{{end}}
+
+<div class="card">
+    <h2>Test Email Delivery</h2>
+    <p>Send a test email to verify your mail server is working correctly.</p>
+
+    <form method="post" action="/admin/tools/test-email">
+        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+
+        <div class="form-group">
+            <label for="recipient">Recipient Email Address</label>
+            <input type="email" id="recipient" name="recipient" class="form-control"
+                   placeholder="test@example.com" required>
+            <small style="color: var(--text-muted);">
+                Enter an email address to send a test message to.
+            </small>
+        </div>
+
+        <button type="submit" class="btn btn-primary">Send Test Email</button>
+    </form>
+</div>
+
+<div class="card">
+    <h2>Test Email Tips</h2>
+    <ul style="margin-left: 1.5rem; color: var(--text-muted);">
+        <li>Send to an external email (Gmail, Outlook) to test outbound delivery</li>
+        <li>Send to a local address to test internal delivery</li>
+        <li>Check the <a href="/admin/queue">Queue</a> to see delivery status</li>
+        <li>Check <a href="/admin/logs/delivery">Delivery Logs</a> for detailed results</li>
+    </ul>
+</div>
