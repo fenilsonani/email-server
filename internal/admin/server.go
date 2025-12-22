@@ -155,8 +155,10 @@ func (s *Server) Start(listen string) error {
 
 	// Wrap with a debug handler to trace routing
 	debugHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Println("DEBUG: debugHandler called for path:", r.URL.Path)
 		w.Header().Set("X-Debug-Trace", "start-"+r.URL.Path)
 		handler.ServeHTTP(w, r)
+		fmt.Println("DEBUG: debugHandler done for path:", r.URL.Path)
 	})
 
 	s.httpServer = &http.Server{
