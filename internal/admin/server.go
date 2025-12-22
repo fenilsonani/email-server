@@ -120,14 +120,20 @@ func NewServer(cfg *config.Config, db *sql.DB, authenticator *auth.Authenticator
 func (s *Server) Start(listen string) error {
 	mux := http.NewServeMux()
 
-	// Health check endpoints (no auth required) - registered first for highest priority
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		s.logger.Info("Health check called")
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"status":"ok"}`))
+	// Debug: catch-all to see what's happening
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		s.logger.Info("Catch-all handler", "path", r.URL.Path)
+		if r.URL.Path == "/health" || r.URL.Path == "/healthz" {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"status":"ok"}`))
+			return
+		}
+		if r.URL.Path == "/ready" {
+			w.Write([]byte("ready"))
+			return
+		}
+		http.NotFound(w, r)
 	})
-	mux.HandleFunc("/healthz", s.handleHealth)
-	mux.HandleFunc("/ready", s.handleReady)
 
 	// Admin routes
 	mux.HandleFunc("/admin/", s.withAuth(s.handleDashboard))
