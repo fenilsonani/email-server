@@ -12,6 +12,7 @@ import (
 	"github.com/fenilsonani/email-server/internal/auth"
 	"github.com/fenilsonani/email-server/internal/autodiscover"
 	"github.com/fenilsonani/email-server/internal/config"
+	"github.com/fenilsonani/email-server/internal/dav"
 	"github.com/fenilsonani/email-server/internal/dns"
 	imapserver "github.com/fenilsonani/email-server/internal/imap"
 	"github.com/fenilsonani/email-server/internal/logging"
@@ -85,6 +86,7 @@ var serveCmd = &cobra.Command{
 			deliveryEngine *delivery.Engine
 			imapSrv        *imapserver.Server
 			smtpSrv        *smtpserver.Server
+			davSrv         *dav.Server
 			adminSrv       *admin.Server
 			logger         *logging.Logger
 		}
@@ -122,7 +124,21 @@ var serveCmd = &cobra.Command{
 				}
 			}
 
-			// 2. Stop SMTP servers (no new mail)
+			// 2. Stop DAV server
+			if resources.davSrv != nil {
+				if resources.logger != nil {
+					resources.logger.Info("Shutting down DAV server")
+				}
+				if err := resources.davSrv.Shutdown(shutdownCtx); err != nil {
+					if resources.logger != nil {
+						resources.logger.Error("DAV server shutdown error", "error", err.Error())
+					} else {
+						fmt.Fprintf(os.Stderr, "DAV server shutdown error: %v\n", err)
+					}
+				}
+			}
+
+			// 3. Stop SMTP servers (no new mail)
 			if resources.smtpSrv != nil {
 				if resources.logger != nil {
 					resources.logger.Info("Shutting down SMTP servers")
@@ -379,6 +395,24 @@ var serveCmd = &cobra.Command{
 				return fmt.Errorf("failed to start SMTPS server: %w", err)
 			}
 			logger.Info("SMTPS server started", "port", cfg.Server.SMTPSPort)
+		}
+
+		// Start DAV server (CalDAV/CardDAV)
+		if cfg.Server.DAVPort > 0 {
+			davSrv, err := dav.NewServer(cfg, authenticator, db.DB)
+			if err != nil {
+				logger.Warn("Failed to initialize DAV server", "error", err.Error())
+			} else {
+				resources.davSrv = davSrv
+				davAddr := fmt.Sprintf(":%d", cfg.Server.DAVPort)
+				go func() {
+					if err := davSrv.Start(davAddr, tlsManager.TLSConfig()); err != nil {
+						logger.Error("DAV server error", "error", err.Error())
+					}
+				}()
+				fmt.Printf("  DAV:   %d (CalDAV/CardDAV)\n", cfg.Server.DAVPort)
+				logger.Info("DAV server started", "port", cfg.Server.DAVPort)
+			}
 		}
 
 		// Start admin server if enabled
