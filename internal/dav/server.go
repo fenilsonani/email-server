@@ -116,8 +116,8 @@ func (s *Server) Shutdown(ctx context.Context) error {
 // authMiddleware handles HTTP Basic authentication
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Allow unauthenticated access to well-known endpoints
-		if strings.HasPrefix(r.URL.Path, "/.well-known/") {
+		// Allow unauthenticated access to well-known endpoints and OPTIONS
+		if strings.HasPrefix(r.URL.Path, "/.well-known/") || r.Method == "OPTIONS" {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -257,6 +257,12 @@ func (s *Server) handlePrincipalPropfind(w http.ResponseWriter, r *http.Request,
 
 // handleCalDAV handles CalDAV requests
 func (s *Server) handleCalDAV(w http.ResponseWriter, r *http.Request) {
+	// Handle OPTIONS without authentication (for CORS and discovery)
+	if r.Method == "OPTIONS" {
+		s.handleCalDAVOptions(w, r)
+		return
+	}
+
 	user := getUserFromContext(r.Context())
 	if user == nil {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
@@ -264,8 +270,6 @@ func (s *Server) handleCalDAV(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch r.Method {
-	case "OPTIONS":
-		s.handleCalDAVOptions(w, r)
 	case "PROPFIND":
 		s.handleCalDAVPropfind(w, r, user)
 	case "REPORT":
@@ -306,6 +310,7 @@ func (s *Server) handleCalDAVPropfind(w http.ResponseWriter, r *http.Request, us
 
 	// Calendar home
 	homeURL := fmt.Sprintf("/calendars/%s/", user.Email)
+	principalURL := fmt.Sprintf("/principals/%s/", user.Email)
 	responses.WriteString(fmt.Sprintf(`
   <D:response>
     <D:href>%s</D:href>
@@ -315,10 +320,16 @@ func (s *Server) handleCalDAVPropfind(w http.ResponseWriter, r *http.Request, us
           <D:collection/>
         </D:resourcetype>
         <D:displayname>Calendars</D:displayname>
+        <D:current-user-principal>
+          <D:href>%s</D:href>
+        </D:current-user-principal>
+        <C:calendar-home-set>
+          <D:href>%s</D:href>
+        </C:calendar-home-set>
       </D:prop>
       <D:status>HTTP/1.1 200 OK</D:status>
     </D:propstat>
-  </D:response>`, homeURL))
+  </D:response>`, homeURL, principalURL, homeURL))
 
 	// Each calendar
 	for _, cal := range calendars {
@@ -525,6 +536,12 @@ func (s *Server) handleMkCalendar(w http.ResponseWriter, r *http.Request, user *
 
 // handleCardDAV handles CardDAV requests
 func (s *Server) handleCardDAV(w http.ResponseWriter, r *http.Request) {
+	// Handle OPTIONS without authentication (for CORS and discovery)
+	if r.Method == "OPTIONS" {
+		s.handleCardDAVOptions(w, r)
+		return
+	}
+
 	user := getUserFromContext(r.Context())
 	if user == nil {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
@@ -532,8 +549,6 @@ func (s *Server) handleCardDAV(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch r.Method {
-	case "OPTIONS":
-		s.handleCardDAVOptions(w, r)
 	case "PROPFIND":
 		s.handleCardDAVPropfind(w, r, user)
 	case "REPORT":
@@ -573,6 +588,7 @@ func (s *Server) handleCardDAVPropfind(w http.ResponseWriter, r *http.Request, u
 
 	// Address book home
 	homeURL := fmt.Sprintf("/addressbooks/%s/", user.Email)
+	principalURL := fmt.Sprintf("/principals/%s/", user.Email)
 	responses.WriteString(fmt.Sprintf(`
   <D:response>
     <D:href>%s</D:href>
@@ -582,10 +598,16 @@ func (s *Server) handleCardDAVPropfind(w http.ResponseWriter, r *http.Request, u
           <D:collection/>
         </D:resourcetype>
         <D:displayname>Address Books</D:displayname>
+        <D:current-user-principal>
+          <D:href>%s</D:href>
+        </D:current-user-principal>
+        <A:addressbook-home-set>
+          <D:href>%s</D:href>
+        </A:addressbook-home-set>
       </D:prop>
       <D:status>HTTP/1.1 200 OK</D:status>
     </D:propstat>
-  </D:response>`, homeURL))
+  </D:response>`, homeURL, principalURL, homeURL))
 
 	// Each address book
 	for _, ab := range addressBooks {
