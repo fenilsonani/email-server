@@ -379,3 +379,220 @@ func TestAuthenticator_Aliases(t *testing.T) {
 		t.Error("Expected alias to be a valid address")
 	}
 }
+
+func TestAuthenticator_UpdateUsedBytes(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	auth := NewAuthenticator(db)
+	ctx := context.Background()
+
+	// Create test domain and user
+	_, err := db.Exec("INSERT INTO domains (name) VALUES (?)", "example.com")
+	if err != nil {
+		t.Fatalf("Failed to create domain: %v", err)
+	}
+
+	hash, _ := HashPassword("test")
+	result, err := db.Exec(
+		"INSERT INTO users (domain_id, username, password_hash, quota_bytes, used_bytes) VALUES (1, ?, ?, 1073741824, 0)",
+		"testuser", hash,
+	)
+	if err != nil {
+		t.Fatalf("Failed to create user: %v", err)
+	}
+	userID, _ := result.LastInsertId()
+
+	// Test increasing used bytes
+	err = auth.UpdateUsedBytes(ctx, userID, 1000)
+	if err != nil {
+		t.Fatalf("UpdateUsedBytes failed: %v", err)
+	}
+
+	// Verify the change
+	var usedBytes int64
+	err = db.QueryRow("SELECT used_bytes FROM users WHERE id = ?", userID).Scan(&usedBytes)
+	if err != nil {
+		t.Fatalf("Failed to query used_bytes: %v", err)
+	}
+	if usedBytes != 1000 {
+		t.Errorf("Expected used_bytes=1000, got %d", usedBytes)
+	}
+
+	// Test adding more
+	err = auth.UpdateUsedBytes(ctx, userID, 500)
+	if err != nil {
+		t.Fatalf("UpdateUsedBytes (add more) failed: %v", err)
+	}
+
+	err = db.QueryRow("SELECT used_bytes FROM users WHERE id = ?", userID).Scan(&usedBytes)
+	if err != nil {
+		t.Fatalf("Failed to query used_bytes: %v", err)
+	}
+	if usedBytes != 1500 {
+		t.Errorf("Expected used_bytes=1500, got %d", usedBytes)
+	}
+
+	// Test decreasing used bytes
+	err = auth.UpdateUsedBytes(ctx, userID, -500)
+	if err != nil {
+		t.Fatalf("UpdateUsedBytes (decrease) failed: %v", err)
+	}
+
+	err = db.QueryRow("SELECT used_bytes FROM users WHERE id = ?", userID).Scan(&usedBytes)
+	if err != nil {
+		t.Fatalf("Failed to query used_bytes: %v", err)
+	}
+	if usedBytes != 1000 {
+		t.Errorf("Expected used_bytes=1000 after decrease, got %d", usedBytes)
+	}
+
+	// Test that used_bytes can't go negative
+	err = auth.UpdateUsedBytes(ctx, userID, -5000)
+	if err != nil {
+		t.Fatalf("UpdateUsedBytes (large decrease) failed: %v", err)
+	}
+
+	err = db.QueryRow("SELECT used_bytes FROM users WHERE id = ?", userID).Scan(&usedBytes)
+	if err != nil {
+		t.Fatalf("Failed to query used_bytes: %v", err)
+	}
+	if usedBytes != 0 {
+		t.Errorf("Expected used_bytes=0 (not negative), got %d", usedBytes)
+	}
+}
+
+func TestAuthenticator_GetQuotaStatus(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	auth := NewAuthenticator(db)
+	ctx := context.Background()
+
+	// Create test domain and user
+	_, err := db.Exec("INSERT INTO domains (name) VALUES (?)", "example.com")
+	if err != nil {
+		t.Fatalf("Failed to create domain: %v", err)
+	}
+
+	hash, _ := HashPassword("test")
+	result, err := db.Exec(
+		"INSERT INTO users (domain_id, username, password_hash, quota_bytes, used_bytes) VALUES (1, ?, ?, 1073741824, 536870912)",
+		"testuser", hash,
+	)
+	if err != nil {
+		t.Fatalf("Failed to create user: %v", err)
+	}
+	userID, _ := result.LastInsertId()
+
+	// Test GetQuotaStatus
+	quotaBytes, usedBytes, err := auth.GetQuotaStatus(ctx, userID)
+	if err != nil {
+		t.Fatalf("GetQuotaStatus failed: %v", err)
+	}
+
+	if quotaBytes != 1073741824 {
+		t.Errorf("Expected quotaBytes=1073741824, got %d", quotaBytes)
+	}
+
+	if usedBytes != 536870912 {
+		t.Errorf("Expected usedBytes=536870912, got %d", usedBytes)
+	}
+}
+
+func TestAuthenticator_QuotaCheck(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	auth := NewAuthenticator(db)
+	ctx := context.Background()
+
+	// Create test domain and user with specific quota
+	_, err := db.Exec("INSERT INTO domains (name) VALUES (?)", "example.com")
+	if err != nil {
+		t.Fatalf("Failed to create domain: %v", err)
+	}
+
+	hash, _ := HashPassword("test")
+	result, err := db.Exec(
+		"INSERT INTO users (domain_id, username, password_hash, quota_bytes, used_bytes) VALUES (1, ?, ?, 1000, 900)",
+		"testuser", hash,
+	)
+	if err != nil {
+		t.Fatalf("Failed to create user: %v", err)
+	}
+	userID, _ := result.LastInsertId()
+
+	// Check quota status
+	quotaBytes, usedBytes, err := auth.GetQuotaStatus(ctx, userID)
+	if err != nil {
+		t.Fatalf("GetQuotaStatus failed: %v", err)
+	}
+
+	// Simulate quota check for a message
+	messageSize := int64(150)
+	if usedBytes+messageSize > quotaBytes {
+		// This should happen - quota would be exceeded
+		t.Log("Quota would be exceeded as expected")
+	} else {
+		t.Error("Expected quota to be exceeded for 150 byte message")
+	}
+
+	// Smaller message should fit
+	messageSize = int64(50)
+	if usedBytes+messageSize > quotaBytes {
+		t.Error("Expected 50 byte message to fit within quota")
+	}
+}
+
+func TestAuthenticator_QuotaFieldsInUser(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	auth := NewAuthenticator(db)
+	ctx := context.Background()
+
+	// Create test domain and user
+	_, err := db.Exec("INSERT INTO domains (name) VALUES (?)", "example.com")
+	if err != nil {
+		t.Fatalf("Failed to create domain: %v", err)
+	}
+
+	password := "testpass123"
+	hash, _ := HashPassword(password)
+	_, err = db.Exec(
+		"INSERT INTO users (domain_id, username, password_hash, quota_bytes, used_bytes) VALUES (1, ?, ?, 2147483648, 1073741824)",
+		"quotauser", hash,
+	)
+	if err != nil {
+		t.Fatalf("Failed to create user: %v", err)
+	}
+
+	// Authenticate and verify quota fields are populated
+	user, err := auth.Authenticate(ctx, "quotauser@example.com", password)
+	if err != nil {
+		t.Fatalf("Authenticate failed: %v", err)
+	}
+
+	if user.QuotaBytes != 2147483648 {
+		t.Errorf("Expected QuotaBytes=2147483648, got %d", user.QuotaBytes)
+	}
+
+	if user.UsedBytes != 1073741824 {
+		t.Errorf("Expected UsedBytes=1073741824, got %d", user.UsedBytes)
+	}
+
+	// Also test via LookupUser
+	user, err = auth.LookupUser(ctx, "quotauser@example.com")
+	if err != nil {
+		t.Fatalf("LookupUser failed: %v", err)
+	}
+
+	if user.QuotaBytes != 2147483648 {
+		t.Errorf("LookupUser: Expected QuotaBytes=2147483648, got %d", user.QuotaBytes)
+	}
+
+	if user.UsedBytes != 1073741824 {
+		t.Errorf("LookupUser: Expected UsedBytes=1073741824, got %d", user.UsedBytes)
+	}
+}

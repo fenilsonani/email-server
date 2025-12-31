@@ -18,7 +18,9 @@ import (
 	"github.com/emersion/go-smtp"
 	"github.com/fenilsonani/email-server/internal/auth"
 	"github.com/fenilsonani/email-server/internal/config"
+	"github.com/fenilsonani/email-server/internal/greylist"
 	"github.com/fenilsonani/email-server/internal/logging"
+	"github.com/fenilsonani/email-server/internal/metrics"
 	"github.com/fenilsonani/email-server/internal/sieve"
 	"github.com/fenilsonani/email-server/internal/smtp/delivery"
 	"github.com/fenilsonani/email-server/internal/storage"
@@ -38,6 +40,7 @@ type Backend struct {
 	queuePath       string // Path to store queued message files
 	onLocalDelivery LocalDeliveryNotifier
 	sieveExecutor   *sieve.Executor
+	greylister      *greylist.Greylister
 }
 
 // NewBackend creates a new SMTP backend
@@ -73,6 +76,11 @@ func NewBackend(cfg *config.Config, authenticator *auth.Authenticator, store *ma
 // SetLocalDeliveryNotifier sets the callback for local delivery notifications
 func (b *Backend) SetLocalDeliveryNotifier(notifier LocalDeliveryNotifier) {
 	b.onLocalDelivery = notifier
+}
+
+// SetGreylister sets the greylisting handler
+func (b *Backend) SetGreylister(gl *greylist.Greylister) {
+	b.greylister = gl
 }
 
 // SetSieveExecutor sets the Sieve script executor for mail filtering
@@ -129,6 +137,7 @@ func (s *Session) Auth(mech string) (sasl.Server, error) {
 				"username", username,
 				"remote_addr", s.remoteAddr,
 			)
+			metrics.RecordAuth(false, "smtp")
 			return smtp.ErrAuthFailed
 		}
 
@@ -137,6 +146,7 @@ func (s *Session) Auth(mech string) (sasl.Server, error) {
 		s.backend.logger.InfoContext(s.ctx, "User authenticated",
 			"username", username,
 		)
+		metrics.RecordAuth(true, "smtp")
 		return nil
 	}), nil
 }
@@ -192,6 +202,37 @@ func (s *Session) Rcpt(to string, opts *smtp.RcptOptions) error {
 		}
 	}
 
+	// Check greylisting for inbound mail
+	if s.backend.greylister != nil && s.backend.greylister.IsEnabled() {
+		allow, firstTime, err := s.backend.greylister.Check(s.ctx, s.remoteAddr, s.from, to)
+		if err != nil {
+			s.backend.logger.WarnContext(s.ctx, "Greylist check failed",
+				"error", err.Error(),
+				"sender", s.from,
+				"recipient", to,
+			)
+			// On error, allow the message (fail open)
+		} else if !allow {
+			if firstTime {
+				metrics.GreylistChecks.WithLabelValues("deferred_new").Inc()
+				s.backend.logger.InfoContext(s.ctx, "Greylisted new sender",
+					"sender_ip", s.remoteAddr,
+					"sender", s.from,
+					"recipient", to,
+				)
+			} else {
+				metrics.GreylistChecks.WithLabelValues("deferred_retry").Inc()
+			}
+			return &smtp.SMTPError{
+				Code:         451,
+				EnhancedCode: smtp.EnhancedCode{4, 7, 1},
+				Message:      "Greylisting in effect, please retry in a few minutes",
+			}
+		} else {
+			metrics.GreylistChecks.WithLabelValues("passed").Inc()
+		}
+	}
+
 	s.rcpts = append(s.rcpts, to)
 	return nil
 }
@@ -233,6 +274,9 @@ func (s *Session) Data(r io.Reader) error {
 			Message:      "Error reading message data",
 		}
 	}
+
+	// Record message received
+	metrics.MessagesReceived.Inc()
 
 	if s.isSubmission {
 		return s.handleOutbound(data)
@@ -428,11 +472,40 @@ func (s *Session) deliverToLocalRecipient(rcpt string, data []byte) error {
 		}
 	}
 
+	// Check quota before delivery
+	messageSize := int64(len(data))
+	if user.QuotaBytes > 0 {
+		if user.UsedBytes+messageSize > user.QuotaBytes {
+			s.backend.logger.WarnContext(ctx, "Quota exceeded for user",
+				"recipient", rcpt,
+				"quota", user.QuotaBytes,
+				"used", user.UsedBytes,
+				"message_size", messageSize,
+			)
+			metrics.QuotaExceeded.Inc()
+			return &smtp.SMTPError{
+				Code:         452,
+				EnhancedCode: smtp.EnhancedCode{4, 2, 2},
+				Message:      "Mailbox quota exceeded",
+			}
+		}
+	}
+
 	// Deliver message
 	_, err = s.backend.store.AppendMessage(ctx, mailbox.ID, nil, time.Now(),
 		strings.NewReader(string(data)))
 	if err != nil {
 		return fmt.Errorf("failed to append message: %w", err)
+	}
+
+	// Update used bytes after successful delivery
+	if err := s.backend.authenticator.UpdateUsedBytes(ctx, user.ID, messageSize); err != nil {
+		s.backend.logger.WarnContext(ctx, "Failed to update used bytes",
+			"user_id", user.ID,
+			"delta", messageSize,
+			"error", err.Error(),
+		)
+		// Don't fail the delivery, just log the warning
 	}
 
 	// Notify IMAP clients about new message (for IDLE support) - async for speed

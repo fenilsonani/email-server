@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -311,6 +312,8 @@ var serveCmd = &cobra.Command{
 		if commandTimeout == 0 {
 			commandTimeout = 5 * time.Minute
 		}
+		// QueuePath for bounce messages - same as SMTP backend queue path
+		queuePath := filepath.Join(cfg.Storage.DataDir, "queue")
 		deliveryEngine := delivery.NewEngine(delivery.Config{
 			Workers:        cfg.Delivery.Workers,
 			Hostname:       cfg.Server.Hostname,
@@ -320,6 +323,7 @@ var serveCmd = &cobra.Command{
 			RequireTLS:     cfg.Delivery.RequireTLS,
 			VerifyTLS:      cfg.Delivery.VerifyTLS,
 			RelayHost:      cfg.Delivery.RelayHost,
+			QueuePath:      queuePath,
 		}, redisQueue, dkimPool, logger)
 		resources.deliveryEngine = deliveryEngine
 		deliveryEngine.Start()

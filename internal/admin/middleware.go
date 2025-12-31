@@ -353,3 +353,26 @@ func (w *responseWriterWrapper) WriteHeader(code int) {
 	w.statusCode = code
 	w.ResponseWriter.WriteHeader(code)
 }
+
+// getSessionUser returns the email of the currently logged-in admin user
+// Returns "unknown" if the session is invalid or user not found
+func getSessionUser(r *http.Request) string {
+	cookie, err := r.Cookie("admin_session")
+	if err != nil {
+		return "unknown"
+	}
+
+	if !isValidToken(cookie.Value) {
+		return "unknown"
+	}
+
+	sessionsMu.RLock()
+	sess, exists := sessions[cookie.Value]
+	sessionsMu.RUnlock()
+
+	if !exists || time.Now().After(sess.expiresAt) {
+		return "unknown"
+	}
+
+	return fmt.Sprintf("user:%d", sess.userID)
+}
