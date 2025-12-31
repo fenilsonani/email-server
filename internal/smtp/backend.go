@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/emersion/go-sasl"
 	"github.com/emersion/go-smtp"
 	"github.com/fenilsonani/email-server/internal/auth"
 	"github.com/fenilsonani/email-server/internal/config"
@@ -114,23 +115,30 @@ type Session struct {
 	ctx          context.Context
 }
 
-// AuthPlain handles PLAIN authentication
-func (s *Session) AuthPlain(username, password string) error {
-	user, err := s.backend.authenticator.Authenticate(s.ctx, username, password)
-	if err != nil {
-		s.backend.logger.WarnContext(s.ctx, "Authentication failed",
-			"username", username,
-			"remote_addr", s.remoteAddr,
-		)
-		return smtp.ErrAuthFailed
-	}
+// AuthMechanisms returns the list of supported authentication mechanisms
+func (s *Session) AuthMechanisms() []string {
+	return []string{sasl.Plain}
+}
 
-	s.user = user
-	s.ctx = logging.WithUserID(s.ctx, user.ID)
-	s.backend.logger.InfoContext(s.ctx, "User authenticated",
-		"username", username,
-	)
-	return nil
+// Auth handles SASL authentication
+func (s *Session) Auth(mech string) (sasl.Server, error) {
+	return sasl.NewPlainServer(func(identity, username, password string) error {
+		user, err := s.backend.authenticator.Authenticate(s.ctx, username, password)
+		if err != nil {
+			s.backend.logger.WarnContext(s.ctx, "Authentication failed",
+				"username", username,
+				"remote_addr", s.remoteAddr,
+			)
+			return smtp.ErrAuthFailed
+		}
+
+		s.user = user
+		s.ctx = logging.WithUserID(s.ctx, user.ID)
+		s.backend.logger.InfoContext(s.ctx, "User authenticated",
+			"username", username,
+		)
+		return nil
+	}), nil
 }
 
 // Mail is called when the MAIL FROM command is received
