@@ -192,6 +192,28 @@ func validatePath(path string) error {
 	return nil
 }
 
+// isValidICalendar performs basic validation of iCalendar data
+func isValidICalendar(data string) bool {
+	if data == "" {
+		return false
+	}
+	// Check for required iCalendar structure
+	trimmed := strings.TrimSpace(data)
+	return strings.HasPrefix(trimmed, "BEGIN:VCALENDAR") &&
+		strings.HasSuffix(trimmed, "END:VCALENDAR")
+}
+
+// isValidVCard performs basic validation of vCard data
+func isValidVCard(data string) bool {
+	if data == "" {
+		return false
+	}
+	// Check for required vCard structure
+	trimmed := strings.TrimSpace(data)
+	return strings.HasPrefix(trimmed, "BEGIN:VCARD") &&
+		strings.HasSuffix(trimmed, "END:VCARD")
+}
+
 // wellKnownCalDAV handles CalDAV auto-discovery
 func (s *Server) wellKnownCalDAV(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/caldav/", http.StatusMovedPermanently)
@@ -255,6 +277,17 @@ func (s *Server) handlePrincipalPropfind(w http.ResponseWriter, r *http.Request,
 	w.Write([]byte(response))
 }
 
+// extractPathUser extracts the user email from a path like /calendars/user@domain/...
+func extractPathUser(path, prefix string) string {
+	path = strings.TrimPrefix(path, prefix)
+	path = strings.TrimPrefix(path, "/")
+	parts := strings.SplitN(path, "/", 2)
+	if len(parts) > 0 {
+		return parts[0]
+	}
+	return ""
+}
+
 // handleCalDAV handles CalDAV requests
 func (s *Server) handleCalDAV(w http.ResponseWriter, r *http.Request) {
 	// Handle OPTIONS without authentication (for CORS and discovery)
@@ -266,6 +299,16 @@ func (s *Server) handleCalDAV(w http.ResponseWriter, r *http.Request) {
 	user := getUserFromContext(r.Context())
 	if user == nil {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	// Check if path user matches authenticated user (for paths like /calendars/user@domain/...)
+	pathUser := extractPathUser(r.URL.Path, "/calendars")
+	if pathUser == "" {
+		pathUser = extractPathUser(r.URL.Path, "/caldav")
+	}
+	if pathUser != "" && pathUser != user.Email {
+		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
 	}
 
@@ -460,10 +503,32 @@ func (s *Server) handleCalDAVPut(w http.ResponseWriter, r *http.Request, user *a
 	}
 	icalData := string(data)
 
+	// Validate iCalendar data format
+	if !isValidICalendar(icalData) {
+		http.Error(w, "Invalid iCalendar data", http.StatusBadRequest)
+		return
+	}
+
 	ctx := r.Context()
 
 	// Try to get existing event
 	existing, _ := s.caldavBackend.GetEvent(ctx, calendarUID, eventUID)
+
+	// Check If-Match header for conditional updates
+	ifMatch := r.Header.Get("If-Match")
+	if ifMatch != "" && existing != nil {
+		if ifMatch != existing.ETag && ifMatch != "*" {
+			http.Error(w, "Precondition failed", http.StatusPreconditionFailed)
+			return
+		}
+	}
+
+	// Check If-None-Match header (prevent overwriting)
+	ifNoneMatch := r.Header.Get("If-None-Match")
+	if ifNoneMatch == "*" && existing != nil {
+		http.Error(w, "Resource already exists", http.StatusPreconditionFailed)
+		return
+	}
 
 	event := &CalendarEvent{
 		UID:           eventUID,
@@ -545,6 +610,16 @@ func (s *Server) handleCardDAV(w http.ResponseWriter, r *http.Request) {
 	user := getUserFromContext(r.Context())
 	if user == nil {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	// Check if path user matches authenticated user (for paths like /addressbooks/user@domain/...)
+	pathUser := extractPathUser(r.URL.Path, "/addressbooks")
+	if pathUser == "" {
+		pathUser = extractPathUser(r.URL.Path, "/carddav")
+	}
+	if pathUser != "" && pathUser != user.Email {
+		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
 	}
 
@@ -733,10 +808,32 @@ func (s *Server) handleCardDAVPut(w http.ResponseWriter, r *http.Request, user *
 	}
 	vcardData := string(data)
 
+	// Validate vCard data format
+	if !isValidVCard(vcardData) {
+		http.Error(w, "Invalid vCard data", http.StatusBadRequest)
+		return
+	}
+
 	ctx := r.Context()
 
 	// Try to get existing contact
 	existing, _ := s.carddavBackend.GetContact(ctx, addressBookUID, contactUID)
+
+	// Check If-Match header for conditional updates
+	ifMatch := r.Header.Get("If-Match")
+	if ifMatch != "" && existing != nil {
+		if ifMatch != existing.ETag && ifMatch != "*" {
+			http.Error(w, "Precondition failed", http.StatusPreconditionFailed)
+			return
+		}
+	}
+
+	// Check If-None-Match header (prevent overwriting)
+	ifNoneMatch := r.Header.Get("If-None-Match")
+	if ifNoneMatch == "*" && existing != nil {
+		http.Error(w, "Resource already exists", http.StatusPreconditionFailed)
+		return
+	}
 
 	contact := &Contact{
 		UID:       contactUID,
