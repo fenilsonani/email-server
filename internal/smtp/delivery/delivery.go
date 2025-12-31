@@ -522,6 +522,11 @@ func (e *Engine) readAndSignMessage(ctx context.Context, msg *queue.Message) ([]
 
 // deliverToHost delivers to a specific SMTP server.
 func (e *Engine) deliverToHost(ctx context.Context, addr, hostname string, msg *queue.Message, data []byte) error {
+	return e.deliverToHostWithTLS(ctx, addr, hostname, msg, data, true)
+}
+
+// deliverToHostWithTLS delivers to a specific SMTP server with optional TLS.
+func (e *Engine) deliverToHostWithTLS(ctx context.Context, addr, hostname string, msg *queue.Message, data []byte, tryTLS bool) error {
 	// Connect with timeout
 	dialer := &net.Dialer{
 		Timeout: e.config.ConnectTimeout,
@@ -555,25 +560,33 @@ func (e *Engine) deliverToHost(ctx context.Context, addr, hostname string, msg *
 		return fmt.Errorf("HELO failed: %w", err)
 	}
 
-	// Try STARTTLS
-	if ok, _ := client.Extension("STARTTLS"); ok {
-		tlsConfig := &tls.Config{
-			ServerName:         hostname,
-			InsecureSkipVerify: !e.config.VerifyTLS,
-			MinVersion:         tls.VersionTLS12,
-		}
-		if err := client.StartTLS(tlsConfig); err != nil {
-			if e.config.RequireTLS {
-				return fmt.Errorf("STARTTLS required but failed: %w", err)
+	// Try STARTTLS if enabled and this is our first attempt
+	if tryTLS {
+		if ok, _ := client.Extension("STARTTLS"); ok {
+			tlsConfig := &tls.Config{
+				ServerName:         hostname,
+				InsecureSkipVerify: !e.config.VerifyTLS,
+				MinVersion:         tls.VersionTLS12,
 			}
-			// Continue without TLS
-			e.logger.DebugContext(ctx, "STARTTLS failed, continuing without TLS",
-				"host", hostname,
-				"error", err.Error(),
-			)
+			if err := client.StartTLS(tlsConfig); err != nil {
+				if e.config.RequireTLS {
+					return fmt.Errorf("STARTTLS required but failed: %w", err)
+				}
+				// TLS handshake failed - reconnect without TLS
+				// This handles servers with invalid certificates
+				e.logger.WarnContext(ctx, "STARTTLS failed, reconnecting without TLS",
+					"host", hostname,
+					"error", err.Error(),
+				)
+				// Close current connection and retry without TLS
+				client.Quit()
+				client.Close()
+				conn.Close()
+				return e.deliverToHostWithTLS(ctx, addr, hostname, msg, data, false)
+			}
+		} else if e.config.RequireTLS {
+			return fmt.Errorf("STARTTLS required but not supported by server")
 		}
-	} else if e.config.RequireTLS {
-		return fmt.Errorf("STARTTLS required but not supported by server")
 	}
 
 	// Set sender

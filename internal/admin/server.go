@@ -15,12 +15,14 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/fenilsonani/email-server/internal/audit"
 	"github.com/fenilsonani/email-server/internal/auth"
 	"github.com/fenilsonani/email-server/internal/config"
 	"github.com/fenilsonani/email-server/internal/logging"
 	"github.com/fenilsonani/email-server/internal/queue"
 	"github.com/fenilsonani/email-server/internal/sieve"
 	"github.com/fenilsonani/email-server/internal/storage/maildir"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 //go:embed templates/*.html
@@ -35,6 +37,7 @@ type Server struct {
 	sieveStore    *sieve.Store
 	queue         *queue.RedisQueue
 	logger        *logging.Logger
+	auditLogger   *audit.Logger
 	templates     map[string]*template.Template
 	httpServer    *http.Server
 	shutdownOnce  sync.Once
@@ -65,6 +68,7 @@ func NewServer(cfg *config.Config, db *sql.DB, authenticator *auth.Authenticator
 		"sieve.html",
 		"auth_logs.html",
 		"delivery_logs.html",
+		"audit_logs.html",
 		"queue.html",
 		"dns_check.html",
 		"test_email.html",
@@ -100,6 +104,12 @@ func NewServer(cfg *config.Config, db *sql.DB, authenticator *auth.Authenticator
 	}
 	templates["login.html"] = loginTmpl
 
+	// Initialize audit logger
+	auditLog, err := audit.NewLogger(db)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create audit logger: %w", err)
+	}
+
 	s := &Server{
 		config:        cfg,
 		db:            db,
@@ -108,6 +118,7 @@ func NewServer(cfg *config.Config, db *sql.DB, authenticator *auth.Authenticator
 		sieveStore:    sieveStore,
 		queue:         q,
 		logger:        logger,
+		auditLogger:   auditLog,
 		templates:     templates,
 		rateLimiter:   DefaultRateLimiter(),
 		startTime:     time.Now(),
@@ -125,6 +136,9 @@ func (s *Server) Start(listen string) error {
 	mux.HandleFunc("/healthz", s.handleHealth)
 	mux.HandleFunc("/ready", s.handleReady)
 
+	// Prometheus metrics endpoint (no auth for scraping)
+	mux.Handle("/metrics", promhttp.Handler())
+
 	// Admin routes
 	mux.HandleFunc("/admin/", s.withAuth(s.handleDashboard))
 	mux.HandleFunc("/admin/login", s.handleLogin)
@@ -139,6 +153,7 @@ func (s *Server) Start(listen string) error {
 	mux.HandleFunc("/admin/sieve/", s.withAuth(s.handleSieve))
 	mux.HandleFunc("/admin/logs/auth", s.withAuth(s.handleAuthLogs))
 	mux.HandleFunc("/admin/logs/delivery", s.withAuth(s.handleDeliveryLogs))
+	mux.HandleFunc("/admin/logs/audit", s.withAuth(s.handleAuditLogs))
 	mux.HandleFunc("/admin/queue", s.withAuth(s.handleQueue))
 	mux.HandleFunc("/admin/queue/retry/", s.withAuth(s.handleQueueRetry))
 	mux.HandleFunc("/admin/queue/delete/", s.withAuth(s.handleQueueDelete))

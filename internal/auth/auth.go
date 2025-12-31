@@ -483,3 +483,25 @@ func ValidateDomain(domain string) error {
 
 	return nil
 }
+
+// UpdateUsedBytes updates the used_bytes value for a user
+// delta can be positive (increase) or negative (decrease)
+func (a *Authenticator) UpdateUsedBytes(ctx context.Context, userID int64, delta int64) error {
+	_, err := a.db.ExecContext(ctx,
+		"UPDATE users SET used_bytes = MAX(0, used_bytes + ?) WHERE id = ?",
+		delta, userID,
+	)
+	return err
+}
+
+// GetQuotaStatus returns the user's quota and used bytes
+func (a *Authenticator) GetQuotaStatus(ctx context.Context, userID int64) (quotaBytes, usedBytes int64, err error) {
+	err = a.db.QueryRowContext(ctx,
+		"SELECT COALESCE(quota_bytes, 0), COALESCE(used_bytes, 0) FROM users WHERE id = ?",
+		userID,
+	).Scan(&quotaBytes, &usedBytes)
+	return
+}
+
+// ErrQuotaExceeded is returned when a user's mailbox quota is exceeded
+var ErrQuotaExceeded = errors.New("mailbox quota exceeded")

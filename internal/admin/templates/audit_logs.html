@@ -1,0 +1,69 @@
+<div class="page-header">
+    <h1>Audit Logs</h1>
+</div>
+
+<div class="card">
+    <form method="GET" style="margin-bottom: 20px; display: flex; gap: 10px; flex-wrap: wrap;">
+        <input type="text" name="actor" placeholder="Filter by Actor" value="{{.FilterActor}}" style="padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
+        <select name="action" style="padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
+            <option value="">All Actions</option>
+            <option value="user.create" {{if eq .FilterAction "user.create"}}selected{{end}}>User Create</option>
+            <option value="user.delete" {{if eq .FilterAction "user.delete"}}selected{{end}}>User Delete</option>
+            <option value="user.update" {{if eq .FilterAction "user.update"}}selected{{end}}>User Update</option>
+            <option value="password.change" {{if eq .FilterAction "password.change"}}selected{{end}}>Password Change</option>
+            <option value="domain.create" {{if eq .FilterAction "domain.create"}}selected{{end}}>Domain Create</option>
+            <option value="domain.delete" {{if eq .FilterAction "domain.delete"}}selected{{end}}>Domain Delete</option>
+            <option value="login.success" {{if eq .FilterAction "login.success"}}selected{{end}}>Login Success</option>
+            <option value="login.failure" {{if eq .FilterAction "login.failure"}}selected{{end}}>Login Failure</option>
+        </select>
+        <button type="submit" class="btn btn-primary">Filter</button>
+        <a href="/admin/logs/audit" class="btn btn-secondary">Clear</a>
+    </form>
+
+    {{if .Error}}
+    <div class="alert alert-danger">{{.Error}}</div>
+    {{else if .Logs}}
+    <table>
+        <thead>
+            <tr>
+                <th>Time</th>
+                <th>Actor</th>
+                <th>Action</th>
+                <th>Target</th>
+                <th>IP Address</th>
+                <th>Details</th>
+            </tr>
+        </thead>
+        <tbody>
+            {{range .Logs}}
+            <tr>
+                <td>{{.Timestamp.Format "Jan 02 15:04:05"}}</td>
+                <td><strong>{{.Actor}}</strong></td>
+                <td>
+                    {{if eq .Action "login.success"}}
+                    <span class="badge badge-success">{{.Action}}</span>
+                    {{else if eq .Action "login.failure"}}
+                    <span class="badge badge-danger">{{.Action}}</span>
+                    {{else if eq .Action "user.delete"}}
+                    <span class="badge badge-warning">{{.Action}}</span>
+                    {{else if eq .Action "domain.delete"}}
+                    <span class="badge badge-warning">{{.Action}}</span>
+                    {{else}}
+                    <span class="badge badge-secondary">{{.Action}}</span>
+                    {{end}}
+                </td>
+                <td>{{.Target}}</td>
+                <td><code>{{.IPAddress}}</code></td>
+                <td style="max-width: 200px; overflow: hidden; text-overflow: ellipsis;">
+                    {{if .Details}}<span title="{{.Details}}">{{.Details}}</span>{{else}}-{{end}}
+                </td>
+            </tr>
+            {{end}}
+        </tbody>
+    </table>
+    {{else}}
+    <div class="empty-state">
+        <p>No audit logs found.</p>
+    </div>
+    {{end}}
+</div>

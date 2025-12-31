@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/fenilsonani/email-server/internal/audit"
 	"github.com/fenilsonani/email-server/internal/queue"
 	"github.com/fenilsonani/email-server/internal/validation"
 )
@@ -80,6 +81,12 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 			"remaining_attempts", remaining,
 			"blocked", blocked)
 
+		// Audit log failed login
+		s.auditLogger.Log(r.Context(), username, audit.EventLoginFailure, username, map[string]interface{}{
+			"remaining_attempts": remaining,
+			"blocked":            blocked,
+		}, clientIP)
+
 		errorMsg := "Invalid credentials"
 		if remaining > 0 && remaining < 3 {
 			errorMsg = "Invalid credentials. " + strconv.Itoa(remaining) + " attempts remaining"
@@ -122,6 +129,10 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	})
 
 	s.logger.Info("Admin login successful", "ip", clientIP, "username", username)
+
+	// Audit log successful login
+	s.auditLogger.Log(r.Context(), username, audit.EventLoginSuccess, username, nil, clientIP)
+
 	http.Redirect(w, r, "/admin/", http.StatusSeeOther)
 }
 
@@ -263,6 +274,13 @@ func (s *Server) handleUserAdd(w http.ResponseWriter, r *http.Request) {
 		s.db.ExecContext(r.Context(), "UPDATE users SET is_admin = TRUE WHERE id = ?", user.ID)
 	}
 
+	// Audit log
+	adminUser := getSessionUser(r)
+	s.auditLogger.Log(r.Context(), adminUser, audit.EventUserCreate, user.Username, map[string]interface{}{
+		"domain_id": domainID,
+		"is_admin":  isAdmin,
+	}, getIP(r))
+
 	http.Redirect(w, r, "/admin/users", http.StatusSeeOther)
 }
 
@@ -330,7 +348,16 @@ func (s *Server) handleUserEdit(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Failed to update password", http.StatusInternalServerError)
 			return
 		}
+		// Audit log password change
+		adminUser := getSessionUser(r)
+		s.auditLogger.Log(r.Context(), adminUser, audit.EventPasswordChange, strconv.FormatInt(userID, 10), nil, getIP(r))
 	}
+
+	// Audit log user update
+	adminUser := getSessionUser(r)
+	s.auditLogger.Log(r.Context(), adminUser, audit.EventUserUpdate, strconv.FormatInt(userID, 10), map[string]interface{}{
+		"is_admin": isAdmin,
+	}, getIP(r))
 
 	http.Redirect(w, r, "/admin/users", http.StatusSeeOther)
 }
@@ -360,6 +387,10 @@ func (s *Server) handleUserDelete(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Failed to delete user", http.StatusInternalServerError)
 		return
 	}
+
+	// Audit log
+	adminUser := getSessionUser(r)
+	s.auditLogger.Log(r.Context(), adminUser, audit.EventUserDelete, strconv.FormatInt(userID, 10), nil, getIP(r))
 
 	http.Redirect(w, r, "/admin/users", http.StatusSeeOther)
 }
@@ -606,6 +637,10 @@ func (s *Server) handleDomainAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Audit log
+	adminUser := getSessionUser(r)
+	s.auditLogger.Log(r.Context(), adminUser, audit.EventDomainCreate, name, nil, getIP(r))
+
 	http.Redirect(w, r, "/admin/domains", http.StatusSeeOther)
 }
 
@@ -636,6 +671,10 @@ func (s *Server) handleDomainDelete(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Failed to delete domain", http.StatusInternalServerError)
 		return
 	}
+
+	// Audit log
+	adminUser := getSessionUser(r)
+	s.auditLogger.Log(r.Context(), adminUser, audit.EventDomainDelete, strconv.FormatInt(domainID, 10), nil, getIP(r))
 
 	http.Redirect(w, r, "/admin/domains", http.StatusSeeOther)
 }
@@ -1193,4 +1232,70 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// handleAuditLogs shows the audit log
+func (s *Server) handleAuditLogs(w http.ResponseWriter, r *http.Request) {
+	if s.auditLogger == nil {
+		s.renderTemplate(w, "audit_logs.html", map[string]interface{}{
+			"Title": "Audit Logs",
+			"Error": "Audit logging not configured",
+		})
+		return
+	}
+
+	// Parse filter parameters
+	filter := audit.QueryFilter{
+		Limit: 100,
+	}
+
+	if actor := r.URL.Query().Get("actor"); actor != "" {
+		filter.Actor = actor
+	}
+	if action := r.URL.Query().Get("action"); action != "" {
+		filter.Action = audit.EventType(action)
+	}
+	if target := r.URL.Query().Get("target"); target != "" {
+		filter.Target = target
+	}
+
+	events, err := s.auditLogger.Query(r.Context(), filter)
+	if err != nil {
+		s.logger.ErrorContext(r.Context(), "Failed to query audit logs", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	// Convert to display format
+	type AuditLogEntry struct {
+		ID        int64
+		Timestamp time.Time
+		Actor     string
+		Action    string
+		Target    string
+		Details   string
+		IPAddress string
+	}
+
+	var logs []AuditLogEntry
+	for _, e := range events {
+		logs = append(logs, AuditLogEntry{
+			ID:        e.ID,
+			Timestamp: e.Timestamp,
+			Actor:     e.Actor,
+			Action:    string(e.Action),
+			Target:    e.Target,
+			Details:   e.Details,
+			IPAddress: e.IPAddress,
+		})
+	}
+
+	data := map[string]interface{}{
+		"Title":        "Audit Logs",
+		"Logs":         logs,
+		"FilterActor":  r.URL.Query().Get("actor"),
+		"FilterAction": r.URL.Query().Get("action"),
+	}
+
+	s.renderTemplate(w, "audit_logs.html", data)
 }
