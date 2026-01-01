@@ -15,8 +15,8 @@ import (
 
 // Config holds the autodiscover server configuration
 type Config struct {
-	Domain      string // Primary mail domain (e.g., "fenilsonani.com")
-	Hostname    string // Mail server hostname (e.g., "mail.fenilsonani.com")
+	Domain      string // Primary mail domain (e.g., "example.com")
+	Hostname    string // Mail server hostname (e.g., "mail.example.com")
 	IMAPPort    int    // IMAP port (default: 993)
 	SMTPPort    int    // SMTP submission port (default: 587)
 	DisplayName string // Display name for the mail service
