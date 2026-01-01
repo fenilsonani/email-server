@@ -34,3 +34,6 @@ config.yaml
 # Build
 /bin/
 /dist/
+
+# Internal docs
+MARKETING_CONTENT_2026.md
