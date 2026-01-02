@@ -35,5 +35,5 @@ config.yaml
 /bin/
 /dist/
 
-# Internal docs
-MARKETING_CONTENT_2026.md
+# Internal/temporary files
+/tmp/
