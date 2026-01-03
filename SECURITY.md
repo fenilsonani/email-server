@@ -86,9 +86,11 @@ When deploying this email server, please follow these guidelines:
 ### Data Storage
 
 1. **Passwords**: Hashed with Argon2id (OWASP recommended)
-2. **Emails**: Stored in Maildir format on filesystem
-3. **Metadata**: SQLite database with standard permissions
+2. **Emails**: Stored in Maildir format on filesystem (not encrypted at rest)
+3. **Metadata**: SQLite database with standard permissions (not encrypted)
 4. **Logs**: May contain email addresses and IPs; rotate and secure accordingly
+
+> **At-rest encryption**: This server does not encrypt data at rest. For sensitive deployments, use full-disk encryption (LUKS on Linux, FileVault on macOS) on your server.
 
 ## Security Features
 

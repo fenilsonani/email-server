@@ -4,10 +4,10 @@ A self-hosted email server written in Go, designed for individuals and small tea
 
 **Why self-host email in 2026?**
 - Google Workspace prices increased 17-22% in 2025
-- Complete privacy - no AI scanning your emails
+- No corporate surveillance - your emails aren't scanned for ads or AI training
 - Unlimited users for ~$72/year total
 - No risk of account suspension
-- Own your data
+- Own your data on your server
 
 ## Features
 
@@ -23,13 +23,15 @@ A self-hosted email server written in Go, designed for individuals and small tea
 - **CardDAV Server** for contacts synchronization
 - Works seamlessly with Apple Mail, iOS, and other standards-compliant clients
 
-### Security & Privacy
+### Security
 - **TLS/ACME** automatic certificate management via Let's Encrypt
 - **Argon2id** password hashing (OWASP recommended)
 - **Greylisting** for spam prevention
 - **Rate Limiting** to prevent brute force attacks
 - **Audit Logging** for compliance and security monitoring
 - **TLS Fallback** for servers with misconfigured certificates
+
+> **Note on encryption**: Emails are encrypted in transit (TLS) but stored unencrypted on disk (standard Maildir format). This is similar to most email servers including Gmail. For at-rest encryption, use full-disk encryption (LUKS, FileVault, etc.) on your server.
 
 ### Administration
 - **Web Admin Panel** for user/domain management
