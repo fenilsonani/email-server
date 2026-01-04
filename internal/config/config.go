@@ -29,6 +29,7 @@ type Config struct {
 // ServerConfig holds server-related configuration
 type ServerConfig struct {
 	Hostname        string `koanf:"hostname"`         // mail.example.com
+	BindAddress     string `koanf:"bind_address"`     // Listen address (default 0.0.0.0)
 	Domain          string `koanf:"domain"`           // Primary email domain (e.g., example.com)
 	SMTPPort        int    `koanf:"smtp_port"`        // 25 for MX receiving
 	SubmissionPort  int    `koanf:"submission_port"`  // 587 for client submission
@@ -124,6 +125,7 @@ func DefaultConfig() *Config {
 	return &Config{
 		Server: ServerConfig{
 			Hostname:        "localhost",
+			BindAddress:     "0.0.0.0",
 			Domain:          "localhost",
 			SMTPPort:        25,
 			SubmissionPort:  587,

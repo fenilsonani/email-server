@@ -3,6 +3,7 @@
 
 server:
   hostname: mail.example.com
+  bind_address: 0.0.0.0   # Listen on all interfaces (or specific IP for multi-homed servers)
   smtp_port: 25           # MX receiving
   submission_port: 587    # Client submission (STARTTLS)
   smtps_port: 465         # Client submission (implicit TLS)

@@ -330,8 +330,8 @@ var serveCmd = &cobra.Command{
 		logger.Info("Delivery engine started", "workers", cfg.Delivery.Workers)
 
 		// Create IMAP server
-		imapAddr := fmt.Sprintf(":%d", cfg.Server.IMAPPort)
-		imapsAddr := fmt.Sprintf(":%d", cfg.Server.IMAPSPort)
+		imapAddr := fmt.Sprintf("%s:%d", cfg.Server.BindAddress, cfg.Server.IMAPPort)
+		imapsAddr := fmt.Sprintf("%s:%d", cfg.Server.BindAddress, cfg.Server.IMAPSPort)
 		imapSrv := imapserver.NewServer(authenticator, store, imapAddr, imapsAddr, tlsManager.TLSConfig())
 		resources.imapSrv = imapSrv
 
@@ -408,7 +408,7 @@ var serveCmd = &cobra.Command{
 				logger.Warn("Failed to initialize DAV server", "error", err.Error())
 			} else {
 				resources.davSrv = davSrv
-				davAddr := fmt.Sprintf(":%d", cfg.Server.DAVPort)
+				davAddr := fmt.Sprintf("%s:%d", cfg.Server.BindAddress, cfg.Server.DAVPort)
 				go func() {
 					if err := davSrv.Start(davAddr, tlsManager.TLSConfig()); err != nil {
 						logger.Error("DAV server error", "error", err.Error())

@@ -69,7 +69,7 @@ func (b *submissionBackend) NewSession(c *smtp.Conn) (smtp.Session, error) {
 
 // ListenAndServe starts the MX server
 func (s *Server) ListenAndServe() error {
-	addr := fmt.Sprintf(":%d", s.config.Server.SMTPPort)
+	addr := fmt.Sprintf("%s:%d", s.config.Server.BindAddress, s.config.Server.SMTPPort)
 
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -90,7 +90,7 @@ func (s *Server) ListenAndServe() error {
 
 // ListenAndServeSubmission starts the submission server
 func (s *Server) ListenAndServeSubmission() error {
-	addr := fmt.Sprintf(":%d", s.config.Server.SubmissionPort)
+	addr := fmt.Sprintf("%s:%d", s.config.Server.BindAddress, s.config.Server.SubmissionPort)
 
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -115,7 +115,7 @@ func (s *Server) ListenAndServeTLS() error {
 		return nil // No TLS configured
 	}
 
-	addr := fmt.Sprintf(":%d", s.config.Server.SMTPSPort)
+	addr := fmt.Sprintf("%s:%d", s.config.Server.BindAddress, s.config.Server.SMTPSPort)
 
 	listener, err := tls.Listen("tcp", addr, s.submissionServer.TLSConfig)
 	if err != nil {

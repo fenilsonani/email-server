@@ -93,7 +93,7 @@ func RunPreflightWithOptions(force bool) *PreflightResults {
 func (r *PreflightResults) Print() {
 	fmt.Println("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	fmt.Println("                    PREFLIGHT CHECK")
-	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
 	for _, check := range r.Checks {
 		icon := "✓"

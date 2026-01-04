@@ -47,10 +47,11 @@ func RunSetup() error {
 func RunSetupWithOptions(force bool) error {
 	fmt.Println("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	fmt.Println("              MAIL SERVER SETUP WIZARD")
-	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
 	// First run preflight
-	fmt.Println("Running preflight checks...\n")
+	fmt.Println()
+	fmt.Println("Running preflight checks...")
 	preflight := RunPreflightWithOptions(force)
 
 	if !preflight.Ready {
@@ -63,10 +64,11 @@ func RunSetupWithOptions(force bool) error {
 
 	if force && preflight.Failed > 0 {
 		preflight.Print()
-		fmt.Println("\033[33m! Some checks failed but --force was used, continuing...\033[0m\n")
+		fmt.Println("\033[33m! Some checks failed but --force was used, continuing...\033[0m")
 	} else {
-		fmt.Println("\033[32m✓ Preflight checks passed!\033[0m\n")
+		fmt.Println("\033[32m✓ Preflight checks passed!\033[0m")
 	}
+	fmt.Println()
 
 	// Gather configuration
 	cfg := &SetupConfig{
@@ -149,7 +151,7 @@ func RunSetupWithOptions(force bool) error {
 		{Name: "Start service", Action: startService, Verify: verifyService},
 	}
 
-	fmt.Println("\n")
+	fmt.Println()
 
 	for i, step := range steps {
 		fmt.Printf("[%d/%d] %s...\n", i+1, len(steps), step.Name)
@@ -432,7 +434,7 @@ func verifyService(cfg *SetupConfig) error {
 }
 
 func printSuccess(cfg *SetupConfig) {
-	fmt.Println("\n")
+	fmt.Println()
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	fmt.Println("\033[32m           ✓ SETUP COMPLETE!\033[0m")
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
