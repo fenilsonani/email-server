@@ -13,17 +13,18 @@ import (
 
 // Config holds all configuration for the mail server
 type Config struct {
-	Server      ServerConfig      `koanf:"server"`
-	TLS         TLSConfig         `koanf:"tls"`
-	Storage     StorageConfig     `koanf:"storage"`
-	Domains     []DomainConfig    `koanf:"domains"`
-	Security    SecurityConfig    `koanf:"security"`
-	Logging     LoggingConfig     `koanf:"logging"`
-	Queue       QueueConfig       `koanf:"queue"`
-	Delivery    DeliveryConfig    `koanf:"delivery"`
-	Admin       AdminConfig       `koanf:"admin"`
-	Sieve       SieveConfig       `koanf:"sieve"`
+	Server       ServerConfig       `koanf:"server"`
+	TLS          TLSConfig          `koanf:"tls"`
+	Storage      StorageConfig      `koanf:"storage"`
+	Domains      []DomainConfig     `koanf:"domains"`
+	Security     SecurityConfig     `koanf:"security"`
+	Logging      LoggingConfig      `koanf:"logging"`
+	Queue        QueueConfig        `koanf:"queue"`
+	Delivery     DeliveryConfig     `koanf:"delivery"`
+	Admin        AdminConfig        `koanf:"admin"`
+	Sieve        SieveConfig        `koanf:"sieve"`
 	Autodiscover AutodiscoverConfig `koanf:"autodiscover"`
+	API          APIConfig          `koanf:"api"`
 }
 
 // ServerConfig holds server-related configuration
@@ -120,6 +121,16 @@ type AutodiscoverConfig struct {
 	DisplayName string `koanf:"display_name"` // Display name for email service
 }
 
+// APIConfig holds transactional email API configuration
+type APIConfig struct {
+	Enabled          bool   `koanf:"enabled"`            // Enable transactional API
+	Port             int    `koanf:"port"`               // API port (default 8082)
+	Listen           string `koanf:"listen"`             // Listen address (default 0.0.0.0)
+	TrackingDomain   string `koanf:"tracking_domain"`    // Domain for open/click tracking
+	RateLimitDefault int    `koanf:"rate_limit_default"` // Default rate limit per hour
+	EnableTracking   bool   `koanf:"enable_tracking"`    // Enable open/click tracking
+}
+
 // DefaultConfig returns a configuration with sensible defaults
 func DefaultConfig() *Config {
 	return &Config{
@@ -184,6 +195,13 @@ func DefaultConfig() *Config {
 			Enabled: true,
 			Port:    8081,
 			Listen:  "0.0.0.0",
+		},
+		API: APIConfig{
+			Enabled:          false,
+			Port:             8082,
+			Listen:           "0.0.0.0",
+			RateLimitDefault: 1000,
+			EnableTracking:   true,
 		},
 	}
 }
@@ -342,6 +360,22 @@ func (c *Config) Validate() error {
 		}
 		if c.Sieve.MaxScriptsPerUser < 1 {
 			return fmt.Errorf("sieve.max_scripts_per_user must be at least 1")
+		}
+	}
+
+	// API validation
+	if c.API.Enabled {
+		if c.API.Port < 1 || c.API.Port > 65535 {
+			return fmt.Errorf("api.port must be between 1 and 65535 (got: %d)", c.API.Port)
+		}
+		if c.API.Listen == "" {
+			return fmt.Errorf("api.listen is required when api is enabled")
+		}
+		if c.API.RateLimitDefault < 1 {
+			return fmt.Errorf("api.rate_limit_default must be at least 1")
+		}
+		if c.API.RateLimitDefault > 100000 {
+			return fmt.Errorf("api.rate_limit_default cannot exceed 100000")
 		}
 	}
 

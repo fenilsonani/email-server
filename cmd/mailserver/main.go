@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/fenilsonani/email-server/internal/admin"
+	"github.com/fenilsonani/email-server/internal/api"
 	"github.com/fenilsonani/email-server/internal/auth"
 	"github.com/fenilsonani/email-server/internal/autodiscover"
 	"github.com/fenilsonani/email-server/internal/config"
@@ -89,6 +90,7 @@ var serveCmd = &cobra.Command{
 			smtpSrv        *smtpserver.Server
 			davSrv         *dav.Server
 			adminSrv       *admin.Server
+			apiSrv         *api.Server
 			logger         *logging.Logger
 		}
 		resources := &resourceTracker{}
@@ -112,6 +114,19 @@ var serveCmd = &cobra.Command{
 
 			// Shutdown in reverse order of initialization
 			// 1. Stop accepting new connections first
+			if resources.apiSrv != nil {
+				if resources.logger != nil {
+					resources.logger.Info("Shutting down API server")
+				}
+				if err := resources.apiSrv.Shutdown(shutdownCtx); err != nil {
+					if resources.logger != nil {
+						resources.logger.Error("API server shutdown error", "error", err.Error())
+					} else {
+						fmt.Fprintf(os.Stderr, "API server shutdown error: %v\n", err)
+					}
+				}
+			}
+
 			if resources.adminSrv != nil {
 				if resources.logger != nil {
 					resources.logger.Info("Shutting down admin server")
@@ -324,7 +339,7 @@ var serveCmd = &cobra.Command{
 			VerifyTLS:      cfg.Delivery.VerifyTLS,
 			RelayHost:      cfg.Delivery.RelayHost,
 			QueuePath:      queuePath,
-		}, redisQueue, dkimPool, logger)
+		}, redisQueue, dkimPool, logger, db.DB)
 		resources.deliveryEngine = deliveryEngine
 		deliveryEngine.Start()
 		logger.Info("Delivery engine started", "workers", cfg.Delivery.Workers)
@@ -458,6 +473,24 @@ var serveCmd = &cobra.Command{
 			}()
 			fmt.Printf("  Autodiscover: http://%s\n", autodiscoverAddr)
 			logger.Info("Autodiscover server started", "addr", autodiscoverAddr)
+		}
+
+		// Start transactional API server if enabled
+		if cfg.API.Enabled {
+			apiSrv, err := api.NewServer(cfg, db.DB, redisQueue, deliveryEngine, logger)
+			if err != nil {
+				logger.Warn("Failed to initialize API server", "error", err.Error())
+			} else {
+				resources.apiSrv = apiSrv
+				apiAddr := fmt.Sprintf("%s:%d", cfg.API.Listen, cfg.API.Port)
+				go func() {
+					if err := apiSrv.Start(apiAddr); err != nil {
+						logger.Error("API server error", "error", err.Error())
+					}
+				}()
+				fmt.Printf("  API: http://%s\n", apiAddr)
+				logger.Info("Transactional API server started", "addr", apiAddr)
+			}
 		}
 
 		fmt.Println("\nServer is running. Press Ctrl+C to stop.")
