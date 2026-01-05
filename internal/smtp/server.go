@@ -39,7 +39,7 @@ func NewServer(backend *Backend, cfg *config.Config, tlsConfig *tls.Config) *Ser
 	submissionServer.WriteTimeout = 60 * time.Second
 	submissionServer.MaxMessageBytes = int64(cfg.Security.MaxMessageSize)
 	submissionServer.MaxRecipients = 100
-	submissionServer.AllowInsecureAuth = !cfg.Security.RequireTLS
+	submissionServer.AllowInsecureAuth = false // Always require TLS/STARTTLS before auth - never send credentials in plaintext
 
 	if tlsConfig != nil {
 		submissionServer.TLSConfig = tlsConfig

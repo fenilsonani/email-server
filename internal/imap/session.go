@@ -18,22 +18,28 @@ import (
 
 // Session implements imapserver.Session for go-imap v2
 type Session struct {
-	server   *Server
-	conn     *imapserver.Conn
-	user     *auth.User
-	selected *storage.Mailbox
-	tracker  *imapserver.SessionTracker
-	updates  chan any
-	mu       sync.RWMutex
-	closed   bool
+	server     *Server
+	conn       *imapserver.Conn
+	remoteAddr string
+	user       *auth.User
+	selected   *storage.Mailbox
+	tracker    *imapserver.SessionTracker
+	updates    chan any
+	mu         sync.RWMutex
+	closed     bool
 }
 
 // NewSession creates a new IMAP session
 func NewSession(server *Server, conn *imapserver.Conn) *Session {
+	remoteAddr := ""
+	if netConn := conn.NetConn(); netConn != nil {
+		remoteAddr = netConn.RemoteAddr().String()
+	}
 	return &Session{
-		server:  server,
-		conn:    conn,
-		updates: make(chan any, 100),
+		server:     server,
+		conn:       conn,
+		remoteAddr: remoteAddr,
+		updates:    make(chan any, 100),
 	}
 }
 
@@ -67,11 +73,13 @@ func (s *Session) Login(username, password string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	log.Printf("IMAP v2: Login attempt for %s", username)
+	log.Printf("IMAP v2: Login attempt for %s from %s", username, s.remoteAddr)
 
 	user, err := s.server.authenticator.Authenticate(ctx, username, password)
 	if err != nil {
 		log.Printf("IMAP v2: Login failed for %s: %v", username, err)
+		// Log failed auth attempt
+		s.server.authenticator.LogAuthAttempt(ctx, nil, username, s.remoteAddr, "imap", false, err.Error())
 		return imapserver.ErrAuthFailed
 	}
 
@@ -80,6 +88,8 @@ func (s *Session) Login(username, password string) error {
 	s.mu.Unlock()
 
 	log.Printf("IMAP v2: Login successful for %s", username)
+	// Log successful auth attempt
+	s.server.authenticator.LogAuthAttempt(ctx, &user.ID, username, s.remoteAddr, "imap", true, "")
 	return nil
 }
 

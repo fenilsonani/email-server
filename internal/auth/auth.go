@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -25,6 +26,8 @@ var (
 	ErrInvalidPassword = errors.New("invalid password: must be 8-128 characters")
 	// ErrInvalidDomain is returned when domain name is invalid
 	ErrInvalidDomain = errors.New("invalid domain: must be valid domain name")
+	// ErrAccountLocked is returned when account is temporarily locked due to failed attempts
+	ErrAccountLocked = errors.New("account temporarily locked due to too many failed attempts")
 )
 
 const (
@@ -66,54 +69,185 @@ type User struct {
 	UpdatedAt   time.Time
 }
 
+// accountLockout tracks failed login attempts for an account
+type accountLockout struct {
+	failedAttempts int
+	firstFailure   time.Time
+	lockedUntil    time.Time
+}
+
 // Authenticator provides user authentication and lookup
 type Authenticator struct {
 	db *sql.DB
+	// Account lockout tracking
+	lockoutMu       sync.RWMutex
+	lockouts        map[string]*accountLockout
+	maxAttempts     int           // Max failed attempts before lockout (default: 10)
+	lockoutWindow   time.Duration // Time window for counting attempts (default: 1 hour)
+	lockoutDuration time.Duration // How long to lock account (default: 30 minutes)
 }
 
 // NewAuthenticator creates a new Authenticator with the given database
 func NewAuthenticator(db *sql.DB) *Authenticator {
-	return &Authenticator{db: db}
+	a := &Authenticator{
+		db:              db,
+		lockouts:        make(map[string]*accountLockout),
+		maxAttempts:     10,
+		lockoutWindow:   time.Hour,
+		lockoutDuration: 30 * time.Minute,
+	}
+	// Start cleanup goroutine
+	go a.cleanupLockouts()
+	return a
+}
+
+// cleanupLockouts periodically removes expired lockout entries
+func (a *Authenticator) cleanupLockouts() {
+	ticker := time.NewTicker(10 * time.Minute)
+	for range ticker.C {
+		a.lockoutMu.Lock()
+		now := time.Now()
+		for email, lockout := range a.lockouts {
+			// Remove if window expired and not currently locked
+			if now.After(lockout.firstFailure.Add(a.lockoutWindow)) && now.After(lockout.lockedUntil) {
+				delete(a.lockouts, email)
+			}
+		}
+		a.lockoutMu.Unlock()
+	}
+}
+
+// isAccountLocked checks if an account is currently locked
+func (a *Authenticator) isAccountLocked(email string) bool {
+	a.lockoutMu.RLock()
+	defer a.lockoutMu.RUnlock()
+
+	lockout, exists := a.lockouts[email]
+	if !exists {
+		return false
+	}
+	return time.Now().Before(lockout.lockedUntil)
+}
+
+// recordFailedAttempt records a failed login attempt and returns true if now locked
+func (a *Authenticator) recordFailedAttempt(email string) bool {
+	a.lockoutMu.Lock()
+	defer a.lockoutMu.Unlock()
+
+	now := time.Now()
+	lockout, exists := a.lockouts[email]
+
+	if !exists {
+		a.lockouts[email] = &accountLockout{
+			failedAttempts: 1,
+			firstFailure:   now,
+		}
+		return false
+	}
+
+	// Reset if window expired
+	if now.After(lockout.firstFailure.Add(a.lockoutWindow)) {
+		lockout.failedAttempts = 1
+		lockout.firstFailure = now
+		lockout.lockedUntil = time.Time{}
+		return false
+	}
+
+	lockout.failedAttempts++
+
+	// Lock if max attempts reached
+	if lockout.failedAttempts >= a.maxAttempts {
+		lockout.lockedUntil = now.Add(a.lockoutDuration)
+		return true
+	}
+
+	return false
+}
+
+// clearLockout clears lockout state on successful login
+func (a *Authenticator) clearLockout(email string) {
+	a.lockoutMu.Lock()
+	defer a.lockoutMu.Unlock()
+	delete(a.lockouts, email)
 }
 
 // Authenticate validates credentials and returns user info
-// NOTE: Rate limiting should be implemented at the HTTP/SMTP layer to prevent brute force attacks.
-// Recommended approach: Use middleware with token bucket or sliding window algorithm.
-// Example: Limit to 5 failed attempts per IP per 15 minutes, with exponential backoff.
-// Consider implementing account lockout after 10 failed attempts within 1 hour.
+// Implements account lockout after too many failed attempts (10 attempts/hour, 30 min lockout)
 func (a *Authenticator) Authenticate(ctx context.Context, email, password string) (*User, error) {
+	// Normalize email for lockout tracking
+	normalizedEmail := strings.ToLower(strings.TrimSpace(email))
+
+	// Check if account is locked FIRST (before any other processing)
+	// Return generic error to prevent username enumeration via timing
+	if a.isAccountLocked(normalizedEmail) {
+		// Do a dummy hash comparison to prevent timing attack
+		_ = VerifyPassword(password, "$argon2id$v=19$m=65536,t=3,p=4$dummysalt$dummyhash")
+		return nil, ErrInvalidCredentials // Return generic error instead of ErrAccountLocked
+	}
+
 	// Basic email parsing (no password validation yet to avoid timing attacks)
 	username, domain, err := parseEmail(email)
 	if err != nil {
+		a.recordFailedAttempt(normalizedEmail)
 		return nil, ErrInvalidCredentials // Don't leak validation details
 	}
 
 	// Look up user
 	user, passwordHash, err := a.lookupUserWithPassword(ctx, username, domain)
 	if err != nil {
+		a.recordFailedAttempt(normalizedEmail)
 		if errors.Is(err, ErrUserNotFound) {
+			// Do a dummy hash comparison to prevent timing attack
+			_ = VerifyPassword(password, "$argon2id$v=19$m=65536,t=3,p=4$dummysalt$dummyhash")
 			return nil, ErrInvalidCredentials
 		}
 		return nil, fmt.Errorf("authentication lookup failed: %w", err)
 	}
 
-	// Check if account is disabled BEFORE validating password
-	// This prevents information leakage about account status
+	// Check if account is disabled - return generic error to prevent enumeration
 	if !user.IsActive {
-		return nil, ErrUserDisabled
+		// Do a dummy hash comparison to prevent timing attack
+		_ = VerifyPassword(password, "$argon2id$v=19$m=65536,t=3,p=4$dummysalt$dummyhash")
+		return nil, ErrInvalidCredentials // Return generic error instead of ErrUserDisabled
 	}
 
 	// Now validate password length (do this before expensive hash verification)
 	if err := ValidatePassword(password); err != nil {
+		a.recordFailedAttempt(normalizedEmail)
 		return nil, ErrInvalidCredentials // Don't leak validation details
 	}
 
 	// Verify password hash (constant-time comparison)
 	if !VerifyPassword(password, passwordHash) {
+		a.recordFailedAttempt(normalizedEmail)
 		return nil, ErrInvalidCredentials
 	}
 
+	// Clear lockout on successful login
+	a.clearLockout(normalizedEmail)
+
 	return user, nil
+}
+
+// LogAuthAttempt logs an authentication attempt to the auth_log table
+func (a *Authenticator) LogAuthAttempt(ctx context.Context, userID *int64, username, remoteAddr, protocol string, success bool, failureReason string) {
+	_, err := a.db.ExecContext(ctx,
+		`INSERT INTO auth_log (user_id, username, remote_addr, protocol, success, failure_reason)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		userID, username, remoteAddr, protocol, success, nilIfEmpty(failureReason),
+	)
+	if err != nil {
+		// Log error but don't fail - auth logging is best effort
+		// We could use a logger here if available
+	}
+}
+
+// nilIfEmpty returns nil if string is empty, otherwise returns pointer to string
+func nilIfEmpty(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
 }
 
 // LookupUser finds a user by email address

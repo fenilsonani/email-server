@@ -42,9 +42,31 @@ func NewStore(db *sql.DB, basePath string) (*Store, error) {
 
 // getUserMaildirPath returns the path for a user's maildir
 func (s *Store) getUserMaildirPath(userID int64, mailboxName string) string {
-	// Convert mailbox name to safe filesystem path
+	// Sanitize mailbox name to prevent path traversal attacks
+	// 1. Replace slashes with dots (IMAP hierarchy separator)
 	safeName := strings.ReplaceAll(mailboxName, "/", ".")
-	return filepath.Join(s.basePath, fmt.Sprintf("user_%d", userID), safeName)
+	// 2. Remove any ".." components that could escape the directory
+	safeName = strings.ReplaceAll(safeName, "..", "")
+	// 3. Remove any remaining path separators
+	safeName = strings.ReplaceAll(safeName, string(filepath.Separator), "")
+	// 4. Clean the name to handle any edge cases
+	safeName = filepath.Clean(safeName)
+	// 5. Ensure name doesn't start with a dot (hidden files) unless it's a valid IMAP folder
+	if strings.HasPrefix(safeName, ".") && safeName != ".Sent" && safeName != ".Drafts" && safeName != ".Trash" && safeName != ".Junk" {
+		safeName = "_" + safeName[1:]
+	}
+
+	userDir := fmt.Sprintf("user_%d", userID)
+	fullPath := filepath.Join(s.basePath, userDir, safeName)
+
+	// Final safety check: ensure the path is within the user's directory
+	expectedPrefix := filepath.Join(s.basePath, userDir)
+	if !strings.HasPrefix(fullPath, expectedPrefix) {
+		// Path traversal attempt detected, return safe default
+		return filepath.Join(s.basePath, userDir, "INBOX")
+	}
+
+	return fullPath
 }
 
 // ensureMaildir creates the maildir structure if it doesn't exist
@@ -66,8 +88,14 @@ func (s *Store) CreateMailbox(ctx context.Context, userID int64, name string, sp
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Generate UID validity
-	uidValidity := uint32(time.Now().Unix())
+	// Generate UID validity with better entropy to prevent collisions
+	// Combines timestamp with random bits for uniqueness
+	var randomBytes [4]byte
+	if _, err := rand.Read(randomBytes[:]); err != nil {
+		// Fallback to timestamp only if crypto/rand fails
+		randomBytes = [4]byte{}
+	}
+	uidValidity := uint32(time.Now().Unix()) ^ uint32(randomBytes[0])<<24 | uint32(randomBytes[1])<<16 | uint32(randomBytes[2])<<8 | uint32(randomBytes[3])
 
 	// Insert into database
 	result, err := s.db.ExecContext(ctx,

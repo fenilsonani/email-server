@@ -4,9 +4,43 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
+
+// Email validation pattern (basic RFC 5322 compliant)
+var emailRegex = regexp.MustCompile(`^[a-zA-Z0-9.!#$%&'*+/=?^_` + "`" + `{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$`)
+
+// isValidEmail validates an email address format
+func isValidEmail(email string) bool {
+	if len(email) < 3 || len(email) > 254 {
+		return false
+	}
+	return emailRegex.MatchString(email)
+}
+
+// sanitizeMailboxName sanitizes a mailbox/folder name to prevent path traversal
+func sanitizeMailboxName(name string) string {
+	// Remove path separators and traversal attempts
+	name = strings.ReplaceAll(name, "..", "")
+	name = strings.ReplaceAll(name, "/", ".")
+	name = strings.ReplaceAll(name, "\\", ".")
+	name = strings.ReplaceAll(name, string(filepath.Separator), ".")
+	// Clean and trim
+	name = filepath.Clean(name)
+	name = strings.Trim(name, ".")
+	// Limit length
+	if len(name) > 255 {
+		name = name[:255]
+	}
+	// Default to INBOX if empty or invalid
+	if name == "" {
+		return "INBOX"
+	}
+	return name
+}
 
 // Action is an interface for Sieve actions
 type Action interface {
@@ -31,7 +65,8 @@ func (a *FileIntoAction) Apply(ctx context.Context, result *Result, msg *Message
 		return fmt.Errorf("action or result is nil")
 	}
 	result.Filed = true
-	result.FileInto = a.Folder
+	// Sanitize folder name to prevent path traversal attacks
+	result.FileInto = sanitizeMailboxName(a.Folder)
 	result.Keep = false
 	return nil
 }
@@ -44,6 +79,10 @@ type RedirectAction struct {
 func (a *RedirectAction) Apply(ctx context.Context, result *Result, msg *Message, vs *VacationStore, userID int64) error {
 	if a == nil || result == nil {
 		return fmt.Errorf("action or result is nil")
+	}
+	// Validate redirect email address to prevent invalid redirects
+	if !isValidEmail(a.Address) {
+		return fmt.Errorf("invalid redirect address: %s", a.Address)
 	}
 	result.Redirected = true
 	result.RedirectTo = append(result.RedirectTo, a.Address)

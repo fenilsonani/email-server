@@ -4,8 +4,19 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"strings"
 	"time"
 )
+
+// escapeLikeWildcards escapes SQL LIKE wildcards in user input
+// to prevent LIKE injection attacks
+func escapeLikeWildcards(s string) string {
+	// Escape the escape character first, then wildcards
+	s = strings.ReplaceAll(s, "\\", "\\\\")
+	s = strings.ReplaceAll(s, "%", "\\%")
+	s = strings.ReplaceAll(s, "_", "\\_")
+	return s
+}
 
 // EventType represents the type of audit event
 type EventType string
@@ -126,8 +137,9 @@ func (l *Logger) Query(ctx context.Context, filter QueryFilter) ([]Event, error)
 		args = append(args, string(filter.Action))
 	}
 	if filter.Target != "" {
-		query += " AND target LIKE ?"
-		args = append(args, "%"+filter.Target+"%")
+		// Escape SQL LIKE wildcards in user input to prevent injection
+		query += " AND target LIKE ? ESCAPE '\\'"
+		args = append(args, "%"+escapeLikeWildcards(filter.Target)+"%")
 	}
 	if !filter.StartTime.IsZero() {
 		query += " AND timestamp >= ?"

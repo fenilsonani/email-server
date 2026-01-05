@@ -110,6 +110,11 @@ func NewServer(cfg *config.Config, db *sql.DB, authenticator *auth.Authenticator
 		return nil, fmt.Errorf("failed to create audit logger: %w", err)
 	}
 
+	// Initialize sessions table for persistent sessions
+	if err := InitSessionsTable(db); err != nil {
+		return nil, fmt.Errorf("failed to create sessions table: %w", err)
+	}
+
 	s := &Server{
 		config:        cfg,
 		db:            db,
@@ -182,7 +187,7 @@ func (s *Server) Start(listen string) error {
 	s.logger.Info("Starting admin server", "listen", listen)
 
 	// Start cleanup goroutine
-	CleanupExpiredSessions()
+	CleanupExpiredSessions(s.db)
 
 	// Start server in a goroutine for graceful shutdown
 	serverErr := make(chan error, 1)
@@ -229,13 +234,13 @@ func (s *Server) Shutdown(ctx context.Context) error {
 			}
 		}
 
-		// Clean up sessions
-		s.logger.Info("Cleaning up sessions")
-		sessionsMu.Lock()
-		for token := range sessions {
-			delete(sessions, token)
+		// Clean up session cache (sessions persist in database)
+		s.logger.Info("Cleaning up session cache")
+		sessionCacheMu.Lock()
+		for token := range sessionCache {
+			delete(sessionCache, token)
 		}
-		sessionsMu.Unlock()
+		sessionCacheMu.Unlock()
 
 		// Clean up CSRF tokens
 		csrfTokensMu.Lock()

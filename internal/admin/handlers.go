@@ -125,7 +125,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		HttpOnly: true,
 		Secure:   r.TLS != nil,
 		SameSite: http.SameSiteStrictMode,
-		MaxAge:   604800, // 7 days
+		MaxAge:   86400, // 24 hours - reduced from 7 days for security
 	})
 
 	s.logger.Info("Admin login successful", "ip", clientIP, "username", username)
@@ -260,7 +260,7 @@ func (s *Server) handleUserAdd(w http.ResponseWriter, r *http.Request) {
 	user, err := s.authenticator.CreateUser(r.Context(), username, password, domainID)
 	if err != nil {
 		s.logger.ErrorContext(r.Context(), "Failed to create user", err)
-		http.Error(w, "Failed to create user: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, "Failed to create user. Please check server logs for details.", http.StatusInternalServerError)
 		return
 	}
 
@@ -348,6 +348,8 @@ func (s *Server) handleUserEdit(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Failed to update password", http.StatusInternalServerError)
 			return
 		}
+		// Invalidate all sessions for this user after password change (security best practice)
+		s.invalidateUserSessions(userID)
 		// Audit log password change
 		adminUser := getSessionUser(r)
 		s.auditLogger.Log(r.Context(), adminUser, audit.EventPasswordChange, strconv.FormatInt(userID, 10), nil, getIP(r))
@@ -387,6 +389,9 @@ func (s *Server) handleUserDelete(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Failed to delete user", http.StatusInternalServerError)
 		return
 	}
+
+	// Invalidate all sessions for the deleted user
+	s.invalidateUserSessions(userID)
 
 	// Audit log
 	adminUser := getSessionUser(r)
@@ -477,13 +482,13 @@ func (s *Server) handleSieve(w http.ResponseWriter, r *http.Request) {
 	case "create":
 		_, err := s.sieveStore.CreateScript(r.Context(), userID, name, content)
 		if err != nil {
-			http.Error(w, "Failed to create script: "+err.Error(), http.StatusBadRequest)
+			http.Error(w, "Failed to create script. Check server logs for details.", http.StatusBadRequest)
 			return
 		}
 	case "update":
 		err := s.sieveStore.UpdateScript(r.Context(), userID, name, content)
 		if err != nil {
-			http.Error(w, "Failed to update script: "+err.Error(), http.StatusBadRequest)
+			http.Error(w, "Failed to update script. Check server logs for details.", http.StatusBadRequest)
 			return
 		}
 	case "delete":
@@ -632,7 +637,7 @@ func (s *Server) handleDomainAdd(w http.ResponseWriter, r *http.Request) {
 		s.logger.ErrorContext(r.Context(), "Failed to create domain", err)
 		s.renderTemplate(w, "domain_form.html", map[string]interface{}{
 			"Title": "Add Domain",
-			"Error": "Failed to create domain: " + err.Error(),
+			"Error": "Failed to create domain. Check server logs for details.",
 		})
 		return
 	}
@@ -688,10 +693,17 @@ func (s *Server) handleAPIStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	// Simple JSON response
-	w.Write([]byte(`{"users":` + strconv.Itoa(stats.TotalUsers) +
-		`,"domains":` + strconv.Itoa(stats.TotalDomains) +
-		`,"messages":` + strconv.Itoa(stats.TotalMessages) + `}`))
+	// Use proper JSON encoding to prevent injection
+	response := struct {
+		Users    int `json:"users"`
+		Domains  int `json:"domains"`
+		Messages int `json:"messages"`
+	}{
+		Users:    stats.TotalUsers,
+		Domains:  stats.TotalDomains,
+		Messages: stats.TotalMessages,
+	}
+	json.NewEncoder(w).Encode(response)
 }
 
 // QueueMessage represents a message in the queue for display
@@ -726,7 +738,7 @@ func (s *Server) handleQueue(w http.ResponseWriter, r *http.Request) {
 		s.logger.ErrorContext(r.Context(), "Failed to get queue stats", err)
 		s.renderTemplate(w, "queue.html", map[string]interface{}{
 			"Title": "Email Queue",
-			"Error": "Failed to get queue stats: " + err.Error(),
+			"Error": "Failed to get queue stats. Check server logs for details.",
 		})
 		return
 	}
@@ -822,7 +834,7 @@ func (s *Server) handleQueueRetry(w http.ResponseWriter, r *http.Request) {
 
 	// Re-enqueue the message
 	if err := s.queue.Enqueue(ctx, msg); err != nil {
-		http.Error(w, "Failed to reschedule message: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, "Failed to reschedule message. Check server logs for details.", http.StatusInternalServerError)
 		return
 	}
 
@@ -854,7 +866,7 @@ func (s *Server) handleQueueDelete(w http.ResponseWriter, r *http.Request) {
 
 	// Mark the message as permanently failed (removes from active queues)
 	if err := s.queue.Fail(ctx, msgID, "Manually deleted by admin"); err != nil {
-		http.Error(w, "Failed to delete message: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, "Failed to delete message. Check server logs for details.", http.StatusInternalServerError)
 		return
 	}
 
@@ -1177,7 +1189,7 @@ func (s *Server) handleTestEmail(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			s.renderTemplate(w, "test_email.html", map[string]interface{}{
 				"Title": "Send Test Email",
-				"Error": "Failed to create message file: " + err.Error(),
+				"Error": "Failed to create message file. Check server logs for details.",
 			})
 			return
 		}
@@ -1204,7 +1216,7 @@ func (s *Server) handleTestEmail(w http.ResponseWriter, r *http.Request) {
 			os.Remove(tmpFile.Name())
 			s.renderTemplate(w, "test_email.html", map[string]interface{}{
 				"Title": "Send Test Email",
-				"Error": "Failed to queue message: " + err.Error(),
+				"Error": "Failed to queue message. Check server logs for details.",
 			})
 			return
 		}

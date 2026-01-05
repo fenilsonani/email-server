@@ -60,7 +60,7 @@ func NewServer(authenticator *auth.Authenticator, store *maildir.Store, addr, tl
 			imap.CapIdle:      {},
 		},
 		TLSConfig:    tlsConfig,
-		InsecureAuth: true, // We handle auth security ourselves
+		InsecureAuth: false, // Require TLS/STARTTLS before authentication
 	})
 
 	log.Printf("IMAP v2 server created with IDLE support")

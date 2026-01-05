@@ -44,8 +44,14 @@ func NewTLSManager(cfg *config.Config) (*TLSManager, error) {
 
 	// Set secure defaults if TLS is configured
 	if manager.tlsConfig != nil {
+		// Use TLS 1.2 as minimum for email client compatibility (Apple Mail, Outlook, etc.)
+		// TLS 1.3 is preferred but many email clients still require TLS 1.2 support
+		// The cipher suites below ensure TLS 1.2 connections use only secure algorithms
 		manager.tlsConfig.MinVersion = tls.VersionTLS12
-		manager.tlsConfig.PreferServerCipherSuites = true
+
+		// Secure cipher suites for TLS 1.2 connections
+		// TLS 1.3 uses its own fixed cipher suites (these are ignored for 1.3)
+		// All suites use ECDHE for forward secrecy and AEAD ciphers (GCM/ChaCha20)
 		manager.tlsConfig.CipherSuites = []uint16{
 			tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
 			tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,

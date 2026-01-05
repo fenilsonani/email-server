@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/emersion/go-sasl"
@@ -30,6 +31,73 @@ import (
 // LocalDeliveryNotifier is called when a message is delivered locally
 type LocalDeliveryNotifier func(username, mailbox string)
 
+// UserRateLimiter tracks email sending rate per user
+type UserRateLimiter struct {
+	mu       sync.RWMutex
+	counters map[int64]*userSendCounter
+	// Limits
+	maxPerHour int
+	maxPerDay  int
+}
+
+type userSendCounter struct {
+	hourCount  int
+	dayCount   int
+	hourReset  time.Time
+	dayReset   time.Time
+}
+
+// NewUserRateLimiter creates a rate limiter for user sending
+func NewUserRateLimiter(maxPerHour, maxPerDay int) *UserRateLimiter {
+	return &UserRateLimiter{
+		counters:   make(map[int64]*userSendCounter),
+		maxPerHour: maxPerHour,
+		maxPerDay:  maxPerDay,
+	}
+}
+
+// CheckAndIncrement checks if user can send and increments counter
+func (rl *UserRateLimiter) CheckAndIncrement(userID int64) error {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
+	now := time.Now()
+	counter, exists := rl.counters[userID]
+
+	if !exists {
+		rl.counters[userID] = &userSendCounter{
+			hourCount: 1,
+			dayCount:  1,
+			hourReset: now.Add(time.Hour),
+			dayReset:  now.Add(24 * time.Hour),
+		}
+		return nil
+	}
+
+	// Reset counters if window expired
+	if now.After(counter.hourReset) {
+		counter.hourCount = 0
+		counter.hourReset = now.Add(time.Hour)
+	}
+	if now.After(counter.dayReset) {
+		counter.dayCount = 0
+		counter.dayReset = now.Add(24 * time.Hour)
+	}
+
+	// Check limits
+	if counter.hourCount >= rl.maxPerHour {
+		return fmt.Errorf("hourly sending limit exceeded (%d/hour)", rl.maxPerHour)
+	}
+	if counter.dayCount >= rl.maxPerDay {
+		return fmt.Errorf("daily sending limit exceeded (%d/day)", rl.maxPerDay)
+	}
+
+	// Increment
+	counter.hourCount++
+	counter.dayCount++
+	return nil
+}
+
 // Backend implements the go-smtp Backend interface
 type Backend struct {
 	config          *config.Config
@@ -41,6 +109,7 @@ type Backend struct {
 	onLocalDelivery LocalDeliveryNotifier
 	sieveExecutor   *sieve.Executor
 	greylister      *greylist.Greylister
+	userRateLimiter *UserRateLimiter // Per-user sending rate limiter
 }
 
 // NewBackend creates a new SMTP backend
@@ -59,17 +128,18 @@ func NewBackend(cfg *config.Config, authenticator *auth.Authenticator, store *ma
 	}
 
 	queuePath := filepath.Join(cfg.Storage.DataDir, "queue")
-	if err := os.MkdirAll(queuePath, 0755); err != nil {
+	if err := os.MkdirAll(queuePath, 0750); err != nil { // Restrict permissions - no world access
 		return nil, fmt.Errorf("failed to create queue directory: %w", err)
 	}
 
 	return &Backend{
-		config:         cfg,
-		authenticator:  authenticator,
-		store:          store,
-		deliveryEngine: deliveryEngine,
-		logger:         logger.SMTP(),
-		queuePath:      queuePath,
+		config:          cfg,
+		authenticator:   authenticator,
+		store:           store,
+		deliveryEngine:  deliveryEngine,
+		logger:          logger.SMTP(),
+		queuePath:       queuePath,
+		userRateLimiter: NewUserRateLimiter(100, 1000), // 100/hour, 1000/day per user
 	}, nil
 }
 
@@ -137,6 +207,8 @@ func (s *Session) Auth(mech string) (sasl.Server, error) {
 				"username", username,
 				"remote_addr", s.remoteAddr,
 			)
+			// Log failed auth attempt
+			s.backend.authenticator.LogAuthAttempt(s.ctx, nil, username, s.remoteAddr, "smtp", false, err.Error())
 			metrics.RecordAuth(false, "smtp")
 			return smtp.ErrAuthFailed
 		}
@@ -146,6 +218,8 @@ func (s *Session) Auth(mech string) (sasl.Server, error) {
 		s.backend.logger.InfoContext(s.ctx, "User authenticated",
 			"username", username,
 		)
+		// Log successful auth attempt
+		s.backend.authenticator.LogAuthAttempt(s.ctx, &user.ID, username, s.remoteAddr, "smtp", true, "")
 		metrics.RecordAuth(true, "smtp")
 		return nil
 	}), nil
@@ -153,6 +227,15 @@ func (s *Session) Auth(mech string) (sasl.Server, error) {
 
 // Mail is called when the MAIL FROM command is received
 func (s *Session) Mail(from string, opts *smtp.MailOptions) error {
+	// Submission requires authentication
+	if s.isSubmission && s.user == nil {
+		return &smtp.SMTPError{
+			Code:         530,
+			EnhancedCode: smtp.EnhancedCode{5, 7, 0},
+			Message:      "Authentication required",
+		}
+	}
+
 	// For submission (authenticated), validate sender
 	if s.isSubmission && s.user != nil {
 		fromLocal, fromDomain := parseAddress(from)
@@ -173,6 +256,14 @@ func (s *Session) Mail(from string, opts *smtp.MailOptions) error {
 // Rcpt is called when the RCPT TO command is received
 func (s *Session) Rcpt(to string, opts *smtp.RcptOptions) error {
 	if s.isSubmission {
+		// Submission requires authentication - reject if not authenticated
+		if s.user == nil {
+			return &smtp.SMTPError{
+				Code:         530,
+				EnhancedCode: smtp.EnhancedCode{5, 7, 0},
+				Message:      "Authentication required",
+			}
+		}
 		// Authenticated user can send anywhere
 		s.rcpts = append(s.rcpts, to)
 		return nil
@@ -531,6 +622,22 @@ func (s *Session) handleOutbound(data []byte) error {
 		return fmt.Errorf("operation cancelled: %w", err)
 	}
 
+	// Check per-user rate limit for authenticated users
+	if s.user != nil && s.backend.userRateLimiter != nil {
+		if err := s.backend.userRateLimiter.CheckAndIncrement(s.user.ID); err != nil {
+			s.backend.logger.WarnContext(s.ctx, "User rate limit exceeded",
+				"user_id", s.user.ID,
+				"email", s.user.Email,
+				"error", err.Error(),
+			)
+			return &smtp.SMTPError{
+				Code:         452,
+				EnhancedCode: smtp.EnhancedCode{4, 7, 1},
+				Message:      "Too many messages sent, please try again later",
+			}
+		}
+	}
+
 	// Separate local and external recipients
 	var localRcpts, externalRcpts []string
 	localDomain := s.backend.config.Server.Domain
@@ -656,9 +763,9 @@ func (s *Session) saveMessageToQueue(data []byte) (string, error) {
 	filename := fmt.Sprintf("%d-%s.eml", time.Now().UnixNano(), generateID())
 	path := filepath.Join(s.backend.queuePath, filename)
 
-	// Write file atomically using a temp file
+	// Write file atomically using a temp file with secure permissions
 	tempPath := path + ".tmp"
-	if err := os.WriteFile(tempPath, data, 0644); err != nil {
+	if err := os.WriteFile(tempPath, data, 0600); err != nil { // Owner-only access for email data
 		return "", fmt.Errorf("failed to write temp file: %w", err)
 	}
 

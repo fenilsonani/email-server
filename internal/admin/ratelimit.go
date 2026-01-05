@@ -3,6 +3,7 @@ package admin
 import (
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -12,9 +13,10 @@ type RateLimiter struct {
 	mu       sync.RWMutex
 	attempts map[string]*attemptInfo
 	// Configuration
-	maxAttempts   int
-	windowSize    time.Duration
-	blockDuration time.Duration
+	maxAttempts    int
+	windowSize     time.Duration
+	blockDuration  time.Duration
+	trustedProxies map[string]bool // Only trust proxy headers from these IPs
 }
 
 type attemptInfo struct {
@@ -27,12 +29,18 @@ type attemptInfo struct {
 // maxAttempts: max failed attempts before blocking
 // windowSize: time window for counting attempts
 // blockDuration: how long to block after exceeding limit
-func NewRateLimiter(maxAttempts int, windowSize, blockDuration time.Duration) *RateLimiter {
+// trustedProxies: list of proxy IPs that are trusted for X-Forwarded-For headers
+func NewRateLimiter(maxAttempts int, windowSize, blockDuration time.Duration, trustedProxies []string) *RateLimiter {
+	proxyMap := make(map[string]bool)
+	for _, ip := range trustedProxies {
+		proxyMap[ip] = true
+	}
 	rl := &RateLimiter{
-		attempts:      make(map[string]*attemptInfo),
-		maxAttempts:   maxAttempts,
-		windowSize:    windowSize,
-		blockDuration: blockDuration,
+		attempts:       make(map[string]*attemptInfo),
+		maxAttempts:    maxAttempts,
+		windowSize:     windowSize,
+		blockDuration:  blockDuration,
+		trustedProxies: proxyMap,
 	}
 	// Start cleanup goroutine
 	go rl.cleanup()
@@ -41,32 +49,50 @@ func NewRateLimiter(maxAttempts int, windowSize, blockDuration time.Duration) *R
 
 // DefaultRateLimiter returns a rate limiter with sensible defaults
 // 5 attempts per 15 minutes, 30 minute block
+// By default, no proxies are trusted (use direct connection IP only)
 func DefaultRateLimiter() *RateLimiter {
-	return NewRateLimiter(5, 15*time.Minute, 30*time.Minute)
+	return NewRateLimiter(5, 15*time.Minute, 30*time.Minute, nil)
 }
 
-// getIP extracts the client IP from the request
+// GetClientIP extracts the client IP from the request
+// Only trusts X-Forwarded-For/X-Real-IP if request comes from a trusted proxy
+func (rl *RateLimiter) GetClientIP(r *http.Request) string {
+	// First get the direct connection IP
+	directIP, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		directIP = r.RemoteAddr
+	}
+
+	// Only trust proxy headers if the direct connection is from a trusted proxy
+	if len(rl.trustedProxies) > 0 && rl.trustedProxies[directIP] {
+		// Check X-Forwarded-For header (for reverse proxy)
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			// Take the first IP in the chain (original client)
+			ips := strings.Split(xff, ",")
+			if len(ips) > 0 {
+				clientIP := strings.TrimSpace(ips[0])
+				if net.ParseIP(clientIP) != nil {
+					return clientIP
+				}
+			}
+		}
+
+		// Check X-Real-IP header
+		if xri := r.Header.Get("X-Real-IP"); xri != "" {
+			if net.ParseIP(xri) != nil {
+				return xri
+			}
+		}
+	}
+
+	// Use direct connection IP (don't trust headers from untrusted sources)
+	return directIP
+}
+
+// getIP is deprecated - use GetClientIP instead
+// Kept for backward compatibility
 func getIP(r *http.Request) string {
-	// Check X-Forwarded-For header first (for reverse proxy)
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		// Take the first IP in the chain
-		if ip, _, err := net.SplitHostPort(xff); err == nil {
-			return ip
-		}
-		// Maybe no port
-		if net.ParseIP(xff) != nil {
-			return xff
-		}
-	}
-
-	// Check X-Real-IP header
-	if xri := r.Header.Get("X-Real-IP"); xri != "" {
-		if net.ParseIP(xri) != nil {
-			return xri
-		}
-	}
-
-	// Fall back to RemoteAddr
+	// Fall back to RemoteAddr only - don't trust headers without validation
 	ip, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		return r.RemoteAddr

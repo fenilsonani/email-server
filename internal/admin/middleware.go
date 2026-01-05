@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"fmt"
 	"net/http"
@@ -18,24 +19,76 @@ type session struct {
 	expiresAt time.Time
 }
 
+// In-memory cache for sessions (backed by database)
 var (
-	sessions   = make(map[string]*session)
-	sessionsMu sync.RWMutex
+	sessionCache   = make(map[string]*session)
+	sessionCacheMu sync.RWMutex
 )
+
+// InitSessionsTable creates the sessions table if it doesn't exist
+func InitSessionsTable(db *sql.DB) error {
+	// Create table
+	_, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS admin_sessions (
+			token TEXT PRIMARY KEY,
+			user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			expires_at DATETIME NOT NULL
+		)
+	`)
+	if err != nil {
+		return err
+	}
+
+	// Create indexes separately (some drivers don't support multiple statements)
+	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_admin_sessions_user ON admin_sessions(user_id)`)
+	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_admin_sessions_expires ON admin_sessions(expires_at)`)
+
+	return nil
+}
 
 // createSession creates a new session and returns the token
 func (s *Server) createSession(userID int64) string {
 	token := generateToken()
+	now := time.Now()
+	expiresAt := now.Add(24 * time.Hour)
 
-	sessionsMu.Lock()
-	sessions[token] = &session{
-		userID:    userID,
-		createdAt: time.Now(),
-		expiresAt: time.Now().Add(7 * 24 * time.Hour), // 7 days session
+	// Store in database
+	_, err := s.db.Exec(
+		`INSERT INTO admin_sessions (token, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)`,
+		token, userID, now, expiresAt,
+	)
+	if err != nil {
+		s.logger.Error("Failed to create session in database", "error", err.Error())
+		return ""
 	}
-	sessionsMu.Unlock()
+
+	// Cache in memory
+	sessionCacheMu.Lock()
+	sessionCache[token] = &session{
+		userID:    userID,
+		createdAt: now,
+		expiresAt: expiresAt,
+	}
+	sessionCacheMu.Unlock()
 
 	return token
+}
+
+// invalidateUserSessions removes all sessions for a specific user
+// Called when a user is deleted to prevent orphaned sessions
+func (s *Server) invalidateUserSessions(userID int64) {
+	// Delete from database
+	_, _ = s.db.Exec(`DELETE FROM admin_sessions WHERE user_id = ?`, userID)
+
+	// Clear from cache
+	sessionCacheMu.Lock()
+	defer sessionCacheMu.Unlock()
+	for token, sess := range sessionCache {
+		if sess.userID == userID {
+			delete(sessionCache, token)
+		}
+	}
 }
 
 // validateSession checks if a session token is valid
@@ -45,27 +98,60 @@ func (s *Server) validateSession(token string) (int64, bool) {
 		return 0, false
 	}
 
-	sessionsMu.RLock()
-	sess, exists := sessions[token]
-	sessionsMu.RUnlock()
-
-	if !exists {
-		return 0, false
-	}
-
-	// Check expiration with proper locking
 	now := time.Now()
-	if now.After(sess.expiresAt) {
-		sessionsMu.Lock()
-		// Double-check after acquiring write lock (may have been deleted)
-		if s, ok := sessions[token]; ok && now.After(s.expiresAt) {
-			delete(sessions, token)
+
+	// Check cache first
+	sessionCacheMu.RLock()
+	sess, exists := sessionCache[token]
+	sessionCacheMu.RUnlock()
+
+	if exists {
+		if now.After(sess.expiresAt) {
+			// Expired - remove from cache and DB
+			s.deleteSession(token)
+			return 0, false
 		}
-		sessionsMu.Unlock()
+		return sess.userID, true
+	}
+
+	// Not in cache, check database
+	var userID int64
+	var expiresAt time.Time
+	var createdAt time.Time
+	err := s.db.QueryRow(
+		`SELECT user_id, created_at, expires_at FROM admin_sessions WHERE token = ?`,
+		token,
+	).Scan(&userID, &createdAt, &expiresAt)
+
+	if err != nil {
 		return 0, false
 	}
 
-	return sess.userID, true
+	if now.After(expiresAt) {
+		// Expired - remove from DB
+		s.deleteSession(token)
+		return 0, false
+	}
+
+	// Cache the valid session
+	sessionCacheMu.Lock()
+	sessionCache[token] = &session{
+		userID:    userID,
+		createdAt: createdAt,
+		expiresAt: expiresAt,
+	}
+	sessionCacheMu.Unlock()
+
+	return userID, true
+}
+
+// deleteSession removes a session from both cache and database
+func (s *Server) deleteSession(token string) {
+	sessionCacheMu.Lock()
+	delete(sessionCache, token)
+	sessionCacheMu.Unlock()
+
+	_, _ = s.db.Exec(`DELETE FROM admin_sessions WHERE token = ?`, token)
 }
 
 // withAuth wraps a handler with authentication check
@@ -159,29 +245,36 @@ func (s *Server) withCSRF(next http.Handler) http.Handler {
 }
 
 // generateToken generates a cryptographically secure token
+// Panics if crypto/rand fails - security must not be compromised
 func generateToken() string {
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
-		return hex.EncodeToString([]byte(time.Now().String()))
+		// Never fall back to weak tokens - this is a critical security function
+		panic("crypto/rand failed: " + err.Error())
 	}
 	return hex.EncodeToString(b)
 }
 
 // CleanupExpiredSessions removes expired sessions periodically
-func CleanupExpiredSessions() {
+func CleanupExpiredSessions(db *sql.DB) {
 	ticker := time.NewTicker(15 * time.Minute)
 	go func() {
 		for range ticker.C {
 			now := time.Now()
 
-			// Clean sessions
-			sessionsMu.Lock()
-			for token, sess := range sessions {
+			// Clean expired sessions from database
+			if db != nil {
+				_, _ = db.Exec(`DELETE FROM admin_sessions WHERE expires_at < ?`, now)
+			}
+
+			// Clean session cache
+			sessionCacheMu.Lock()
+			for token, sess := range sessionCache {
 				if now.After(sess.expiresAt) {
-					delete(sessions, token)
+					delete(sessionCache, token)
 				}
 			}
-			sessionsMu.Unlock()
+			sessionCacheMu.Unlock()
 
 			// Clean CSRF tokens
 			csrfTokensMu.Lock()
@@ -247,15 +340,21 @@ func (s *Server) withPanicRecovery(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if err := recover(); err != nil {
-				// Log the panic with stack trace
+				// Log the panic with truncated stack trace to prevent info disclosure
 				stack := debug.Stack()
+				// Limit stack trace to 2KB to prevent logging sensitive details
+				const maxStackSize = 2048
+				stackStr := string(stack)
+				if len(stackStr) > maxStackSize {
+					stackStr = stackStr[:maxStackSize] + "\n... (truncated)"
+				}
 				s.logger.Error(
 					"Panic recovered in HTTP handler",
 					"error", fmt.Sprintf("%v", err),
 					"path", r.URL.Path,
 					"method", r.Method,
 					"remote_addr", r.RemoteAddr,
-					"stack", string(stack),
+					"stack", stackStr,
 				)
 
 				// Return 500 error to client
@@ -317,15 +416,19 @@ func (s *Server) withSecurityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
 
 		// Content Security Policy - restrict resource loading
+		// Note: Removed 'unsafe-inline' from script-src for XSS protection
+		// If inline scripts are needed, use nonces or move to external files
 		w.Header().Set("Content-Security-Policy",
 			"default-src 'self'; "+
-				"script-src 'self' 'unsafe-inline'; "+ // Allow inline scripts for simple UI
-				"style-src 'self' 'unsafe-inline'; "+ // Allow inline styles
+				"script-src 'self'; "+ // No inline scripts allowed - prevents XSS
+				"style-src 'self' 'unsafe-inline'; "+ // Inline styles are lower risk
 				"img-src 'self' data:; "+
 				"font-src 'self'; "+
+				"connect-src 'self'; "+ // Restrict AJAX/fetch requests
 				"form-action 'self'; "+
 				"frame-ancestors 'none'; "+
-				"base-uri 'self'")
+				"base-uri 'self'; "+
+				"upgrade-insecure-requests")
 
 		// Permissions Policy - disable unnecessary browser features
 		w.Header().Set("Permissions-Policy",
@@ -366,9 +469,9 @@ func getSessionUser(r *http.Request) string {
 		return "unknown"
 	}
 
-	sessionsMu.RLock()
-	sess, exists := sessions[cookie.Value]
-	sessionsMu.RUnlock()
+	sessionCacheMu.RLock()
+	sess, exists := sessionCache[cookie.Value]
+	sessionCacheMu.RUnlock()
 
 	if !exists || time.Now().After(sess.expiresAt) {
 		return "unknown"

@@ -13,9 +13,64 @@ import (
 
 // Common errors
 var (
-	ErrNoMXRecords  = errors.New("no MX records found")
+	ErrNoMXRecords   = errors.New("no MX records found")
 	ErrInvalidDomain = errors.New("invalid domain")
+	ErrPrivateIP     = errors.New("private/reserved IP address not allowed")
 )
+
+// isPrivateIP checks if an IP address is in a private/reserved range
+// to prevent SSRF attacks via malicious MX records
+func isPrivateIP(ipStr string) bool {
+	ip := net.ParseIP(ipStr)
+	if ip == nil {
+		return true // Invalid IPs are treated as private (rejected)
+	}
+
+	// Check for loopback
+	if ip.IsLoopback() {
+		return true
+	}
+
+	// Check for private networks
+	if ip.IsPrivate() {
+		return true
+	}
+
+	// Check for link-local
+	if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+		return true
+	}
+
+	// Check for unspecified (0.0.0.0 or ::)
+	if ip.IsUnspecified() {
+		return true
+	}
+
+	// Check for multicast
+	if ip.IsMulticast() {
+		return true
+	}
+
+	// Additional reserved ranges not covered by Go's built-in checks
+	reservedRanges := []string{
+		"100.64.0.0/10",   // Carrier-grade NAT
+		"192.0.0.0/24",    // IETF Protocol Assignments
+		"192.0.2.0/24",    // TEST-NET-1
+		"198.51.100.0/24", // TEST-NET-2
+		"203.0.113.0/24",  // TEST-NET-3
+		"192.88.99.0/24",  // 6to4 Relay Anycast
+		"169.254.0.0/16",  // Link-local
+	}
+
+	for _, cidr := range reservedRanges {
+		_, network, err := net.ParseCIDR(cidr)
+		if err == nil && network.Contains(ip) {
+			return true
+		}
+	}
+
+	return false
+}
 
 // MXRecord represents a mail exchanger record.
 type MXRecord struct {
@@ -158,6 +213,7 @@ func (r *MXResolver) lookupAFallback(ctx context.Context, domain string) ([]MXRe
 }
 
 // LookupWithFallback looks up MX records and returns IPs for each.
+// Filters out private/reserved IP addresses to prevent SSRF attacks.
 func (r *MXResolver) LookupWithFallback(ctx context.Context, domain string) ([]MXHost, error) {
 	mxRecords, err := r.Lookup(ctx, domain)
 	if err != nil {
@@ -172,9 +228,13 @@ func (r *MXResolver) LookupWithFallback(ctx context.Context, domain string) ([]M
 			continue // Skip this MX if we can't resolve it
 		}
 
-		// Prefer IPv4 addresses
+		// Prefer IPv4 addresses, filter out private/reserved IPs (SSRF protection)
 		var ipv4, ipv6 []string
 		for _, addr := range addrs {
+			// Skip private/reserved IP addresses to prevent SSRF
+			if isPrivateIP(addr) {
+				continue
+			}
 			if ip := net.ParseIP(addr); ip != nil {
 				if ip.To4() != nil {
 					ipv4 = append(ipv4, addr)

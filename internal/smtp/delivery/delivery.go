@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"database/sql"
 	"errors"
 	"fmt"
 	"net"
@@ -74,6 +75,7 @@ type Engine struct {
 	breakers       *resilience.BreakerRegistry
 	logger         *logging.Logger
 	bounceGen      *BounceGenerator
+	db             *sql.DB
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -88,7 +90,7 @@ type Engine struct {
 }
 
 // NewEngine creates a new delivery engine.
-func NewEngine(cfg Config, q *queue.RedisQueue, dkim *security.DKIMSignerPool, logger *logging.Logger) *Engine {
+func NewEngine(cfg Config, q *queue.RedisQueue, dkim *security.DKIMSignerPool, logger *logging.Logger, db *sql.DB) *Engine {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	return &Engine{
@@ -108,6 +110,7 @@ func NewEngine(cfg Config, q *queue.RedisQueue, dkim *security.DKIMSignerPool, l
 		}),
 		logger:    logger.Delivery(),
 		bounceGen: NewBounceGenerator(cfg.Hostname),
+		db:        db,
 		ctx:       ctx,
 		cancel:    cancel,
 	}
@@ -235,6 +238,10 @@ func (e *Engine) deliverMessage(msg *queue.Message) {
 		e.mu.Lock()
 		e.totalRetried++
 		e.mu.Unlock()
+		// Log deferred status for each recipient
+		for _, rcpt := range msg.Recipients {
+			e.logDelivery(ctx, msg.ID, msg.Sender, rcpt, "deferred", 0, "circuit breaker open")
+		}
 		return
 	}
 
@@ -244,6 +251,7 @@ func (e *Engine) deliverMessage(msg *queue.Message) {
 	})
 
 	if err != nil {
+		smtpCode := extractSMTPCode(err)
 		// Determine if permanent or temporary
 		if isPermanentError(err) {
 			logger.ErrorContext(ctx, "Permanent delivery failure", err)
@@ -251,6 +259,11 @@ func (e *Engine) deliverMessage(msg *queue.Message) {
 			e.mu.Lock()
 			e.totalFailed++
 			e.mu.Unlock()
+
+			// Log rejected status for each recipient
+			for _, rcpt := range msg.Recipients {
+				e.logDelivery(ctx, msg.ID, msg.Sender, rcpt, "rejected", smtpCode, err.Error())
+			}
 
 			// Generate and send bounce message
 			if ShouldBounce(msg.Sender) {
@@ -261,6 +274,8 @@ func (e *Engine) deliverMessage(msg *queue.Message) {
 					e.mu.Lock()
 					e.totalBounced++
 					e.mu.Unlock()
+					// Log bounce status
+					e.logDelivery(ctx, msg.ID, "", msg.Sender, "bounced", 0, "")
 				}
 			}
 
@@ -276,6 +291,10 @@ func (e *Engine) deliverMessage(msg *queue.Message) {
 			e.mu.Lock()
 			e.totalRetried++
 			e.mu.Unlock()
+			// Log deferred status for each recipient
+			for _, rcpt := range msg.Recipients {
+				e.logDelivery(ctx, msg.ID, msg.Sender, rcpt, "deferred", smtpCode, err.Error())
+			}
 		}
 		return
 	}
@@ -286,6 +305,11 @@ func (e *Engine) deliverMessage(msg *queue.Message) {
 	e.mu.Lock()
 	e.totalSent++
 	e.mu.Unlock()
+
+	// Log delivered status for each recipient
+	for _, rcpt := range msg.Recipients {
+		e.logDelivery(ctx, msg.ID, msg.Sender, rcpt, "delivered", 250, "")
+	}
 
 	// Clean up the message file from disk
 	if err := e.cleanupMessageFile(msg.MessagePath); err != nil {
@@ -572,11 +596,14 @@ func (e *Engine) deliverToHostWithTLS(ctx context.Context, addr, hostname string
 				if e.config.RequireTLS {
 					return fmt.Errorf("STARTTLS required but failed: %w", err)
 				}
-				// TLS handshake failed - reconnect without TLS
-				// This handles servers with invalid certificates
-				e.logger.WarnContext(ctx, "STARTTLS failed, reconnecting without TLS",
+				// SECURITY WARNING: TLS downgrade attack possible here
+				// This allows delivery to servers with invalid/self-signed certificates
+				// but also makes the connection vulnerable to MITM attacks.
+				// Consider setting RequireTLS=true in production for sensitive mail.
+				e.logger.WarnContext(ctx, "SECURITY: STARTTLS failed, falling back to plaintext - potential downgrade attack",
 					"host", hostname,
 					"error", err.Error(),
+					"recommendation", "set RequireTLS=true for secure delivery",
 				)
 				// Close current connection and retry without TLS
 				client.Quit()
@@ -739,4 +766,50 @@ func classifyError(err error) error {
 
 	// 4xx errors are temporary
 	return fmt.Errorf("%w: %v", ErrTemporaryFailure, err)
+}
+
+// logDelivery logs a delivery event to the database
+func (e *Engine) logDelivery(ctx context.Context, messageID, sender, recipient, status string, smtpCode int, errorMsg string) {
+	if e.db == nil {
+		return // Graceful degradation if no database configured
+	}
+
+	var errMsgPtr *string
+	if errorMsg != "" {
+		errMsgPtr = &errorMsg
+	}
+
+	var smtpCodePtr *int
+	if smtpCode > 0 {
+		smtpCodePtr = &smtpCode
+	}
+
+	_, err := e.db.ExecContext(ctx,
+		`INSERT INTO delivery_log (message_id, sender, recipient, status, smtp_code, error_message)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		messageID, sender, recipient, status, smtpCodePtr, errMsgPtr,
+	)
+	if err != nil {
+		e.logger.WarnContext(ctx, "Failed to log delivery event",
+			"error", err.Error(),
+			"message_id", messageID,
+		)
+	}
+}
+
+// extractSMTPCode extracts SMTP status code from error string
+func extractSMTPCode(err error) int {
+	if err == nil {
+		return 0
+	}
+	errStr := err.Error()
+
+	// Look for 3-digit SMTP codes
+	codes := []int{550, 551, 552, 553, 554, 421, 450, 451, 452}
+	for _, code := range codes {
+		if strings.Contains(errStr, fmt.Sprintf("%d", code)) {
+			return code
+		}
+	}
+	return 0
 }

@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"html"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -23,6 +23,7 @@ type Server struct {
 	caldavBackend  *CalDAVBackend
 	carddavBackend *CardDAVBackend
 	httpServer     *http.Server
+	logger         *slog.Logger
 }
 
 const (
@@ -69,6 +70,7 @@ func NewServer(cfg *config.Config, authenticator *auth.Authenticator, db *sql.DB
 		authenticator:  authenticator,
 		caldavBackend:  caldavBackend,
 		carddavBackend: carddavBackend,
+		logger:         slog.Default().With("component", "dav"),
 	}, nil
 }
 
@@ -97,7 +99,7 @@ func (s *Server) Start(addr string, tlsConfig *tls.Config) error {
 		TLSConfig: tlsConfig,
 	}
 
-	log.Printf("DAV server starting on %s", addr)
+	s.logger.Info("DAV server starting", "addr", addr)
 
 	if tlsConfig != nil {
 		return s.httpServer.ListenAndServeTLS("", "")
@@ -124,7 +126,8 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 
 		username, password, ok := r.BasicAuth()
 		if !ok {
-			log.Printf("DAV authentication failed: no credentials provided from %s", r.RemoteAddr)
+			s.logger.Warn("DAV authentication failed: no credentials provided",
+				"remote_addr", r.RemoteAddr)
 			w.Header().Set("WWW-Authenticate", `Basic realm="Mail Server"`)
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
@@ -132,13 +135,18 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 
 		user, err := s.authenticator.Authenticate(r.Context(), username, password)
 		if err != nil {
-			log.Printf("DAV authentication failed for user %s from %s: %v", username, r.RemoteAddr, err)
+			// Don't log the actual error to prevent information disclosure
+			s.logger.Warn("DAV authentication failed",
+				"username", username,
+				"remote_addr", r.RemoteAddr)
 			w.Header().Set("WWW-Authenticate", `Basic realm="Mail Server"`)
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
 
-		log.Printf("DAV authentication successful for user %s from %s", username, r.RemoteAddr)
+		s.logger.Info("DAV authentication successful",
+			"username", username,
+			"remote_addr", r.RemoteAddr)
 
 		// Store user in context
 		ctx := context.WithValue(r.Context(), userContextKey, user)
@@ -157,11 +165,17 @@ func getUserFromContext(ctx context.Context) *auth.User {
 
 // safeReadBody reads the request body with size limit and ensures proper closure
 func safeReadBody(r *http.Request, maxSize int64) ([]byte, error) {
+	// Require Content-Length header to prevent resource exhaustion attacks
+	// where an attacker sends an unbounded stream
+	if r.ContentLength < 0 {
+		return nil, fmt.Errorf("Content-Length header is required")
+	}
+
 	if r.ContentLength > maxSize {
 		return nil, fmt.Errorf("%w: %d bytes exceeds limit of %d", ErrRequestTooLarge, r.ContentLength, maxSize)
 	}
 
-	// Use LimitReader to prevent reading beyond maxSize
+	// Use LimitReader to prevent reading beyond maxSize (defense in depth)
 	limitedReader := io.LimitReader(r.Body, maxSize+1)
 	data, err := io.ReadAll(limitedReader)
 	if err != nil {
