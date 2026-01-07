@@ -72,6 +72,7 @@ func NewServer(cfg *config.Config, db *sql.DB, authenticator *auth.Authenticator
 		"queue.html",
 		"dns_check.html",
 		"test_email.html",
+		"system.html",
 	}
 
 	for _, page := range pages {
@@ -155,6 +156,10 @@ func (s *Server) Start(listen string) error {
 	mux.HandleFunc("/admin/domains", s.withAuth(s.handleDomains))
 	mux.HandleFunc("/admin/domains/add", s.withAuth(s.handleDomainAdd))
 	mux.HandleFunc("/admin/domains/delete/", s.withAuth(s.handleDomainDelete))
+	mux.HandleFunc("/admin/domains/dkim/generate/", s.withAuth(s.handleDKIMGenerate))
+	mux.HandleFunc("/admin/domains/dkim/show/", s.withAuth(s.handleDKIMShow))
+	mux.HandleFunc("/admin/domains/dkim/rotate/", s.withAuth(s.handleDKIMRotate))
+	mux.HandleFunc("/admin/domains/dns/", s.withAuth(s.handleDomainDNS))
 	mux.HandleFunc("/admin/sieve/", s.withAuth(s.handleSieve))
 	mux.HandleFunc("/admin/logs/auth", s.withAuth(s.handleAuthLogs))
 	mux.HandleFunc("/admin/logs/delivery", s.withAuth(s.handleDeliveryLogs))
@@ -165,6 +170,10 @@ func (s *Server) Start(listen string) error {
 	mux.HandleFunc("/admin/api/stats", s.withAuth(s.handleAPIStats))
 	mux.HandleFunc("/admin/tools/dns", s.withAuth(s.handleDNSCheck))
 	mux.HandleFunc("/admin/tools/test-email", s.withAuth(s.handleTestEmail))
+	mux.HandleFunc("/admin/system", s.withAuth(s.handleSystem))
+	mux.HandleFunc("/admin/system/backup", s.withAuth(s.handleBackup))
+	mux.HandleFunc("/admin/system/restore", s.withAuth(s.handleRestore))
+	mux.HandleFunc("/admin/system/dkim-autorotate", s.withAuth(s.handleDKIMAutoRotate))
 
 	// Build middleware chain (order matters: innermost first, then wrapping outward)
 	// The execution order will be: logging -> security headers -> panic recovery -> CSRF -> routes

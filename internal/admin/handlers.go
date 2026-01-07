@@ -1,17 +1,24 @@
 package admin
 
 import (
+	"archive/tar"
+	"compress/gzip"
 	"context"
+	"database/sql"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/fenilsonani/email-server/internal/audit"
 	"github.com/fenilsonani/email-server/internal/queue"
+	"github.com/fenilsonani/email-server/internal/security"
 	"github.com/fenilsonani/email-server/internal/validation"
 )
 
@@ -403,7 +410,9 @@ func (s *Server) handleUserDelete(w http.ResponseWriter, r *http.Request) {
 // handleDomains shows domain list
 func (s *Server) handleDomains(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.db.QueryContext(r.Context(), `
-		SELECT d.id, d.name, d.created_at,
+		SELECT d.id, d.name, d.created_at, COALESCE(d.dkim_selector, 'mail'),
+			d.dkim_private_key IS NOT NULL AND LENGTH(d.dkim_private_key) > 0,
+			d.dkim_key_file,
 			(SELECT COUNT(*) FROM users WHERE domain_id = d.id) as user_count
 		FROM domains d
 		ORDER BY d.name
@@ -416,19 +425,46 @@ func (s *Server) handleDomains(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	type Domain struct {
-		ID        int64
-		Name      string
-		UserCount int
-		CreatedAt time.Time
+		ID           int64
+		Name         string
+		UserCount    int
+		CreatedAt    time.Time
+		DKIMSelector string
+		HasDKIMKey   bool
 	}
+
+	// Get DKIM key directory for file-based check
+	dkimPath := s.getDKIMPath()
 
 	var domains []Domain
 	for rows.Next() {
 		var d Domain
-		if err := rows.Scan(&d.ID, &d.Name, &d.CreatedAt, &d.UserCount); err != nil {
+		var selector string
+		var hasDBKey bool
+		var keyFile sql.NullString
+		if err := rows.Scan(&d.ID, &d.Name, &d.CreatedAt, &selector, &hasDBKey, &keyFile, &d.UserCount); err != nil {
 			s.logger.ErrorContext(r.Context(), "Failed to scan domain row", err)
 			continue
 		}
+		d.DKIMSelector = selector
+
+		// Check if key exists either in database or as file
+		d.HasDKIMKey = hasDBKey
+		if !d.HasDKIMKey {
+			// Check for file-based key
+			if keyFile.Valid && keyFile.String != "" {
+				if _, err := os.Stat(keyFile.String); err == nil {
+					d.HasDKIMKey = true
+				}
+			} else {
+				// Check default file location
+				keyPath := dkimPath + "/" + d.Name + ".key"
+				if _, err := os.Stat(keyPath); err == nil {
+					d.HasDKIMKey = true
+				}
+			}
+		}
+
 		domains = append(domains, d)
 	}
 
@@ -628,10 +664,25 @@ func (s *Server) handleDomainAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Get DKIM configuration from form
+	generateDKIM := r.FormValue("generate_dkim") == "on"
+	dkimSelector := r.FormValue("dkim_selector")
+	if dkimSelector == "" {
+		dkimSelector = "mail"
+	}
+	dkimBits := 2048
+	if r.FormValue("dkim_bits") == "4096" {
+		dkimBits = 4096
+	}
+	dkimStorage := r.FormValue("dkim_storage")
+	if dkimStorage == "" {
+		dkimStorage = "database"
+	}
+
 	// Insert domain
 	_, err = s.db.ExecContext(r.Context(),
 		"INSERT INTO domains (name, dkim_selector) VALUES (?, ?)",
-		name, "mail",
+		name, dkimSelector,
 	)
 	if err != nil {
 		s.logger.ErrorContext(r.Context(), "Failed to create domain", err)
@@ -642,9 +693,24 @@ func (s *Server) handleDomainAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Generate DKIM key if requested
+	if generateDKIM {
+		dkimPath := s.getDKIMPath()
+		store := security.NewKeyStore(dkimStorage, dkimPath, s.db)
+
+		_, err = security.GenerateAndSaveKey(r.Context(), store, name, dkimSelector, dkimBits)
+		if err != nil {
+			s.logger.ErrorContext(r.Context(), "Failed to generate DKIM key", err)
+			// Domain was created but DKIM failed - log but don't fail the request
+		}
+	}
+
 	// Audit log
 	adminUser := getSessionUser(r)
-	s.auditLogger.Log(r.Context(), adminUser, audit.EventDomainCreate, name, nil, getIP(r))
+	s.auditLogger.Log(r.Context(), adminUser, audit.EventDomainCreate, name, map[string]interface{}{
+		"generate_dkim": generateDKIM,
+		"dkim_selector": dkimSelector,
+	}, getIP(r))
 
 	http.Redirect(w, r, "/admin/domains", http.StatusSeeOther)
 }
@@ -682,6 +748,275 @@ func (s *Server) handleDomainDelete(w http.ResponseWriter, r *http.Request) {
 	s.auditLogger.Log(r.Context(), adminUser, audit.EventDomainDelete, strconv.FormatInt(domainID, 10), nil, getIP(r))
 
 	http.Redirect(w, r, "/admin/domains", http.StatusSeeOther)
+}
+
+// handleDKIMGenerate generates a DKIM key for a domain
+func (s *Server) handleDKIMGenerate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Extract domain ID from path
+	parts := strings.Split(r.URL.Path, "/")
+	if len(parts) < 6 {
+		http.NotFound(w, r)
+		return
+	}
+	domainID, err := strconv.ParseInt(parts[5], 10, 64)
+	if err != nil {
+		http.Error(w, "Invalid domain ID format", http.StatusBadRequest)
+		return
+	}
+
+	// Get domain name
+	var domainName string
+	err = s.db.QueryRowContext(r.Context(), "SELECT name FROM domains WHERE id = ?", domainID).Scan(&domainName)
+	if err != nil {
+		http.Error(w, "Domain not found", http.StatusNotFound)
+		return
+	}
+
+	// Parse form values
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "Bad request", http.StatusBadRequest)
+		return
+	}
+
+	selector := r.FormValue("selector")
+	if selector == "" {
+		selector = "mail"
+	}
+
+	bitsStr := r.FormValue("bits")
+	bits := 2048
+	if bitsStr == "4096" {
+		bits = 4096
+	}
+
+	storageType := r.FormValue("storage")
+	if storageType == "" {
+		storageType = "database"
+	}
+
+	// Get DKIM key directory
+	dkimPath := s.getDKIMPath()
+
+	// Create key store
+	store := security.NewKeyStore(storageType, dkimPath, s.db)
+
+	// Generate key
+	_, err = security.GenerateAndSaveKey(r.Context(), store, domainName, selector, bits)
+	if err != nil {
+		s.logger.ErrorContext(r.Context(), "Failed to generate DKIM key", err)
+		http.Error(w, "Failed to generate DKIM key. Check server logs.", http.StatusInternalServerError)
+		return
+	}
+
+	// Audit log
+	adminUser := getSessionUser(r)
+	s.auditLogger.Log(r.Context(), adminUser, audit.EventConfigChange, domainName, map[string]interface{}{
+		"action":   "dkim_generate",
+		"selector": selector,
+		"bits":     bits,
+	}, getIP(r))
+
+	http.Redirect(w, r, "/admin/domains", http.StatusSeeOther)
+}
+
+// handleDKIMShow returns DKIM DNS record as JSON
+func (s *Server) handleDKIMShow(w http.ResponseWriter, r *http.Request) {
+	// Extract domain ID from path
+	parts := strings.Split(r.URL.Path, "/")
+	if len(parts) < 6 {
+		http.NotFound(w, r)
+		return
+	}
+	domainID, err := strconv.ParseInt(parts[5], 10, 64)
+	if err != nil {
+		http.Error(w, "Invalid domain ID format", http.StatusBadRequest)
+		return
+	}
+
+	// Get domain info
+	var domainName, selector string
+	var storageType sql.NullString
+	err = s.db.QueryRowContext(r.Context(),
+		"SELECT name, COALESCE(dkim_selector, 'mail'), dkim_storage_type FROM domains WHERE id = ?",
+		domainID).Scan(&domainName, &selector, &storageType)
+	if err != nil {
+		http.Error(w, "Domain not found", http.StatusNotFound)
+		return
+	}
+
+	storage := "file"
+	if storageType.Valid && storageType.String != "" {
+		storage = storageType.String
+	}
+
+	// Get DKIM key directory
+	dkimPath := s.getDKIMPath()
+
+	// Create key store
+	store := security.NewKeyStore(storage, dkimPath, s.db)
+
+	// Get key metadata
+	meta, err := store.GetKeyMetadata(r.Context(), domainName)
+	if err != nil || !meta.HasKey {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"hasKey": false,
+			"domain": domainName,
+		})
+		return
+	}
+
+	// Get DNS record
+	recordName, recordValue, err := security.GetDNSRecord(r.Context(), store, domainName)
+	if err != nil {
+		http.Error(w, "Failed to get DNS record", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"hasKey":      true,
+		"domain":      domainName,
+		"selector":    meta.Selector,
+		"algorithm":   meta.Algorithm,
+		"createdAt":   meta.CreatedAt.Format("2006-01-02 15:04:05"),
+		"storageType": meta.StorageType,
+		"recordName":  recordName,
+		"recordValue": recordValue,
+	})
+}
+
+// handleDKIMRotate rotates the DKIM key for a domain
+func (s *Server) handleDKIMRotate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Extract domain ID from path
+	parts := strings.Split(r.URL.Path, "/")
+	if len(parts) < 6 {
+		http.NotFound(w, r)
+		return
+	}
+	domainID, err := strconv.ParseInt(parts[5], 10, 64)
+	if err != nil {
+		http.Error(w, "Invalid domain ID format", http.StatusBadRequest)
+		return
+	}
+
+	// Get domain info
+	var domainName string
+	var storageType sql.NullString
+	err = s.db.QueryRowContext(r.Context(),
+		"SELECT name, dkim_storage_type FROM domains WHERE id = ?",
+		domainID).Scan(&domainName, &storageType)
+	if err != nil {
+		http.Error(w, "Domain not found", http.StatusNotFound)
+		return
+	}
+
+	storage := "file"
+	if storageType.Valid && storageType.String != "" {
+		storage = storageType.String
+	}
+
+	// Get DKIM key directory
+	dkimPath := s.getDKIMPath()
+
+	// Create key store
+	store := security.NewKeyStore(storage, dkimPath, s.db)
+
+	// Rotate key
+	newSelector, _, err := security.RotateKey(r.Context(), store, domainName, 2048)
+	if err != nil {
+		s.logger.ErrorContext(r.Context(), "Failed to rotate DKIM key", err)
+		http.Error(w, "Failed to rotate DKIM key. Check server logs.", http.StatusInternalServerError)
+		return
+	}
+
+	// Audit log
+	adminUser := getSessionUser(r)
+	s.auditLogger.Log(r.Context(), adminUser, audit.EventConfigChange, domainName, map[string]interface{}{
+		"action":      "dkim_rotate",
+		"newSelector": newSelector,
+	}, getIP(r))
+
+	http.Redirect(w, r, "/admin/domains", http.StatusSeeOther)
+}
+
+// handleDomainDNS shows all DNS records for a domain
+func (s *Server) handleDomainDNS(w http.ResponseWriter, r *http.Request) {
+	// Extract domain ID from path
+	parts := strings.Split(r.URL.Path, "/")
+	if len(parts) < 5 {
+		http.NotFound(w, r)
+		return
+	}
+	domainID, err := strconv.ParseInt(parts[4], 10, 64)
+	if err != nil {
+		http.Error(w, "Invalid domain ID format", http.StatusBadRequest)
+		return
+	}
+
+	// Get domain info
+	var domainName, selector string
+	var storageType sql.NullString
+	err = s.db.QueryRowContext(r.Context(),
+		"SELECT name, COALESCE(dkim_selector, 'mail'), dkim_storage_type FROM domains WHERE id = ?",
+		domainID).Scan(&domainName, &selector, &storageType)
+	if err != nil {
+		http.Error(w, "Domain not found", http.StatusNotFound)
+		return
+	}
+
+	storage := "file"
+	if storageType.Valid && storageType.String != "" {
+		storage = storageType.String
+	}
+
+	// Get DKIM key directory
+	dkimPath := s.getDKIMPath()
+
+	// Create key store
+	store := security.NewKeyStore(storage, dkimPath, s.db)
+
+	// Get all DNS records
+	records, err := security.GetAllDNSRecords(r.Context(), store, domainName, s.config.Server.Hostname)
+	if err != nil {
+		s.logger.ErrorContext(r.Context(), "Failed to get DNS records", err)
+	}
+
+	// Get DKIM record name
+	dkimRecordName := selector + "._domainkey." + domainName
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"domain":         domainName,
+		"hostname":       s.config.Server.Hostname,
+		"mxRecord":       records.MX,
+		"spfRecord":      records.SPF,
+		"dmarcRecord":    records.DMARC,
+		"dkimRecord":     records.DKIM,
+		"dkimRecordName": dkimRecordName,
+		"selector":       selector,
+	})
+}
+
+// getDKIMPath returns the path for DKIM keys
+func (s *Server) getDKIMPath() string {
+	if s.config.Storage.DataDir != "" {
+		return s.config.Storage.DataDir + "/dkim"
+	}
+	if s.config.Storage.MaildirPath != "" {
+		return s.config.Storage.MaildirPath + "/../dkim"
+	}
+	return "/etc/mailserver/dkim"
 }
 
 // handleAPIStats returns stats as JSON for AJAX updates
@@ -1310,4 +1645,423 @@ func (s *Server) handleAuditLogs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.renderTemplate(w, "audit_logs.html", data)
+}
+
+// handleSystem shows the system management page
+func (s *Server) handleSystem(w http.ResponseWriter, r *http.Request) {
+	// Get system stats
+	var domainCount, userCount, emailCount int64
+
+	s.db.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM domains").Scan(&domainCount)
+	s.db.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM users").Scan(&userCount)
+
+	// Get data directory size
+	dataDir := s.config.Storage.DataDir
+	var dataSizeStr string
+	if size, err := getDirSize(dataDir); err == nil {
+		dataSizeStr = formatBytes(size)
+	} else {
+		dataSizeStr = "Unknown"
+	}
+
+	// Get DKIM auto-rotate setting from database or config
+	var autoRotateDays int = 90 // default
+
+	// Check for recent backups
+	backupDir := filepath.Join(dataDir, "backups")
+	var lastBackup string
+	if entries, err := os.ReadDir(backupDir); err == nil && len(entries) > 0 {
+		// Find most recent
+		var newest time.Time
+		for _, entry := range entries {
+			if info, err := entry.Info(); err == nil {
+				if info.ModTime().After(newest) {
+					newest = info.ModTime()
+					lastBackup = newest.Format("Jan 02, 2006 15:04")
+				}
+			}
+		}
+	}
+	if lastBackup == "" {
+		lastBackup = "Never"
+	}
+
+	data := map[string]interface{}{
+		"Title":           "System",
+		"DomainCount":     domainCount,
+		"UserCount":       userCount,
+		"EmailCount":      emailCount,
+		"DataSize":        dataSizeStr,
+		"DataDir":         dataDir,
+		"LastBackup":      lastBackup,
+		"AutoRotateDays":  autoRotateDays,
+		"ServerUptime":    time.Since(s.startTime).Round(time.Second).String(),
+		"ServerStartTime": s.startTime.Format("Jan 02, 2006 15:04:05"),
+	}
+
+	s.renderTemplate(w, "system.html", data)
+}
+
+// handleBackup creates and downloads a backup
+func (s *Server) handleBackup(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	dataDir := s.config.Storage.DataDir
+
+	// Create backup in temp file
+	tempFile, err := os.CreateTemp("", "mailserver-backup-*.tar.gz")
+	if err != nil {
+		s.logger.ErrorContext(r.Context(), "Failed to create temp file for backup", err)
+		http.Error(w, "Failed to create backup", http.StatusInternalServerError)
+		return
+	}
+	defer os.Remove(tempFile.Name())
+	defer tempFile.Close()
+
+	// Create tar.gz
+	gzWriter := gzip.NewWriter(tempFile)
+	tarWriter := tar.NewWriter(gzWriter)
+
+	// Backup database
+	dbPath := s.config.Storage.DatabasePath
+	if err := addFileToTar(tarWriter, dbPath, "metadata.db"); err != nil {
+		s.logger.ErrorContext(r.Context(), "Failed to backup database", err)
+	}
+
+	// Backup maildir
+	maildirPath := s.config.Storage.MaildirPath
+	if err := addDirToTar(tarWriter, maildirPath, "maildir"); err != nil {
+		s.logger.ErrorContext(r.Context(), "Failed to backup maildir", err)
+	}
+
+	// Backup DKIM keys
+	dkimPath := filepath.Join(dataDir, "dkim")
+	if err := addDirToTar(tarWriter, dkimPath, "dkim"); err != nil {
+		s.logger.ErrorContext(r.Context(), "Failed to backup DKIM keys", err)
+	}
+
+	tarWriter.Close()
+	gzWriter.Close()
+
+	// Get file size
+	tempFile.Seek(0, 0)
+	stat, _ := tempFile.Stat()
+
+	// Log the backup
+	if s.auditLogger != nil {
+		s.auditLogger.Log(r.Context(), getSessionUsername(r), audit.EventConfigChange, "system", map[string]interface{}{"action": "backup"}, getIP(r))
+	}
+
+	// Send file as download
+	filename := fmt.Sprintf("mailserver-backup-%s.tar.gz", time.Now().Format("2006-01-02-150405"))
+	w.Header().Set("Content-Type", "application/gzip")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%s", filename))
+	w.Header().Set("Content-Length", strconv.FormatInt(stat.Size(), 10))
+
+	io.Copy(w, tempFile)
+}
+
+// handleRestore handles backup restoration
+func (s *Server) handleRestore(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Parse multipart form (max 500MB)
+	if err := r.ParseMultipartForm(500 << 20); err != nil {
+		http.Error(w, "Failed to parse form", http.StatusBadRequest)
+		return
+	}
+
+	file, header, err := r.FormFile("backup")
+	if err != nil {
+		http.Error(w, "No backup file provided", http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+
+	// Verify it's a tar.gz file
+	if !strings.HasSuffix(header.Filename, ".tar.gz") {
+		http.Error(w, "Invalid backup file format. Expected .tar.gz", http.StatusBadRequest)
+		return
+	}
+
+	// Save to temp file
+	tempFile, err := os.CreateTemp("", "mailserver-restore-*.tar.gz")
+	if err != nil {
+		http.Error(w, "Failed to process backup", http.StatusInternalServerError)
+		return
+	}
+	defer os.Remove(tempFile.Name())
+	defer tempFile.Close()
+
+	if _, err := io.Copy(tempFile, file); err != nil {
+		http.Error(w, "Failed to save backup file", http.StatusInternalServerError)
+		return
+	}
+
+	// Extract backup
+	tempFile.Seek(0, 0)
+	dataDir := s.config.Storage.DataDir
+
+	if err := extractBackup(tempFile, dataDir); err != nil {
+		s.logger.ErrorContext(r.Context(), "Failed to extract backup", err)
+		http.Error(w, "Failed to restore backup: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Log the restore
+	if s.auditLogger != nil {
+		s.auditLogger.Log(r.Context(), getSessionUsername(r), audit.EventConfigChange, "system", map[string]interface{}{"action": "restore"}, getIP(r))
+	}
+
+	// Return success with redirect instruction
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"message": "Backup restored successfully. Please restart the server for changes to take effect.",
+	})
+}
+
+// handleDKIMAutoRotate triggers DKIM key rotation for old keys
+func (s *Server) handleDKIMAutoRotate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Parse days parameter
+	days := 90 // default
+	if d := r.FormValue("days"); d != "" {
+		if parsed, err := strconv.Atoi(d); err == nil && parsed > 0 {
+			days = parsed
+		}
+	}
+
+	threshold := time.Now().AddDate(0, 0, -days)
+	dkimPath := s.getDKIMPath()
+
+	// Get domains with old keys
+	rows, err := s.db.QueryContext(r.Context(), `
+		SELECT id, name, dkim_key_created_at, COALESCE(dkim_storage_type, 'file')
+		FROM domains
+		WHERE is_active = TRUE
+		  AND dkim_key_created_at IS NOT NULL
+		  AND dkim_key_created_at < ?
+	`, threshold)
+	if err != nil {
+		http.Error(w, "Failed to query domains", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var rotated []string
+	var errors []string
+
+	for rows.Next() {
+		var id int64
+		var name string
+		var createdAt time.Time
+		var storageType string
+
+		if err := rows.Scan(&id, &name, &createdAt, &storageType); err != nil {
+			continue
+		}
+
+		// Create key store and rotate
+		store := security.NewKeyStore(storageType, dkimPath, s.db)
+		newSelector := fmt.Sprintf("mail%d", time.Now().Unix())
+
+		_, err := security.GenerateAndSaveKey(r.Context(), store, name, newSelector, 2048)
+		if err != nil {
+			errors = append(errors, fmt.Sprintf("%s: %v", name, err))
+			continue
+		}
+
+		rotated = append(rotated, name)
+	}
+
+	// Log the rotation
+	if s.auditLogger != nil && len(rotated) > 0 {
+		s.auditLogger.Log(r.Context(), getSessionUsername(r), audit.EventConfigChange, "dkim",
+			map[string]interface{}{"action": "auto-rotate", "count": len(rotated), "domains": rotated}, getIP(r))
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": len(errors) == 0,
+		"rotated": rotated,
+		"errors":  errors,
+		"message": fmt.Sprintf("Rotated %d keys. Remember to update DNS records!", len(rotated)),
+	})
+}
+
+// Helper functions for backup/restore
+
+func addFileToTar(tw *tar.Writer, filePath, name string) error {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	stat, err := file.Stat()
+	if err != nil {
+		return err
+	}
+
+	header := &tar.Header{
+		Name:    name,
+		Size:    stat.Size(),
+		Mode:    int64(stat.Mode()),
+		ModTime: stat.ModTime(),
+	}
+
+	if err := tw.WriteHeader(header); err != nil {
+		return err
+	}
+
+	_, err = io.Copy(tw, file)
+	return err
+}
+
+func addDirToTar(tw *tar.Writer, srcDir, prefix string) error {
+	return filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil // Skip errors
+		}
+
+		relPath, err := filepath.Rel(srcDir, path)
+		if err != nil {
+			return nil
+		}
+
+		tarPath := filepath.Join(prefix, relPath)
+
+		if info.IsDir() {
+			header := &tar.Header{
+				Name:     tarPath + "/",
+				Mode:     int64(info.Mode()),
+				ModTime:  info.ModTime(),
+				Typeflag: tar.TypeDir,
+			}
+			return tw.WriteHeader(header)
+		}
+
+		header := &tar.Header{
+			Name:    tarPath,
+			Size:    info.Size(),
+			Mode:    int64(info.Mode()),
+			ModTime: info.ModTime(),
+		}
+
+		if err := tw.WriteHeader(header); err != nil {
+			return err
+		}
+
+		file, err := os.Open(path)
+		if err != nil {
+			return nil // Skip unreadable files
+		}
+		defer file.Close()
+
+		_, err = io.Copy(tw, file)
+		return err
+	})
+}
+
+func extractBackup(file *os.File, destDir string) error {
+	gzReader, err := gzip.NewReader(file)
+	if err != nil {
+		return fmt.Errorf("invalid gzip file: %w", err)
+	}
+	defer gzReader.Close()
+
+	tarReader := tar.NewReader(gzReader)
+
+	for {
+		header, err := tarReader.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("error reading tar: %w", err)
+		}
+
+		// Security: prevent path traversal
+		targetPath := filepath.Join(destDir, header.Name)
+		if !strings.HasPrefix(targetPath, filepath.Clean(destDir)+string(os.PathSeparator)) {
+			continue // Skip suspicious paths
+		}
+
+		switch header.Typeflag {
+		case tar.TypeDir:
+			if err := os.MkdirAll(targetPath, 0755); err != nil {
+				return err
+			}
+		case tar.TypeReg:
+			// Ensure parent directory exists
+			if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
+				return err
+			}
+
+			outFile, err := os.Create(targetPath)
+			if err != nil {
+				return err
+			}
+
+			if _, err := io.Copy(outFile, tarReader); err != nil {
+				outFile.Close()
+				return err
+			}
+			outFile.Close()
+
+			// Restore permissions
+			os.Chmod(targetPath, os.FileMode(header.Mode))
+		}
+	}
+
+	return nil
+}
+
+func getDirSize(path string) (int64, error) {
+	var size int64
+	err := filepath.Walk(path, func(_ string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+		if !info.IsDir() {
+			size += info.Size()
+		}
+		return nil
+	})
+	return size, err
+}
+
+func formatBytes(bytes int64) string {
+	const unit = 1024
+	if bytes < unit {
+		return fmt.Sprintf("%d B", bytes)
+	}
+	div, exp := int64(unit), 0
+	for n := bytes / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
+}
+
+func getSessionUsername(r *http.Request) string {
+	cookie, err := r.Cookie("admin_session")
+	if err != nil {
+		return "unknown"
+	}
+	// In a real implementation, look up the session
+	// For now, return a placeholder
+	_ = cookie
+	return "admin"
 }

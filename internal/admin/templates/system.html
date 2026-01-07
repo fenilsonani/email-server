@@ -1,0 +1,226 @@
+<div class="page-header">
+    <h1>System Management</h1>
+</div>
+
+<!-- System Stats -->
+<div class="stats-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 2rem;">
+    <div class="card stat-card">
+        <div class="stat-value">{{.DomainCount}}</div>
+        <div class="stat-label">Domains</div>
+    </div>
+    <div class="card stat-card">
+        <div class="stat-value">{{.UserCount}}</div>
+        <div class="stat-label">Users</div>
+    </div>
+    <div class="card stat-card">
+        <div class="stat-value">{{.DataSize}}</div>
+        <div class="stat-label">Data Size</div>
+    </div>
+    <div class="card stat-card">
+        <div class="stat-value">{{.ServerUptime}}</div>
+        <div class="stat-label">Uptime</div>
+    </div>
+</div>
+
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap: 1.5rem;">
+    <!-- Backup Section -->
+    <div class="card">
+        <h2>Backup & Restore</h2>
+        <p style="color: var(--text-muted); margin-bottom: 1rem;">
+            Create a full backup of your mail server including database, emails, and DKIM keys.
+        </p>
+
+        <div style="display: flex; flex-direction: column; gap: 1rem;">
+            <div style="padding: 1rem; background: var(--bg); border-radius: 6px;">
+                <strong>Last Backup:</strong> {{.LastBackup}}
+            </div>
+
+            <form method="POST" action="/admin/system/backup" id="backupForm">
+                <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+                <button type="submit" class="btn btn-primary" onclick="this.innerHTML='Creating backup...'; this.disabled=true; this.form.submit();">
+                    Download Backup
+                </button>
+            </form>
+
+            <hr style="border: none; border-top: 1px solid var(--border); margin: 0.5rem 0;">
+
+            <form method="POST" action="/admin/system/restore" enctype="multipart/form-data" id="restoreForm">
+                <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+                <div class="form-group">
+                    <label for="backup">Restore from Backup</label>
+                    <input type="file" id="backup" name="backup" accept=".tar.gz" class="form-control" required>
+                    <small style="color: var(--text-muted);">Upload a .tar.gz backup file</small>
+                </div>
+                <button type="submit" class="btn btn-warning" onclick="return confirmRestore();">
+                    Restore Backup
+                </button>
+            </form>
+        </div>
+
+        <div style="margin-top: 1.5rem; padding: 1rem; background: var(--bg); border-radius: 6px;">
+            <strong>CLI Commands:</strong>
+            <pre style="margin: 0.5rem 0 0 0; font-size: 0.875rem;">
+# Create backup
+mailserver backup /path/to/backup.tar.gz
+
+# Restore from backup
+mailserver restore /path/to/backup.tar.gz
+
+# Export to remote server
+mailserver export user@remote-server</pre>
+        </div>
+    </div>
+
+    <!-- DKIM Management Section -->
+    <div class="card">
+        <h2>DKIM Key Management</h2>
+        <p style="color: var(--text-muted); margin-bottom: 1rem;">
+            Automatically rotate DKIM keys that are older than the specified number of days.
+        </p>
+
+        <form method="POST" action="/admin/system/dkim-autorotate" id="autoRotateForm">
+            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+            <div class="form-group">
+                <label for="days">Rotate keys older than</label>
+                <div style="display: flex; gap: 0.5rem; align-items: center;">
+                    <input type="number" id="days" name="days" value="{{.AutoRotateDays}}" min="1" max="365" class="form-control" style="width: 100px;">
+                    <span>days</span>
+                </div>
+                <small style="color: var(--text-muted);">Recommended: 90 days</small>
+            </div>
+            <button type="submit" class="btn btn-warning" onclick="return confirmRotate();">
+                Rotate Old Keys
+            </button>
+        </form>
+
+        <div id="rotateResult" style="margin-top: 1rem; display: none;"></div>
+
+        <div style="margin-top: 1.5rem; padding: 1rem; background: var(--bg); border-radius: 6px;">
+            <strong>CLI Commands:</strong>
+            <pre style="margin: 0.5rem 0 0 0; font-size: 0.875rem;">
+# Generate DKIM key for domain
+mailserver dkim generate example.com
+
+# Show DNS record
+mailserver dkim show example.com
+
+# Rotate specific domain
+mailserver dkim rotate example.com
+
+# Auto-rotate all old keys
+mailserver dkim auto-rotate --days 90
+
+# List all DKIM keys
+mailserver dkim list</pre>
+        </div>
+    </div>
+</div>
+
+<!-- Server Info -->
+<div class="card" style="margin-top: 1.5rem;">
+    <h2>Server Information</h2>
+    <table style="width: 100%;">
+        <tr>
+            <td style="padding: 0.5rem 0; width: 200px;"><strong>Data Directory:</strong></td>
+            <td><code>{{.DataDir}}</code></td>
+        </tr>
+        <tr>
+            <td style="padding: 0.5rem 0;"><strong>Server Started:</strong></td>
+            <td>{{.ServerStartTime}}</td>
+        </tr>
+        <tr>
+            <td style="padding: 0.5rem 0;"><strong>Uptime:</strong></td>
+            <td>{{.ServerUptime}}</td>
+        </tr>
+    </table>
+</div>
+
+<style>
+.stat-card {
+    text-align: center;
+    padding: 1.5rem;
+}
+.stat-value {
+    font-size: 2rem;
+    font-weight: bold;
+    color: var(--primary);
+}
+.stat-label {
+    color: var(--text-muted);
+    margin-top: 0.25rem;
+}
+.form-group {
+    margin-bottom: 1rem;
+}
+.form-group label {
+    display: block;
+    margin-bottom: 0.25rem;
+    font-weight: 500;
+}
+.form-control {
+    padding: 0.5rem;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--card-bg);
+    color: var(--text);
+}
+</style>
+
+<script>
+function confirmRestore() {
+    return confirm('WARNING: This will overwrite your current data!\n\nAre you sure you want to restore from this backup?\n\nThe server will need to be restarted after restore.');
+}
+
+function confirmRotate() {
+    return confirm('This will rotate DKIM keys for all domains with keys older than the specified days.\n\nYou will need to update DNS records for affected domains.\n\nContinue?');
+}
+
+// Handle auto-rotate form with AJAX
+document.getElementById('autoRotateForm').addEventListener('submit', function(e) {
+    e.preventDefault();
+
+    var form = this;
+    var resultDiv = document.getElementById('rotateResult');
+    var submitBtn = form.querySelector('button[type="submit"]');
+
+    submitBtn.innerHTML = 'Rotating keys...';
+    submitBtn.disabled = true;
+
+    fetch(form.action, {
+        method: 'POST',
+        body: new FormData(form)
+    })
+    .then(response => response.json())
+    .then(data => {
+        resultDiv.style.display = 'block';
+        if (data.rotated && data.rotated.length > 0) {
+            resultDiv.innerHTML = '<div class="alert alert-success"><strong>Rotated ' + data.rotated.length + ' key(s):</strong><br>' +
+                data.rotated.join(', ') + '<br><br><strong>Remember to update DNS records!</strong></div>';
+        } else if (data.errors && data.errors.length > 0) {
+            resultDiv.innerHTML = '<div class="alert alert-danger"><strong>Errors:</strong><br>' + data.errors.join('<br>') + '</div>';
+        } else {
+            resultDiv.innerHTML = '<div class="alert alert-info">No keys needed rotation.</div>';
+        }
+    })
+    .catch(err => {
+        resultDiv.style.display = 'block';
+        resultDiv.innerHTML = '<div class="alert alert-danger">Failed to rotate keys: ' + err + '</div>';
+    })
+    .finally(() => {
+        submitBtn.innerHTML = 'Rotate Old Keys';
+        submitBtn.disabled = false;
+    });
+});
+
+// Handle restore form with AJAX
+document.getElementById('restoreForm').addEventListener('submit', function(e) {
+    if (!confirmRestore()) {
+        e.preventDefault();
+        return;
+    }
+
+    var submitBtn = this.querySelector('button[type="submit"]');
+    submitBtn.innerHTML = 'Restoring...';
+    submitBtn.disabled = true;
+});
+</script>
