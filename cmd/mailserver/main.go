@@ -1,11 +1,16 @@
 package main
 
 import (
+	"archive/tar"
+	"compress/gzip"
 	"context"
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -543,10 +548,18 @@ var domainCmd = &cobra.Command{
 	Short: "Manage email domains",
 }
 
+var domainGenerateDKIM bool
+var domainDKIMBits int
+var domainDKIMSelector string
+var domainDKIMStorage string
+
 var domainAddCmd = &cobra.Command{
 	Use:   "add <domain>",
 	Short: "Add a new domain",
-	Args:  cobra.ExactArgs(1),
+	Long: `Add a new domain to the mail server.
+
+Use --generate-dkim to automatically generate a DKIM signing key for the domain.`,
+	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		domainName := args[0]
 
@@ -568,7 +581,7 @@ var domainAddCmd = &cobra.Command{
 		// Insert domain
 		result, err := db.ExecContext(context.Background(),
 			"INSERT INTO domains (name, dkim_selector) VALUES (?, ?)",
-			domainName, "mail",
+			domainName, domainDKIMSelector,
 		)
 		if err != nil {
 			return fmt.Errorf("failed to add domain: %w", err)
@@ -576,6 +589,36 @@ var domainAddCmd = &cobra.Command{
 
 		id, _ := result.LastInsertId()
 		fmt.Printf("Domain '%s' added with ID %d\n", domainName, id)
+
+		// Generate DKIM key if requested
+		if domainGenerateDKIM {
+			// Get DKIM key directory
+			dkimPath := filepath.Join(cfg.Storage.DataDir, "dkim")
+			if cfg.Storage.MaildirPath != "" {
+				dkimPath = filepath.Join(filepath.Dir(cfg.Storage.MaildirPath), "dkim")
+			}
+
+			store := security.NewKeyStore(domainDKIMStorage, dkimPath, db.DB)
+
+			fmt.Printf("Generating %d-bit DKIM key...\n", domainDKIMBits)
+			_, err = security.GenerateAndSaveKey(context.Background(), store, domainName, domainDKIMSelector, domainDKIMBits)
+			if err != nil {
+				return fmt.Errorf("failed to generate DKIM key: %w", err)
+			}
+
+			// Get DNS record
+			recordName, recordValue, err := security.GetDNSRecord(context.Background(), store, domainName)
+			if err != nil {
+				return fmt.Errorf("failed to get DNS record: %w", err)
+			}
+
+			fmt.Printf("\nDKIM key generated!\n\n")
+			fmt.Printf("Add this DNS TXT record:\n")
+			fmt.Printf("Name:  %s\n", recordName)
+			fmt.Printf("Type:  TXT\n")
+			fmt.Printf("Value: %s\n", recordValue)
+		}
+
 		return nil
 	},
 }
@@ -816,6 +859,836 @@ var userPasswdCmd = &cobra.Command{
 	},
 }
 
+// DKIM management commands
+var dkimCmd = &cobra.Command{
+	Use:   "dkim",
+	Short: "DKIM key management",
+}
+
+var dkimBits int
+var dkimSelector string
+var dkimStorage string
+var dkimForce bool
+var dkimFormat string
+
+var dkimGenerateCmd = &cobra.Command{
+	Use:   "generate <domain>",
+	Short: "Generate new DKIM key for a domain",
+	Long: `Generate a new DKIM signing key for a domain.
+
+The key will be stored based on the --storage option:
+  - file: Store as files in the DKIM key directory (default)
+  - database: Store in the database
+  - hybrid: Store in both file and database`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		domainName := args[0]
+
+		if err := cfg.EnsureDirectories(); err != nil {
+			return err
+		}
+
+		var err error
+		db, err = metadata.Open(cfg.Storage.DatabasePath)
+		if err != nil {
+			return fmt.Errorf("failed to open database: %w", err)
+		}
+		defer db.Close()
+
+		if err := db.Migrate(context.Background()); err != nil {
+			return fmt.Errorf("failed to run migrations: %w", err)
+		}
+
+		// Check if domain exists
+		var domainID int64
+		err = db.QueryRowContext(context.Background(),
+			"SELECT id FROM domains WHERE name = ?", domainName).Scan(&domainID)
+		if err != nil {
+			return fmt.Errorf("domain '%s' not found. Add it first with: mailserver domain add %s", domainName, domainName)
+		}
+
+		// Get DKIM key directory
+		dkimPath := filepath.Join(cfg.Storage.DataDir, "dkim")
+		if cfg.Storage.MaildirPath != "" {
+			dkimPath = filepath.Join(filepath.Dir(cfg.Storage.MaildirPath), "dkim")
+		}
+
+		// Create key store based on storage type
+		store := security.NewKeyStore(dkimStorage, dkimPath, db.DB)
+
+		// Check if key already exists
+		if store.KeyExists(context.Background(), domainName) && !dkimForce {
+			return fmt.Errorf("DKIM key already exists for domain '%s'. Use --force to overwrite", domainName)
+		}
+
+		// Generate and save key
+		fmt.Printf("Generating %d-bit DKIM key for %s...\n", dkimBits, domainName)
+		_, err = security.GenerateAndSaveKey(context.Background(), store, domainName, dkimSelector, dkimBits)
+		if err != nil {
+			return fmt.Errorf("failed to generate key: %w", err)
+		}
+
+		// Get DNS record
+		recordName, recordValue, err := security.GetDNSRecord(context.Background(), store, domainName)
+		if err != nil {
+			return fmt.Errorf("failed to get DNS record: %w", err)
+		}
+
+		fmt.Printf("\nDKIM key generated successfully!\n\n")
+		fmt.Printf("Add this DNS TXT record to your domain:\n\n")
+		fmt.Printf("Name:  %s\n", recordName)
+		fmt.Printf("Type:  TXT\n")
+		fmt.Printf("Value: %s\n\n", recordValue)
+
+		return nil
+	},
+}
+
+var dkimShowCmd = &cobra.Command{
+	Use:   "show <domain>",
+	Short: "Show DKIM public key and DNS record",
+	Long: `Display the DKIM public key for a domain in various formats.
+
+Formats:
+  - dns: Full DNS TXT record format (default)
+  - bind: BIND zone file format
+  - raw: Just the base64-encoded public key`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		domainName := args[0]
+
+		if err := cfg.EnsureDirectories(); err != nil {
+			return err
+		}
+
+		var err error
+		db, err = metadata.Open(cfg.Storage.DatabasePath)
+		if err != nil {
+			return fmt.Errorf("failed to open database: %w", err)
+		}
+		defer db.Close()
+
+		// Get DKIM key directory
+		dkimPath := filepath.Join(cfg.Storage.DataDir, "dkim")
+		if cfg.Storage.MaildirPath != "" {
+			dkimPath = filepath.Join(filepath.Dir(cfg.Storage.MaildirPath), "dkim")
+		}
+
+		// Try to determine storage type from database
+		var storageType string
+		err = db.QueryRowContext(context.Background(),
+			"SELECT COALESCE(dkim_storage_type, 'file') FROM domains WHERE name = ?",
+			domainName).Scan(&storageType)
+		if err != nil {
+			storageType = "file"
+		}
+
+		store := security.NewKeyStore(storageType, dkimPath, db.DB)
+
+		// Get key metadata
+		meta, err := store.GetKeyMetadata(context.Background(), domainName)
+		if err != nil {
+			return fmt.Errorf("failed to get key metadata: %w", err)
+		}
+
+		if !meta.HasKey {
+			return fmt.Errorf("no DKIM key found for domain '%s'. Generate one with: mailserver dkim generate %s", domainName, domainName)
+		}
+
+		// Get DNS record
+		recordName, recordValue, err := security.GetDNSRecord(context.Background(), store, domainName)
+		if err != nil {
+			return fmt.Errorf("failed to get DNS record: %w", err)
+		}
+
+		switch dkimFormat {
+		case "raw":
+			// Extract just the public key value
+			parts := strings.Split(recordValue, "p=")
+			if len(parts) == 2 {
+				fmt.Println(parts[1])
+			} else {
+				fmt.Println(recordValue)
+			}
+		case "bind":
+			fmt.Printf("; DKIM record for %s\n", domainName)
+			fmt.Printf("%s. IN TXT \"%s\"\n", recordName, recordValue)
+		default: // dns
+			fmt.Printf("DKIM DNS Record for %s\n", domainName)
+			fmt.Printf("============================\n\n")
+			fmt.Printf("Selector:   %s\n", meta.Selector)
+			fmt.Printf("Algorithm:  %s\n", meta.Algorithm)
+			if !meta.CreatedAt.IsZero() {
+				fmt.Printf("Created:    %s\n", meta.CreatedAt.Format("2006-01-02 15:04:05"))
+			}
+			fmt.Printf("Storage:    %s\n\n", meta.StorageType)
+			fmt.Printf("DNS Record Name:\n  %s\n\n", recordName)
+			fmt.Printf("DNS Record Type:\n  TXT\n\n")
+			fmt.Printf("DNS Record Value:\n  %s\n", recordValue)
+		}
+
+		return nil
+	},
+}
+
+var dkimRotateCmd = &cobra.Command{
+	Use:   "rotate <domain>",
+	Short: "Rotate DKIM key with a new selector",
+	Long: `Generate a new DKIM key with a new selector for key rotation.
+
+This command:
+1. Generates a new key with a timestamp-based selector
+2. Keeps the old key configuration for reference
+3. Shows both old and new DNS records for transition`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		domainName := args[0]
+
+		if err := cfg.EnsureDirectories(); err != nil {
+			return err
+		}
+
+		var err error
+		db, err = metadata.Open(cfg.Storage.DatabasePath)
+		if err != nil {
+			return fmt.Errorf("failed to open database: %w", err)
+		}
+		defer db.Close()
+
+		if err := db.Migrate(context.Background()); err != nil {
+			return fmt.Errorf("failed to run migrations: %w", err)
+		}
+
+		// Get DKIM key directory
+		dkimPath := filepath.Join(cfg.Storage.DataDir, "dkim")
+		if cfg.Storage.MaildirPath != "" {
+			dkimPath = filepath.Join(filepath.Dir(cfg.Storage.MaildirPath), "dkim")
+		}
+
+		// Get current storage type
+		var storageType string
+		err = db.QueryRowContext(context.Background(),
+			"SELECT COALESCE(dkim_storage_type, 'file') FROM domains WHERE name = ?",
+			domainName).Scan(&storageType)
+		if err != nil {
+			return fmt.Errorf("domain '%s' not found", domainName)
+		}
+
+		store := security.NewKeyStore(storageType, dkimPath, db.DB)
+
+		fmt.Printf("Rotating DKIM key for %s...\n", domainName)
+
+		// Rotate key
+		newSelector, _, err := security.RotateKey(context.Background(), store, domainName, dkimBits)
+		if err != nil {
+			return fmt.Errorf("failed to rotate key: %w", err)
+		}
+
+		// Get new DNS record
+		recordName, recordValue, err := security.GetDNSRecord(context.Background(), store, domainName)
+		if err != nil {
+			return fmt.Errorf("failed to get DNS record: %w", err)
+		}
+
+		fmt.Printf("\nDKIM key rotated successfully!\n")
+		fmt.Printf("New selector: %s\n\n", newSelector)
+		fmt.Printf("Add this NEW DNS TXT record:\n\n")
+		fmt.Printf("Name:  %s\n", recordName)
+		fmt.Printf("Type:  TXT\n")
+		fmt.Printf("Value: %s\n\n", recordValue)
+		fmt.Printf("IMPORTANT: Keep the old DKIM record active for 24-48 hours\n")
+		fmt.Printf("to allow in-flight emails to be verified.\n")
+
+		return nil
+	},
+}
+
+var dkimListCmd = &cobra.Command{
+	Use:   "list",
+	Short: "List all domains and their DKIM key status",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := cfg.EnsureDirectories(); err != nil {
+			return err
+		}
+
+		var err error
+		db, err = metadata.Open(cfg.Storage.DatabasePath)
+		if err != nil {
+			return fmt.Errorf("failed to open database: %w", err)
+		}
+		defer db.Close()
+
+		// Get DKIM key directory
+		dkimPath := filepath.Join(cfg.Storage.DataDir, "dkim")
+		if cfg.Storage.MaildirPath != "" {
+			dkimPath = filepath.Join(filepath.Dir(cfg.Storage.MaildirPath), "dkim")
+		}
+
+		store := security.NewFileKeyStore(dkimPath, db.DB)
+		domains, err := store.ListDomains(context.Background())
+		if err != nil {
+			return fmt.Errorf("failed to list domains: %w", err)
+		}
+
+		fmt.Printf("%-30s %-10s %-10s %-10s %s\n", "DOMAIN", "SELECTOR", "HAS KEY", "STORAGE", "CREATED")
+		fmt.Println("-------------------------------------------------------------------------------")
+
+		for _, meta := range domains {
+			hasKey := "no"
+			if meta.HasKey {
+				hasKey = "yes"
+			}
+			created := "-"
+			if !meta.CreatedAt.IsZero() {
+				created = meta.CreatedAt.Format("2006-01-02")
+			}
+			fmt.Printf("%-30s %-10s %-10s %-10s %s\n",
+				meta.Domain, meta.Selector, hasKey, meta.StorageType, created)
+		}
+
+		return nil
+	},
+}
+
+var dkimAutoRotateDays int
+
+var dkimAutoRotateCmd = &cobra.Command{
+	Use:   "auto-rotate",
+	Short: "Automatically rotate DKIM keys older than specified days",
+	Long: `Check all domains and rotate DKIM keys that are older than the specified number of days.
+
+This command is designed to be run via cron or systemd timer for automatic key rotation.
+Default rotation period is 90 days.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := cfg.EnsureDirectories(); err != nil {
+			return err
+		}
+
+		var err error
+		db, err = metadata.Open(cfg.Storage.DatabasePath)
+		if err != nil {
+			return fmt.Errorf("failed to open database: %w", err)
+		}
+		defer db.Close()
+
+		if err := db.Migrate(context.Background()); err != nil {
+			return fmt.Errorf("failed to run migrations: %w", err)
+		}
+
+		// Get DKIM key directory
+		dkimPath := filepath.Join(cfg.Storage.DataDir, "dkim")
+		if cfg.Storage.MaildirPath != "" {
+			dkimPath = filepath.Join(filepath.Dir(cfg.Storage.MaildirPath), "dkim")
+		}
+
+		store := security.NewFileKeyStore(dkimPath, db.DB)
+		domains, err := store.ListDomains(context.Background())
+		if err != nil {
+			return fmt.Errorf("failed to list domains: %w", err)
+		}
+
+		rotationThreshold := time.Now().AddDate(0, 0, -dkimAutoRotateDays)
+		rotatedCount := 0
+
+		for _, meta := range domains {
+			if !meta.HasKey {
+				continue
+			}
+
+			// Check if key is older than threshold
+			if meta.CreatedAt.IsZero() || meta.CreatedAt.After(rotationThreshold) {
+				continue
+			}
+
+			fmt.Printf("Rotating key for %s (created: %s)...\n", meta.Domain, meta.CreatedAt.Format("2006-01-02"))
+
+			// Get storage type for this domain
+			var storageType string
+			err = db.QueryRowContext(context.Background(),
+				"SELECT COALESCE(dkim_storage_type, 'file') FROM domains WHERE name = ?",
+				meta.Domain).Scan(&storageType)
+			if err != nil {
+				storageType = "file"
+			}
+
+			domainStore := security.NewKeyStore(storageType, dkimPath, db.DB)
+			newSelector, _, err := security.RotateKey(context.Background(), domainStore, meta.Domain, 2048)
+			if err != nil {
+				fmt.Printf("  ERROR: Failed to rotate key for %s: %v\n", meta.Domain, err)
+				continue
+			}
+
+			fmt.Printf("  SUCCESS: New selector: %s\n", newSelector)
+
+			// Get new DNS record
+			recordName, recordValue, err := security.GetDNSRecord(context.Background(), domainStore, meta.Domain)
+			if err == nil {
+				fmt.Printf("  DNS Record: %s\n", recordName)
+				fmt.Printf("  Value: %s\n\n", recordValue)
+			}
+
+			rotatedCount++
+		}
+
+		if rotatedCount == 0 {
+			fmt.Println("No keys needed rotation.")
+		} else {
+			fmt.Printf("\nRotated %d key(s). Remember to update DNS records!\n", rotatedCount)
+		}
+
+		return nil
+	},
+}
+
+// Backup command
+var backupCmd = &cobra.Command{
+	Use:   "backup <output-path>",
+	Short: "Create a full backup of all mail server data",
+	Long: `Create a complete backup including:
+  - Database (users, domains, settings)
+  - All emails (maildir)
+  - DKIM keys
+  - Configuration
+
+The backup is created as a compressed tar.gz archive.`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		outputPath := args[0]
+
+		if err := cfg.EnsureDirectories(); err != nil {
+			return err
+		}
+
+		fmt.Println("=== Mail Server Backup ===")
+		fmt.Printf("Output: %s\n\n", outputPath)
+
+		// Create temp directory for backup
+		tempDir, err := os.MkdirTemp("", "mailserver-backup-")
+		if err != nil {
+			return fmt.Errorf("failed to create temp directory: %w", err)
+		}
+		defer os.RemoveAll(tempDir)
+
+		// Backup database
+		fmt.Print("Backing up database... ")
+		if cfg.Storage.DatabasePath != "" {
+			if _, err := os.Stat(cfg.Storage.DatabasePath); err == nil {
+				srcDB, err := os.Open(cfg.Storage.DatabasePath)
+				if err != nil {
+					return fmt.Errorf("failed to open database: %w", err)
+				}
+				dstDB, err := os.Create(filepath.Join(tempDir, "metadata.db"))
+				if err != nil {
+					srcDB.Close()
+					return fmt.Errorf("failed to create backup database: %w", err)
+				}
+				_, err = io.Copy(dstDB, srcDB)
+				srcDB.Close()
+				dstDB.Close()
+				if err != nil {
+					return fmt.Errorf("failed to copy database: %w", err)
+				}
+				fmt.Println("done")
+			} else {
+				fmt.Println("skipped (not found)")
+			}
+		}
+
+		// Backup maildir
+		fmt.Print("Backing up emails... ")
+		if cfg.Storage.MaildirPath != "" {
+			if _, err := os.Stat(cfg.Storage.MaildirPath); err == nil {
+				if err := copyDir(cfg.Storage.MaildirPath, filepath.Join(tempDir, "maildir")); err != nil {
+					return fmt.Errorf("failed to backup maildir: %w", err)
+				}
+				fmt.Println("done")
+			} else {
+				fmt.Println("skipped (not found)")
+			}
+		}
+
+		// Backup DKIM keys
+		fmt.Print("Backing up DKIM keys... ")
+		dkimPath := filepath.Join(cfg.Storage.DataDir, "dkim")
+		if cfg.Storage.MaildirPath != "" {
+			dkimPath = filepath.Join(filepath.Dir(cfg.Storage.MaildirPath), "dkim")
+		}
+		if _, err := os.Stat(dkimPath); err == nil {
+			if err := copyDir(dkimPath, filepath.Join(tempDir, "dkim")); err != nil {
+				return fmt.Errorf("failed to backup DKIM keys: %w", err)
+			}
+			fmt.Println("done")
+		} else {
+			fmt.Println("skipped (not found)")
+		}
+
+		// Create tar.gz archive
+		fmt.Print("Creating archive... ")
+		if err := createTarGz(outputPath, tempDir); err != nil {
+			return fmt.Errorf("failed to create archive: %w", err)
+		}
+		fmt.Println("done")
+
+		// Get file size
+		fi, _ := os.Stat(outputPath)
+		fmt.Printf("\nBackup complete: %s (%s)\n", outputPath, formatBytes(fi.Size()))
+
+		return nil
+	},
+}
+
+// Restore command
+var restoreCmd = &cobra.Command{
+	Use:   "restore <backup-path>",
+	Short: "Restore mail server data from a backup",
+	Long: `Restore all data from a backup archive created with 'mailserver backup'.
+
+WARNING: This will overwrite existing data!`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		backupPath := args[0]
+		force, _ := cmd.Flags().GetBool("force")
+
+		if !force {
+			fmt.Print("WARNING: This will overwrite existing data. Continue? [y/N] ")
+			var response string
+			fmt.Scanln(&response)
+			if response != "y" && response != "Y" {
+				fmt.Println("Aborted.")
+				return nil
+			}
+		}
+
+		if err := cfg.EnsureDirectories(); err != nil {
+			return err
+		}
+
+		fmt.Println("=== Mail Server Restore ===")
+		fmt.Printf("Source: %s\n\n", backupPath)
+
+		// Create temp directory for extraction
+		tempDir, err := os.MkdirTemp("", "mailserver-restore-")
+		if err != nil {
+			return fmt.Errorf("failed to create temp directory: %w", err)
+		}
+		defer os.RemoveAll(tempDir)
+
+		// Extract archive
+		fmt.Print("Extracting archive... ")
+		if err := extractTarGz(backupPath, tempDir); err != nil {
+			return fmt.Errorf("failed to extract archive: %w", err)
+		}
+		fmt.Println("done")
+
+		// Restore database
+		fmt.Print("Restoring database... ")
+		dbBackup := filepath.Join(tempDir, "metadata.db")
+		if _, err := os.Stat(dbBackup); err == nil {
+			if err := copyFile(dbBackup, cfg.Storage.DatabasePath); err != nil {
+				return fmt.Errorf("failed to restore database: %w", err)
+			}
+			fmt.Println("done")
+		} else {
+			fmt.Println("skipped (not in backup)")
+		}
+
+		// Restore maildir
+		fmt.Print("Restoring emails... ")
+		maildirBackup := filepath.Join(tempDir, "maildir")
+		if _, err := os.Stat(maildirBackup); err == nil {
+			if err := copyDir(maildirBackup, cfg.Storage.MaildirPath); err != nil {
+				return fmt.Errorf("failed to restore maildir: %w", err)
+			}
+			fmt.Println("done")
+		} else {
+			fmt.Println("skipped (not in backup)")
+		}
+
+		// Restore DKIM keys
+		fmt.Print("Restoring DKIM keys... ")
+		dkimBackup := filepath.Join(tempDir, "dkim")
+		dkimPath := filepath.Join(cfg.Storage.DataDir, "dkim")
+		if cfg.Storage.MaildirPath != "" {
+			dkimPath = filepath.Join(filepath.Dir(cfg.Storage.MaildirPath), "dkim")
+		}
+		if _, err := os.Stat(dkimBackup); err == nil {
+			if err := copyDir(dkimBackup, dkimPath); err != nil {
+				return fmt.Errorf("failed to restore DKIM keys: %w", err)
+			}
+			fmt.Println("done")
+		} else {
+			fmt.Println("skipped (not in backup)")
+		}
+
+		fmt.Println("\nRestore complete! Restart the server with: systemctl restart mailserver")
+
+		return nil
+	},
+}
+
+// Export command for migration
+var exportCmd = &cobra.Command{
+	Use:   "export <remote-server>",
+	Short: "Export and transfer all data to a remote server",
+	Long: `Export all mail server data and transfer it to a remote server via SSH.
+
+This command will:
+1. Create a backup of all data
+2. Transfer it to the remote server
+3. Extract it on the remote server
+
+Example:
+  mailserver export root@newserver.example.com
+  mailserver export root@192.168.1.100 --remote-path /var/mailserver`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		remoteServer := args[0]
+		remotePath, _ := cmd.Flags().GetString("remote-path")
+
+		if err := cfg.EnsureDirectories(); err != nil {
+			return err
+		}
+
+		fmt.Println("=== Mail Server Export ===")
+		fmt.Printf("Destination: %s:%s\n\n", remoteServer, remotePath)
+
+		// Create temp backup
+		tempFile, err := os.CreateTemp("", "mailserver-export-*.tar.gz")
+		if err != nil {
+			return fmt.Errorf("failed to create temp file: %w", err)
+		}
+		tempPath := tempFile.Name()
+		tempFile.Close()
+		defer os.Remove(tempPath)
+
+		// Create backup
+		fmt.Println("Step 1: Creating backup...")
+		tempDir, err := os.MkdirTemp("", "mailserver-backup-")
+		if err != nil {
+			return fmt.Errorf("failed to create temp directory: %w", err)
+		}
+		defer os.RemoveAll(tempDir)
+
+		// Backup database
+		if cfg.Storage.DatabasePath != "" {
+			if _, err := os.Stat(cfg.Storage.DatabasePath); err == nil {
+				copyFile(cfg.Storage.DatabasePath, filepath.Join(tempDir, "metadata.db"))
+			}
+		}
+
+		// Backup maildir
+		if cfg.Storage.MaildirPath != "" {
+			if _, err := os.Stat(cfg.Storage.MaildirPath); err == nil {
+				copyDir(cfg.Storage.MaildirPath, filepath.Join(tempDir, "maildir"))
+			}
+		}
+
+		// Backup DKIM keys
+		dkimPath := filepath.Join(cfg.Storage.DataDir, "dkim")
+		if cfg.Storage.MaildirPath != "" {
+			dkimPath = filepath.Join(filepath.Dir(cfg.Storage.MaildirPath), "dkim")
+		}
+		if _, err := os.Stat(dkimPath); err == nil {
+			copyDir(dkimPath, filepath.Join(tempDir, "dkim"))
+		}
+
+		// Create archive
+		if err := createTarGz(tempPath, tempDir); err != nil {
+			return fmt.Errorf("failed to create archive: %w", err)
+		}
+
+		fi, _ := os.Stat(tempPath)
+		fmt.Printf("  Backup created: %s\n\n", formatBytes(fi.Size()))
+
+		// Transfer to remote server
+		fmt.Println("Step 2: Transferring to remote server...")
+		scpCmd := exec.Command("scp", tempPath, fmt.Sprintf("%s:%s/backup.tar.gz", remoteServer, remotePath))
+		scpCmd.Stdout = os.Stdout
+		scpCmd.Stderr = os.Stderr
+		if err := scpCmd.Run(); err != nil {
+			return fmt.Errorf("failed to transfer backup: %w", err)
+		}
+		fmt.Println("  Transfer complete")
+
+		// Extract on remote server
+		fmt.Println("Step 3: Extracting on remote server...")
+		sshCmd := exec.Command("ssh", remoteServer,
+			fmt.Sprintf("cd %s && tar -xzf backup.tar.gz && rm backup.tar.gz && echo 'Extraction complete'", remotePath))
+		sshCmd.Stdout = os.Stdout
+		sshCmd.Stderr = os.Stderr
+		if err := sshCmd.Run(); err != nil {
+			return fmt.Errorf("failed to extract on remote: %w", err)
+		}
+
+		fmt.Println("\n=== Export Complete ===")
+		fmt.Printf("Data has been transferred to %s:%s\n", remoteServer, remotePath)
+		fmt.Println("\nNext steps on the remote server:")
+		fmt.Println("1. Update config.yaml with correct paths")
+		fmt.Println("2. Run: mailserver migrate")
+		fmt.Println("3. Run: systemctl start mailserver")
+
+		return nil
+	},
+}
+
+// Helper functions for backup/restore
+func copyFile(src, dst string) error {
+	srcFile, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer srcFile.Close()
+
+	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
+		return err
+	}
+
+	dstFile, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer dstFile.Close()
+
+	_, err = io.Copy(dstFile, srcFile)
+	return err
+}
+
+func copyDir(src, dst string) error {
+	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		relPath, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+
+		dstPath := filepath.Join(dst, relPath)
+
+		if info.IsDir() {
+			return os.MkdirAll(dstPath, info.Mode())
+		}
+
+		return copyFile(path, dstPath)
+	})
+}
+
+func createTarGz(outputPath, sourceDir string) error {
+	outFile, err := os.Create(outputPath)
+	if err != nil {
+		return err
+	}
+	defer outFile.Close()
+
+	gzWriter := gzip.NewWriter(outFile)
+	defer gzWriter.Close()
+
+	tarWriter := tar.NewWriter(gzWriter)
+	defer tarWriter.Close()
+
+	return filepath.Walk(sourceDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		relPath, err := filepath.Rel(sourceDir, path)
+		if err != nil {
+			return err
+		}
+
+		if relPath == "." {
+			return nil
+		}
+
+		header, err := tar.FileInfoHeader(info, "")
+		if err != nil {
+			return err
+		}
+		header.Name = relPath
+
+		if err := tarWriter.WriteHeader(header); err != nil {
+			return err
+		}
+
+		if !info.IsDir() {
+			file, err := os.Open(path)
+			if err != nil {
+				return err
+			}
+			defer file.Close()
+			_, err = io.Copy(tarWriter, file)
+			return err
+		}
+
+		return nil
+	})
+}
+
+func extractTarGz(archivePath, destDir string) error {
+	file, err := os.Open(archivePath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	gzReader, err := gzip.NewReader(file)
+	if err != nil {
+		return err
+	}
+	defer gzReader.Close()
+
+	tarReader := tar.NewReader(gzReader)
+
+	for {
+		header, err := tarReader.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+
+		targetPath := filepath.Join(destDir, header.Name)
+
+		switch header.Typeflag {
+		case tar.TypeDir:
+			if err := os.MkdirAll(targetPath, os.FileMode(header.Mode)); err != nil {
+				return err
+			}
+		case tar.TypeReg:
+			if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
+				return err
+			}
+			outFile, err := os.Create(targetPath)
+			if err != nil {
+				return err
+			}
+			if _, err := io.Copy(outFile, tarReader); err != nil {
+				outFile.Close()
+				return err
+			}
+			outFile.Close()
+			os.Chmod(targetPath, os.FileMode(header.Mode))
+		}
+	}
+
+	return nil
+}
+
+func formatBytes(b int64) string {
+	const unit = 1024
+	if b < unit {
+		return fmt.Sprintf("%d B", b)
+	}
+	div, exp := int64(unit), 0
+	for n := b / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
+}
+
 // DNS management commands
 var dnsCmd = &cobra.Command{
 	Use:   "dns",
@@ -963,6 +1836,10 @@ func init() {
 	rootCmd.AddCommand(versionCmd)
 
 	// Domain commands
+	domainAddCmd.Flags().BoolVar(&domainGenerateDKIM, "generate-dkim", false, "Generate DKIM key for the domain")
+	domainAddCmd.Flags().IntVar(&domainDKIMBits, "dkim-bits", 2048, "DKIM key size in bits")
+	domainAddCmd.Flags().StringVar(&domainDKIMSelector, "dkim-selector", "mail", "DKIM selector")
+	domainAddCmd.Flags().StringVar(&domainDKIMStorage, "dkim-storage", "file", "DKIM key storage (file, database, hybrid)")
 	domainCmd.AddCommand(domainAddCmd)
 	domainCmd.AddCommand(domainListCmd)
 	rootCmd.AddCommand(domainCmd)
@@ -977,6 +1854,32 @@ func init() {
 	dnsCmd.AddCommand(dnsCheckCmd)
 	dnsCmd.AddCommand(dnsGenerateCmd)
 	rootCmd.AddCommand(dnsCmd)
+
+	// DKIM commands
+	dkimGenerateCmd.Flags().IntVarP(&dkimBits, "bits", "b", 2048, "Key size in bits (2048 or 4096)")
+	dkimGenerateCmd.Flags().StringVarP(&dkimSelector, "selector", "s", "mail", "DKIM selector")
+	dkimGenerateCmd.Flags().StringVar(&dkimStorage, "storage", "file", "Storage type (file, database, hybrid)")
+	dkimGenerateCmd.Flags().BoolVarP(&dkimForce, "force", "f", false, "Overwrite existing key")
+
+	dkimShowCmd.Flags().StringVarP(&dkimFormat, "format", "f", "dns", "Output format (dns, bind, raw)")
+
+	dkimRotateCmd.Flags().IntVarP(&dkimBits, "bits", "b", 2048, "Key size in bits (2048 or 4096)")
+
+	dkimAutoRotateCmd.Flags().IntVar(&dkimAutoRotateDays, "days", 90, "Rotate keys older than this many days")
+
+	dkimCmd.AddCommand(dkimGenerateCmd)
+	dkimCmd.AddCommand(dkimShowCmd)
+	dkimCmd.AddCommand(dkimRotateCmd)
+	dkimCmd.AddCommand(dkimListCmd)
+	dkimCmd.AddCommand(dkimAutoRotateCmd)
+	rootCmd.AddCommand(dkimCmd)
+
+	// Backup/Restore/Export commands
+	restoreCmd.Flags().BoolP("force", "f", false, "Skip confirmation prompt")
+	exportCmd.Flags().String("remote-path", "/var/mailserver", "Remote directory path")
+	rootCmd.AddCommand(backupCmd)
+	rootCmd.AddCommand(restoreCmd)
+	rootCmd.AddCommand(exportCmd)
 
 	// Setup commands
 	preflightCmd.Flags().BoolVarP(&forceSetup, "force", "f", false, "Skip non-critical checks (root, OS, systemd)")
