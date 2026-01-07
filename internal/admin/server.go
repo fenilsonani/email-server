@@ -159,6 +159,7 @@ func (s *Server) Start(listen string) error {
 	mux.HandleFunc("/admin/domains/dkim/generate/", s.withAuth(s.handleDKIMGenerate))
 	mux.HandleFunc("/admin/domains/dkim/show/", s.withAuth(s.handleDKIMShow))
 	mux.HandleFunc("/admin/domains/dkim/rotate/", s.withAuth(s.handleDKIMRotate))
+	mux.HandleFunc("/admin/domains/dns/verify/", s.withAuth(s.handleDNSVerify))
 	mux.HandleFunc("/admin/domains/dns/", s.withAuth(s.handleDomainDNS))
 	mux.HandleFunc("/admin/sieve/", s.withAuth(s.handleSieve))
 	mux.HandleFunc("/admin/logs/auth", s.withAuth(s.handleAuthLogs))

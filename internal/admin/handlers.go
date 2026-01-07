@@ -1008,6 +1008,200 @@ func (s *Server) handleDomainDNS(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleDNSVerify performs actual DNS lookups to verify domain configuration
+func (s *Server) handleDNSVerify(w http.ResponseWriter, r *http.Request) {
+	// Extract domain ID from path: /admin/domains/dns/verify/{id}
+	parts := strings.Split(r.URL.Path, "/")
+	if len(parts) < 6 {
+		http.Error(w, "Invalid path", http.StatusBadRequest)
+		return
+	}
+	domainID, err := strconv.ParseInt(parts[5], 10, 64)
+	if err != nil {
+		http.Error(w, "Invalid domain ID format", http.StatusBadRequest)
+		return
+	}
+
+	// Get domain info
+	var domainName, selector string
+	var storageType sql.NullString
+	err = s.db.QueryRowContext(r.Context(),
+		"SELECT name, COALESCE(dkim_selector, 'mail'), dkim_storage_type FROM domains WHERE id = ?",
+		domainID).Scan(&domainName, &selector, &storageType)
+	if err != nil {
+		http.Error(w, "Domain not found", http.StatusNotFound)
+		return
+	}
+
+	storage := "file"
+	if storageType.Valid && storageType.String != "" {
+		storage = storageType.String
+	}
+
+	// Get expected values
+	dkimPath := s.getDKIMPath()
+	store := security.NewKeyStore(storage, dkimPath, s.db)
+	records, _ := security.GetAllDNSRecords(r.Context(), store, domainName, s.config.Server.Hostname)
+
+	// Verify MX record
+	mxResult := s.verifyMXRecord(domainName, s.config.Server.Hostname)
+
+	// Verify SPF record
+	spfResult := s.verifySPFRecord(domainName)
+
+	// Verify DKIM record
+	dkimResult := s.verifyDKIMRecord(domainName, selector, records.DKIM)
+
+	// Verify DMARC record
+	dmarcResult := s.verifyDMARCRecord(domainName)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"mx":     mxResult,
+		"spf":    spfResult,
+		"dkim":   dkimResult,
+		"dmarc":  dmarcResult,
+		"domain": domainName,
+	})
+}
+
+// verifyMXRecord checks if MX record points to the correct hostname
+func (s *Server) verifyMXRecord(domain, expectedHost string) map[string]interface{} {
+	result := map[string]interface{}{
+		"ok":    false,
+		"found": "",
+	}
+
+	mxRecords, err := net.LookupMX(domain)
+	if err != nil || len(mxRecords) == 0 {
+		return result
+	}
+
+	// Check if any MX record matches our hostname
+	var foundHosts []string
+	for _, mx := range mxRecords {
+		host := strings.TrimSuffix(mx.Host, ".")
+		foundHosts = append(foundHosts, host)
+		if strings.EqualFold(host, expectedHost) || strings.EqualFold(host, expectedHost+".") {
+			result["ok"] = true
+		}
+	}
+	result["found"] = strings.Join(foundHosts, ", ")
+
+	return result
+}
+
+// verifySPFRecord checks if SPF record exists and contains expected values
+func (s *Server) verifySPFRecord(domain string) map[string]interface{} {
+	result := map[string]interface{}{
+		"ok":    false,
+		"found": "",
+	}
+
+	txtRecords, err := net.LookupTXT(domain)
+	if err != nil {
+		return result
+	}
+
+	for _, txt := range txtRecords {
+		if strings.HasPrefix(txt, "v=spf1") {
+			result["found"] = txt
+			// Check if it has mx or the hostname
+			if strings.Contains(txt, "mx") || strings.Contains(txt, s.config.Server.Hostname) {
+				result["ok"] = true
+			}
+			return result
+		}
+	}
+
+	return result
+}
+
+// verifyDKIMRecord checks if DKIM record matches the expected public key
+func (s *Server) verifyDKIMRecord(domain, selector, expectedDKIM string) map[string]interface{} {
+	result := map[string]interface{}{
+		"ok":    false,
+		"found": "",
+	}
+
+	// No DKIM key generated yet
+	if expectedDKIM == "" || strings.HasPrefix(expectedDKIM, "No DKIM") {
+		result["found"] = "No DKIM key generated"
+		return result
+	}
+
+	dkimDomain := selector + "._domainkey." + domain
+	txtRecords, err := net.LookupTXT(dkimDomain)
+	if err != nil {
+		return result
+	}
+
+	for _, txt := range txtRecords {
+		if strings.Contains(txt, "v=DKIM1") {
+			result["found"] = txt
+			// Check if the public key portion matches
+			// Extract just the key part for comparison
+			if strings.Contains(txt, "p=") && strings.Contains(expectedDKIM, "p=") {
+				// Get the p= value from both
+				foundKey := extractDKIMKey(txt)
+				expectedKey := extractDKIMKey(expectedDKIM)
+				if foundKey != "" && foundKey == expectedKey {
+					result["ok"] = true
+				}
+			}
+			return result
+		}
+	}
+
+	return result
+}
+
+// extractDKIMKey extracts the public key value from a DKIM record
+func extractDKIMKey(record string) string {
+	// Remove spaces and newlines
+	record = strings.ReplaceAll(record, " ", "")
+	record = strings.ReplaceAll(record, "\n", "")
+	record = strings.ReplaceAll(record, "\t", "")
+
+	// Find p= and extract the key
+	pIdx := strings.Index(record, "p=")
+	if pIdx == -1 {
+		return ""
+	}
+
+	key := record[pIdx+2:]
+	// Key ends at ; or end of string
+	if semiIdx := strings.Index(key, ";"); semiIdx != -1 {
+		key = key[:semiIdx]
+	}
+
+	return key
+}
+
+// verifyDMARCRecord checks if DMARC record exists
+func (s *Server) verifyDMARCRecord(domain string) map[string]interface{} {
+	result := map[string]interface{}{
+		"ok":    false,
+		"found": "",
+	}
+
+	dmarcDomain := "_dmarc." + domain
+	txtRecords, err := net.LookupTXT(dmarcDomain)
+	if err != nil {
+		return result
+	}
+
+	for _, txt := range txtRecords {
+		if strings.HasPrefix(txt, "v=DMARC1") {
+			result["found"] = txt
+			result["ok"] = true
+			return result
+		}
+	}
+
+	return result
+}
+
 // getDKIMPath returns the path for DKIM keys
 func (s *Server) getDKIMPath() string {
 	if s.config.Storage.DataDir != "" {
