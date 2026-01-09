@@ -663,7 +663,8 @@ func (s *Server) handleDeliveryLogs(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDomainAdd(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
 		s.renderTemplate(w, "domain_form.html", map[string]interface{}{
-			"Title": "Add Domain",
+			"Title":     "Add Domain",
+			"CSRFToken": w.Header().Get("X-CSRF-Token"),
 		})
 		return
 	}
@@ -679,8 +680,10 @@ func (s *Server) handleDomainAdd(w http.ResponseWriter, r *http.Request) {
 	// Validate domain name
 	if err := validation.Domain(name); err != nil {
 		s.renderTemplate(w, "domain_form.html", map[string]interface{}{
-			"Title": "Add Domain",
-			"Error": err.Error(),
+			"Title":     "Add Domain",
+			"Error":     err.Error(),
+			"Domain":    name,
+			"CSRFToken": w.Header().Get("X-CSRF-Token"),
 		})
 		return
 	}
@@ -690,8 +693,10 @@ func (s *Server) handleDomainAdd(w http.ResponseWriter, r *http.Request) {
 	err := s.db.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM domains WHERE name = ?", name).Scan(&exists)
 	if err == nil && exists > 0 {
 		s.renderTemplate(w, "domain_form.html", map[string]interface{}{
-			"Title": "Add Domain",
-			"Error": "Domain already exists",
+			"Title":     "Add Domain",
+			"Error":     "Domain already exists",
+			"Domain":    name,
+			"CSRFToken": w.Header().Get("X-CSRF-Token"),
 		})
 		return
 	}
@@ -719,8 +724,10 @@ func (s *Server) handleDomainAdd(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.logger.ErrorContext(r.Context(), "Failed to create domain", err)
 		s.renderTemplate(w, "domain_form.html", map[string]interface{}{
-			"Title": "Add Domain",
-			"Error": "Failed to create domain. Check server logs for details.",
+			"Title":     "Add Domain",
+			"Error":     "Failed to create domain. Check server logs for details.",
+			"Domain":    name,
+			"CSRFToken": w.Header().Get("X-CSRF-Token"),
 		})
 		return
 	}
