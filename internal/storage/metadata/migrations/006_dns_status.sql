@@ -11,3 +11,6 @@ ALTER TABLE domains ADD COLUMN dns_status TEXT DEFAULT 'pending';
 
 -- Index for quick filtering by DNS status
 CREATE INDEX IF NOT EXISTS idx_domains_dns_status ON domains(dns_status);
+
+-- Record migration
+INSERT INTO schema_migrations (version) VALUES (6);
