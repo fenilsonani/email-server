@@ -1,0 +1,160 @@
+<div class="page-header">
+    <h1>Two-Factor Authentication</h1>
+</div>
+
+{{if .Success}}
+<div class="alert alert-success">{{.Success}}</div>
+{{end}}
+
+{{if .Error}}
+<div class="alert alert-danger">{{.Error}}</div>
+{{end}}
+
+{{if .Enabled}}
+<!-- 2FA is currently enabled -->
+<div class="card">
+    <div class="card-header">
+        <h3>2FA Status: <span style="color: #16a34a;">Enabled</span></h3>
+    </div>
+    <div class="card-body">
+        <p style="margin-bottom: 1rem;">
+            Two-factor authentication is currently enabled on your account.
+            You'll need to enter a code from your authenticator app when logging in from new devices.
+        </p>
+
+        <div class="alert" style="background: #fef3c7; color: #92400e; margin-bottom: 1rem;">
+            <strong>Warning:</strong> Disabling 2FA will remove this extra layer of security from your account.
+        </div>
+
+        <form method="POST" action="/admin/2fa/setup" onsubmit="return confirm('Are you sure you want to disable 2FA?')">
+            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+            <input type="hidden" name="action" value="disable">
+
+            <div class="form-group">
+                <label for="code">Enter current 2FA code to disable:</label>
+                <input type="text" id="code" name="code" class="form-control"
+                       pattern="[0-9]{6}" maxlength="6" inputmode="numeric"
+                       placeholder="000000" required style="max-width: 200px;">
+            </div>
+
+            <button type="submit" class="btn btn-danger">Disable 2FA</button>
+        </form>
+    </div>
+</div>
+
+{{else}}
+<!-- 2FA setup -->
+<div class="card">
+    <div class="card-header">
+        <h3>Set Up Two-Factor Authentication</h3>
+    </div>
+    <div class="card-body">
+        <p style="margin-bottom: 1.5rem;">
+            Add an extra layer of security to your account by requiring a verification code in addition to your password.
+        </p>
+
+        <div class="setup-steps">
+            <div class="step">
+                <h4>Step 1: Install an Authenticator App</h4>
+                <p>Download one of these apps on your phone:</p>
+                <ul style="margin: 0.5rem 0 1rem 1.5rem;">
+                    <li>Google Authenticator</li>
+                    <li>Microsoft Authenticator</li>
+                    <li>Authy</li>
+                    <li>1Password</li>
+                </ul>
+            </div>
+
+            <div class="step">
+                <h4>Step 2: Scan QR Code or Enter Key</h4>
+                <div style="display: flex; gap: 2rem; flex-wrap: wrap; margin: 1rem 0;">
+                    <div style="text-align: center;">
+                        <div id="qrcode" style="background: white; padding: 1rem; border-radius: 8px; display: inline-block;"></div>
+                        <p style="margin-top: 0.5rem; color: #64748b; font-size: 0.875rem;">Scan with your app</p>
+                    </div>
+                    <div style="flex: 1; min-width: 200px;">
+                        <p style="margin-bottom: 0.5rem;"><strong>Or enter this key manually:</strong></p>
+                        <div style="background: #f1f5f9; padding: 1rem; border-radius: 6px; font-family: monospace; font-size: 1.1rem; word-break: break-all;">
+                            {{.Secret}}
+                        </div>
+                        <button type="button" class="btn btn-secondary" style="margin-top: 0.5rem;" onclick="copySecret()">
+                            Copy Key
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="step">
+                <h4>Step 3: Verify and Enable</h4>
+                <form method="POST" action="/admin/2fa/setup">
+                    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+                    <input type="hidden" name="action" value="enable">
+
+                    <div class="form-group">
+                        <label for="code">Enter the 6-digit code from your app:</label>
+                        <input type="text" id="code" name="code" class="form-control"
+                               pattern="[0-9]{6}" maxlength="6" inputmode="numeric"
+                               placeholder="000000" required style="max-width: 200px; font-size: 1.25rem; letter-spacing: 0.25em;">
+                    </div>
+
+                    <button type="submit" class="btn btn-primary">Enable 2FA</button>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{{end}}
+
+<style>
+.setup-steps .step {
+    margin-bottom: 1.5rem;
+    padding-bottom: 1.5rem;
+    border-bottom: 1px solid #e2e8f0;
+}
+.setup-steps .step:last-child {
+    border-bottom: none;
+    margin-bottom: 0;
+    padding-bottom: 0;
+}
+.setup-steps h4 {
+    color: #1e40af;
+    margin-bottom: 0.5rem;
+}
+.btn-secondary {
+    background: #64748b;
+    color: white;
+    border: none;
+    padding: 0.5rem 1rem;
+    border-radius: 6px;
+    cursor: pointer;
+}
+.btn-secondary:hover {
+    background: #475569;
+}
+.alert-success {
+    background: #dcfce7;
+    color: #16a34a;
+    padding: 0.75rem;
+    border-radius: 6px;
+    margin-bottom: 1rem;
+}
+</style>
+
+<script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
+<script>
+{{if not .Enabled}}
+// Generate QR code
+document.addEventListener('DOMContentLoaded', function() {
+    var qr = qrcode(0, 'M');
+    qr.addData('{{.QRCodeURL}}');
+    qr.make();
+    document.getElementById('qrcode').innerHTML = qr.createImgTag(5, 0);
+});
+
+function copySecret() {
+    navigator.clipboard.writeText('{{.Secret}}').then(function() {
+        alert('Secret key copied to clipboard!');
+    });
+}
+{{end}}
+</script>

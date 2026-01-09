@@ -124,6 +124,14 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check if 2FA is required
+	if s.needs2FAVerification(r, user.ID) {
+		// Set pending 2FA session and redirect to verification
+		s.setPending2FA(w, r, user.ID, username)
+		http.Redirect(w, r, "/admin/2fa/verify", http.StatusSeeOther)
+		return
+	}
+
 	// Success - clear rate limit for this IP
 	s.rateLimiter.RecordSuccess(clientIP)
 

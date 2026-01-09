@@ -74,6 +74,7 @@ func NewServer(cfg *config.Config, db *sql.DB, authenticator *auth.Authenticator
 		"dns_check.html",
 		"test_email.html",
 		"system.html",
+		"2fa_setup.html",
 	}
 
 	for _, page := range pages {
@@ -105,6 +106,17 @@ func NewServer(cfg *config.Config, db *sql.DB, authenticator *auth.Authenticator
 		return nil, fmt.Errorf("failed to parse login template: %w", err)
 	}
 	templates["login.html"] = loginTmpl
+
+	// 2FA verify page is standalone (no base layout)
+	verifyContent, err := templatesFS.ReadFile("templates/2fa_verify.html")
+	if err != nil {
+		return nil, fmt.Errorf("failed to read 2fa_verify template: %w", err)
+	}
+	verifyTmpl, err := template.New("2fa_verify.html").Parse(string(verifyContent))
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse 2fa_verify template: %w", err)
+	}
+	templates["2fa_verify.html"] = verifyTmpl
 
 	// Initialize audit logger
 	auditLog, err := audit.NewLogger(db)
@@ -181,6 +193,10 @@ func (s *Server) Start(listen string) error {
 	mux.HandleFunc("/admin/system/backup", s.withAuth(s.handleBackup))
 	mux.HandleFunc("/admin/system/restore", s.withAuth(s.handleRestore))
 	mux.HandleFunc("/admin/system/dkim-autorotate", s.withAuth(s.handleDKIMAutoRotate))
+
+	// Two-Factor Authentication routes
+	mux.HandleFunc("/admin/2fa/setup", s.withAuth(s.handle2FASetup))
+	mux.HandleFunc("/admin/2fa/verify", s.handle2FAVerify) // No auth - used during login
 
 	// Build middleware chain (order matters: innermost first, then wrapping outward)
 	// The execution order will be: logging -> security headers -> panic recovery -> CSRF -> routes
