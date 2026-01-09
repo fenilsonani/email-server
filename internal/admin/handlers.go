@@ -51,7 +51,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 
 // handleLogin handles admin login with rate limiting
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
-	clientIP := getIP(r)
+	clientIP := s.rateLimiter.GetClientIP(r)
 
 	// Check if IP is blocked
 	if s.rateLimiter.IsBlocked(clientIP) {
@@ -143,7 +143,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		Value:    token,
 		Path:     "/admin",
 		HttpOnly: true,
-		Secure:   r.TLS != nil,
+		Secure:   isSecureContext(r),
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   86400, // 24 hours - reduced from 7 days for security
 	})

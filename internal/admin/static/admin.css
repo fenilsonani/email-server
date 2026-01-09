@@ -20,10 +20,10 @@
 
 body {
     font-family: Georgia, 'Times New Roman', Times, serif;
-    font-size: 13px;
+    font-size: 14px;
     background: var(--bg);
     color: var(--text);
-    line-height: 1.4;
+    line-height: 1.5;
 }
 
 .container {
@@ -36,8 +36,8 @@ body {
 nav {
     background: var(--card);
     border-bottom: 1px solid var(--border);
-    padding: 6px 0;
-    margin-bottom: 1rem;
+    padding: 8px 0;
+    margin-bottom: 1.25rem;
 }
 
 nav .container {
@@ -113,11 +113,11 @@ nav a:visited {
 table {
     width: 100%;
     border-collapse: collapse;
-    font-size: 12px;
+    font-size: 13px;
 }
 
 th, td {
-    padding: 4px 8px;
+    padding: 6px 10px;
     text-align: left;
     border-bottom: 1px solid var(--border);
 }

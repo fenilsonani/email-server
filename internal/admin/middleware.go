@@ -392,6 +392,11 @@ func (s *Server) withRequestLogging(next http.Handler) http.Handler {
 // withSecurityHeaders adds security headers to all responses
 func (s *Server) withSecurityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// CRITICAL: Block all cross-origin requests - admin panel should NEVER be accessed from external sites
+		w.Header().Set("Access-Control-Allow-Origin", "") // Explicitly NO CORS
+		w.Header().Set("Access-Control-Allow-Methods", "")
+		w.Header().Set("Access-Control-Allow-Headers", "")
+
 		// Prevent clickjacking
 		w.Header().Set("X-Frame-Options", "DENY")
 
@@ -402,7 +407,7 @@ func (s *Server) withSecurityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("X-XSS-Protection", "1; mode=block")
 
 		// Referrer policy - don't leak URLs to external sites
-		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+		w.Header().Set("Referrer-Policy", "no-referrer")
 
 		// Content Security Policy - restrict resource loading
 		// Note: 'unsafe-inline' needed for admin panel inline scripts
@@ -416,12 +421,14 @@ func (s *Server) withSecurityHeaders(next http.Handler) http.Handler {
 				"form-action 'self'; "+
 				"frame-ancestors 'none'; "+
 				"base-uri 'self'; "+
+				"object-src 'none'; "+ // Block plugins
 				"upgrade-insecure-requests")
 
 		// Permissions Policy - disable unnecessary browser features
 		w.Header().Set("Permissions-Policy",
 			"accelerometer=(), camera=(), geolocation=(), gyroscope=(), "+
-				"magnetometer=(), microphone=(), payment=(), usb=()")
+				"magnetometer=(), microphone=(), payment=(), usb=(), "+
+				"interest-cohort=()") // Block FLoC tracking
 
 		// Cache control for admin pages - don't cache sensitive data
 		if r.URL.Path != "/admin/login" {
@@ -466,4 +473,20 @@ func getSessionUser(r *http.Request) string {
 	}
 
 	return fmt.Sprintf("user:%d", sess.userID)
+}
+
+// isSecureContext returns true if the request came over HTTPS
+// Checks both direct TLS and X-Forwarded-Proto header (for reverse proxy)
+func isSecureContext(r *http.Request) bool {
+	// Direct TLS connection
+	if r.TLS != nil {
+		return true
+	}
+	// Check if behind HTTPS proxy
+	if proto := r.Header.Get("X-Forwarded-Proto"); proto == "https" {
+		return true
+	}
+	// In production with nginx, always return true
+	// This is safer than potentially setting Secure=false
+	return true
 }

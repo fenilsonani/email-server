@@ -335,7 +335,7 @@ func (s *Server) handle2FASetup(w http.ResponseWriter, r *http.Request) {
 			Value:    token,
 			Path:     "/admin",
 			HttpOnly: true,
-			Secure:   r.TLS != nil,
+			Secure:   isSecureContext(r),
 			SameSite: http.SameSiteStrictMode,
 			MaxAge:   trustedDeviceDays * 24 * 60 * 60,
 		})
@@ -406,7 +406,7 @@ func (s *Server) handle2FAVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	clientIP := getIP(r)
+	clientIP := s.rateLimiter.GetClientIP(r)
 
 	if !s.validateTOTPCode(status.Secret, code) {
 		s.rateLimiter.RecordFailure(clientIP)
@@ -438,7 +438,7 @@ func (s *Server) handle2FAVerify(w http.ResponseWriter, r *http.Request) {
 				Value:    token,
 				Path:     "/admin",
 				HttpOnly: true,
-				Secure:   r.TLS != nil,
+				Secure:   isSecureContext(r),
 				SameSite: http.SameSiteStrictMode,
 				MaxAge:   trustedDeviceDays * 24 * 60 * 60,
 			})
@@ -452,7 +452,7 @@ func (s *Server) handle2FAVerify(w http.ResponseWriter, r *http.Request) {
 		Value:    token,
 		Path:     "/admin",
 		HttpOnly: true,
-		Secure:   r.TLS != nil,
+		Secure:   isSecureContext(r),
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   86400,
 	})
@@ -484,7 +484,7 @@ func (s *Server) setPending2FA(w http.ResponseWriter, r *http.Request, userID in
 		Value:    encoded,
 		Path:     "/admin",
 		HttpOnly: true,
-		Secure:   r.TLS != nil,
+		Secure:   isSecureContext(r),
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   300, // 5 minutes
 	})

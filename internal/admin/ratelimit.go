@@ -49,9 +49,10 @@ func NewRateLimiter(maxAttempts int, windowSize, blockDuration time.Duration, tr
 
 // DefaultRateLimiter returns a rate limiter with sensible defaults
 // 5 attempts per 15 minutes, 30 minute block
-// By default, no proxies are trusted (use direct connection IP only)
+// Trusts localhost as proxy (for nginx reverse proxy)
 func DefaultRateLimiter() *RateLimiter {
-	return NewRateLimiter(5, 15*time.Minute, 30*time.Minute, nil)
+	// Trust nginx on localhost - this allows rate limiting by actual client IP
+	return NewRateLimiter(5, 15*time.Minute, 30*time.Minute, []string{"127.0.0.1", "::1"})
 }
 
 // GetClientIP extracts the client IP from the request
