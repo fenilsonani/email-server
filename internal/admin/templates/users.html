@@ -31,6 +31,7 @@
                 <td class="actions">
                     <a href="/admin/users/edit/{{.ID}}" class="btn btn-sm btn-primary">Edit</a>
                     <a href="/admin/sieve/{{.ID}}" class="btn btn-sm btn-secondary">Sieve</a>
+                    <a href="/email.mobileconfig?email={{.Email}}" class="btn btn-sm btn-secondary" title="Download Apple Mail profile">Setup</a>
                     <form method="POST" action="/admin/users/delete/{{.ID}}" style="display: inline;"
                           onsubmit="return confirm('Are you sure you want to delete this user? This cannot be undone.');">
                         <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
