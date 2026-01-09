@@ -16,6 +16,30 @@ import (
 	"github.com/fenilsonani/email-server/internal/storage"
 )
 
+// messageMappings holds pre-allocated maps for seq/uid lookups
+// This reduces GC pressure by pre-allocating with known capacity
+type messageMappings struct {
+	seqToMsg map[uint32]*storage.Message
+	uidToSeq map[uint32]uint32
+	messages []*storage.Message
+}
+
+// buildMessageMappings creates mappings with pre-allocated capacity
+func buildMessageMappings(messages []*storage.Message) *messageMappings {
+	n := len(messages)
+	m := &messageMappings{
+		seqToMsg: make(map[uint32]*storage.Message, n),
+		uidToSeq: make(map[uint32]uint32, n),
+		messages: messages,
+	}
+	for i, msg := range messages {
+		seqNum := uint32(i + 1)
+		m.seqToMsg[seqNum] = msg
+		m.uidToSeq[msg.UID] = seqNum
+	}
+	return m
+}
+
 // Session implements imapserver.Session for go-imap v2
 type Session struct {
 	server     *Server
@@ -440,28 +464,23 @@ func (s *Session) Fetch(w *imapserver.FetchWriter, numSet imap.NumSet, options *
 		return fmt.Errorf("failed to list messages: %w", err)
 	}
 
-	// Build mappings
-	seqToMsg := make(map[uint32]*storage.Message)
-	uidToSeq := make(map[uint32]uint32)
-	for i, msg := range messages {
-		seqNum := uint32(i + 1)
-		seqToMsg[seqNum] = msg
-		uidToSeq[msg.UID] = seqNum
-	}
+	// Build mappings with pre-allocated capacity
+	m := buildMessageMappings(messages)
 
 	// Determine which messages to fetch based on set type
-	var toFetch []uint32
+	// Pre-allocate slice with estimated capacity
+	toFetch := make([]uint32, 0, len(messages)/2+1)
 	switch set := numSet.(type) {
 	case imap.UIDSet:
 		// UID set
-		for uid := range uidToSeq {
+		for uid := range m.uidToSeq {
 			if set.Contains(imap.UID(uid)) {
-				toFetch = append(toFetch, uidToSeq[uid])
+				toFetch = append(toFetch, m.uidToSeq[uid])
 			}
 		}
 	case imap.SeqSet:
 		// Sequence set
-		for seqNum := range seqToMsg {
+		for seqNum := range m.seqToMsg {
 			if set.Contains(seqNum) {
 				toFetch = append(toFetch, seqNum)
 			}
@@ -470,7 +489,7 @@ func (s *Session) Fetch(w *imapserver.FetchWriter, numSet imap.NumSet, options *
 
 	// Fetch each message
 	for _, seqNum := range toFetch {
-		msg := seqToMsg[seqNum]
+		msg := m.seqToMsg[seqNum]
 		if msg == nil {
 			continue
 		}
@@ -569,25 +588,21 @@ func (s *Session) Store(w *imapserver.FetchWriter, numSet imap.NumSet, flags *im
 		return fmt.Errorf("failed to list messages: %w", err)
 	}
 
-	uidToSeq := make(map[uint32]uint32)
-	seqToMsg := make(map[uint32]*storage.Message)
-	for i, msg := range messages {
-		seqNum := uint32(i + 1)
-		seqToMsg[seqNum] = msg
-		uidToSeq[msg.UID] = seqNum
-	}
+	// Build mappings with pre-allocated capacity
+	m := buildMessageMappings(messages)
 
 	// Determine which messages to update based on set type
-	var toUpdate []uint32
+	// Pre-allocate slice with estimated capacity
+	toUpdate := make([]uint32, 0, len(messages)/2+1)
 	switch set := numSet.(type) {
 	case imap.UIDSet:
-		for uid := range uidToSeq {
+		for uid := range m.uidToSeq {
 			if set.Contains(imap.UID(uid)) {
-				toUpdate = append(toUpdate, uidToSeq[uid])
+				toUpdate = append(toUpdate, m.uidToSeq[uid])
 			}
 		}
 	case imap.SeqSet:
-		for seqNum := range seqToMsg {
+		for seqNum := range m.seqToMsg {
 			if set.Contains(seqNum) {
 				toUpdate = append(toUpdate, seqNum)
 			}
@@ -596,7 +611,7 @@ func (s *Session) Store(w *imapserver.FetchWriter, numSet imap.NumSet, flags *im
 
 	// Update each message
 	for _, seqNum := range toUpdate {
-		msg := seqToMsg[seqNum]
+		msg := m.seqToMsg[seqNum]
 		if msg == nil {
 			continue
 		}
@@ -670,13 +685,11 @@ func (s *Session) Expunge(w *imapserver.ExpungeWriter, uids *imap.UIDSet) error 
 		return nil
 	}
 
-	uidToSeq := make(map[uint32]uint32)
-	for i, msg := range messages {
-		uidToSeq[msg.UID] = uint32(i + 1)
-	}
+	// Build mapping with pre-allocated capacity
+	m := buildMessageMappings(messages)
 
 	for _, uid := range expunged {
-		if seqNum, ok := uidToSeq[uid]; ok {
+		if seqNum, ok := m.uidToSeq[uid]; ok {
 			w.WriteExpunge(seqNum)
 		}
 	}
@@ -802,14 +815,13 @@ func (s *Session) Search(kind imapserver.NumKind, criteria *imap.SearchCriteria,
 		return nil, fmt.Errorf("failed to list messages for seq conversion: %w", err)
 	}
 
-	uidToSeq := make(map[uint32]uint32)
-	for i, msg := range messages {
-		uidToSeq[msg.UID] = uint32(i + 1)
-	}
+	// Build mapping with pre-allocated capacity
+	m := buildMessageMappings(messages)
 
-	var seqNums []uint32
+	// Pre-allocate slice with expected capacity
+	seqNums := make([]uint32, 0, len(uids))
 	for _, uid := range uids {
-		if seq, ok := uidToSeq[uid]; ok {
+		if seq, ok := m.uidToSeq[uid]; ok {
 			seqNums = append(seqNums, seq)
 		}
 	}

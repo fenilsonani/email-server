@@ -16,6 +16,12 @@ var trackingPixel = func() []byte {
 	return data
 }()
 
+// Pre-compiled regex patterns for performance (avoid compiling on every request)
+var (
+	bodyTagRegex = regexp.MustCompile(`(?i)(</body>)`)
+	linkHrefRegex = regexp.MustCompile(`(<a[^>]*href=["'])([^"']+)(["'][^>]*>)`)
+)
+
 // handleTrackOpen handles GET /t/o/{tracking_id}
 func (s *Server) handleTrackOpen(w http.ResponseWriter, r *http.Request) {
 	trackingID := strings.TrimPrefix(r.URL.Path, "/t/o/")
@@ -153,10 +159,9 @@ func injectOpenTracking(html, trackingID, trackingDomain, hostname string) strin
 	pixelURL := fmt.Sprintf("https://%s/t/o/%s", domain, trackingID)
 	pixelTag := fmt.Sprintf(`<img src="%s" width="1" height="1" alt="" style="display:none;width:1px;height:1px;"/>`, pixelURL)
 
-	// Try to inject before </body>
+	// Try to inject before </body> using pre-compiled regex
 	if strings.Contains(strings.ToLower(html), "</body>") {
-		re := regexp.MustCompile(`(?i)(</body>)`)
-		return re.ReplaceAllString(html, pixelTag+"$1")
+		return bodyTagRegex.ReplaceAllString(html, pixelTag+"$1")
 	}
 
 	// Otherwise append to end
@@ -174,11 +179,9 @@ func rewriteLinksForTracking(html, trackingID, trackingDomain, hostname string) 
 		domain = hostname
 	}
 
-	// Match href attributes in anchor tags
-	re := regexp.MustCompile(`(<a[^>]*href=["'])([^"']+)(["'][^>]*>)`)
-
-	return re.ReplaceAllStringFunc(html, func(match string) string {
-		submatches := re.FindStringSubmatch(match)
+	// Use pre-compiled regex for performance
+	return linkHrefRegex.ReplaceAllStringFunc(html, func(match string) string {
+		submatches := linkHrefRegex.FindStringSubmatch(match)
 		if len(submatches) < 4 {
 			return match
 		}

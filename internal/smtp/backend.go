@@ -38,6 +38,7 @@ type UserRateLimiter struct {
 	// Limits
 	maxPerHour int
 	maxPerDay  int
+	stopCleanup chan struct{}
 }
 
 type userSendCounter struct {
@@ -45,15 +46,53 @@ type userSendCounter struct {
 	dayCount   int
 	hourReset  time.Time
 	dayReset   time.Time
+	lastAccess time.Time // Track last access for cleanup
 }
 
 // NewUserRateLimiter creates a rate limiter for user sending
 func NewUserRateLimiter(maxPerHour, maxPerDay int) *UserRateLimiter {
-	return &UserRateLimiter{
-		counters:   make(map[int64]*userSendCounter),
-		maxPerHour: maxPerHour,
-		maxPerDay:  maxPerDay,
+	rl := &UserRateLimiter{
+		counters:    make(map[int64]*userSendCounter),
+		maxPerHour:  maxPerHour,
+		maxPerDay:   maxPerDay,
+		stopCleanup: make(chan struct{}),
 	}
+	// Start cleanup goroutine to prevent unbounded memory growth
+	go rl.cleanupLoop()
+	return rl
+}
+
+// cleanupLoop periodically removes stale entries from the rate limiter
+func (rl *UserRateLimiter) cleanupLoop() {
+	ticker := time.NewTicker(15 * time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			rl.cleanup()
+		case <-rl.stopCleanup:
+			return
+		}
+	}
+}
+
+// cleanup removes entries that haven't been accessed in over 48 hours
+func (rl *UserRateLimiter) cleanup() {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
+	cutoff := time.Now().Add(-48 * time.Hour)
+	for userID, counter := range rl.counters {
+		if counter.lastAccess.Before(cutoff) {
+			delete(rl.counters, userID)
+		}
+	}
+}
+
+// Stop stops the cleanup goroutine
+func (rl *UserRateLimiter) Stop() {
+	close(rl.stopCleanup)
 }
 
 // CheckAndIncrement checks if user can send and increments counter
@@ -66,13 +105,17 @@ func (rl *UserRateLimiter) CheckAndIncrement(userID int64) error {
 
 	if !exists {
 		rl.counters[userID] = &userSendCounter{
-			hourCount: 1,
-			dayCount:  1,
-			hourReset: now.Add(time.Hour),
-			dayReset:  now.Add(24 * time.Hour),
+			hourCount:  1,
+			dayCount:   1,
+			hourReset:  now.Add(time.Hour),
+			dayReset:   now.Add(24 * time.Hour),
+			lastAccess: now,
 		}
 		return nil
 	}
+
+	// Update last access time for cleanup tracking
+	counter.lastAccess = now
 
 	// Reset counters if window expired
 	if now.After(counter.hourReset) {
@@ -110,6 +153,7 @@ type Backend struct {
 	sieveExecutor   *sieve.Executor
 	greylister      *greylist.Greylister
 	userRateLimiter *UserRateLimiter // Per-user sending rate limiter
+	vacationSem     chan struct{}    // Semaphore to limit concurrent vacation responses
 }
 
 // NewBackend creates a new SMTP backend
@@ -140,6 +184,7 @@ func NewBackend(cfg *config.Config, authenticator *auth.Authenticator, store *ma
 		logger:          logger.SMTP(),
 		queuePath:       queuePath,
 		userRateLimiter: NewUserRateLimiter(100, 1000), // 100/hour, 1000/day per user
+		vacationSem:     make(chan struct{}, 10),       // Limit to 10 concurrent vacation responses
 	}, nil
 }
 
@@ -525,15 +570,25 @@ func (s *Session) deliverToLocalRecipient(rcpt string, data []byte) error {
 
 			// Handle vacation response
 			if result.Vacation && result.VacationTo != "" {
-				// Launch vacation response in goroutine with panic recovery
-				go func() {
-					defer func() {
-						if r := recover(); r != nil {
-							s.backend.logger.ErrorContext(ctx, "Panic in vacation response goroutine", fmt.Errorf("panic: %v", r))
-						}
+				// Launch vacation response with semaphore to limit concurrent goroutines
+				select {
+				case s.backend.vacationSem <- struct{}{}:
+					// Acquired semaphore slot
+					go func() {
+						defer func() {
+							<-s.backend.vacationSem // Release semaphore
+							if r := recover(); r != nil {
+								s.backend.logger.ErrorContext(ctx, "Panic in vacation response goroutine", fmt.Errorf("panic: %v", r))
+							}
+						}()
+						s.sendVacationResponse(ctx, result, user)
 					}()
-					s.sendVacationResponse(ctx, result, user)
-				}()
+				default:
+					// Semaphore full - skip vacation response to avoid backpressure
+					s.backend.logger.WarnContext(ctx, "Vacation response skipped - too many pending",
+						"recipient", rcpt,
+					)
+				}
 			}
 		}
 	}
@@ -582,9 +637,9 @@ func (s *Session) deliverToLocalRecipient(rcpt string, data []byte) error {
 		}
 	}
 
-	// Deliver message
+	// Deliver message (use bytes.NewReader to avoid string allocation)
 	_, err = s.backend.store.AppendMessage(ctx, mailbox.ID, nil, time.Now(),
-		strings.NewReader(string(data)))
+		bytes.NewReader(data))
 	if err != nil {
 		return fmt.Errorf("failed to append message: %w", err)
 	}
@@ -733,8 +788,9 @@ func (s *Session) handleOutbound(data []byte) error {
 		sent, err := s.backend.store.GetMailbox(ctx, s.user.ID, "Sent")
 		if err == nil {
 			flags := []storage.Flag{storage.FlagSeen}
+			// Use bytes.NewReader to avoid string allocation
 			_, err = s.backend.store.AppendMessage(ctx, sent.ID, flags, time.Now(),
-				strings.NewReader(string(data)))
+				bytes.NewReader(data))
 			if err != nil {
 				s.backend.logger.WarnContext(ctx, "Failed to save to Sent folder", "error", err.Error())
 			}
