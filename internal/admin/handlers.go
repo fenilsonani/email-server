@@ -1762,14 +1762,23 @@ func (s *Server) handleTestEmail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create a simple test message
-	from := "postmaster@" + s.config.Server.Domain
+	// Get first active domain for multi-domain support
+	var testDomain string
+	err := s.db.QueryRowContext(r.Context(),
+		"SELECT name FROM domains WHERE is_active = TRUE ORDER BY id LIMIT 1",
+	).Scan(&testDomain)
+	if err != nil || testDomain == "" {
+		testDomain = s.config.Server.Domain // fallback to config
+	}
+
+	from := "postmaster@" + testDomain
 	subject := "Test Email from " + s.config.Server.Hostname
 	body := "This is a test email sent from the mail server admin panel.\n\n" +
 		"Server: " + s.config.Server.Hostname + "\n" +
 		"Time: " + time.Now().Format(time.RFC1123) + "\n\n" +
 		"If you received this email, your mail server is working correctly!"
 
-	messageID := generateMessageID(s.config.Server.Domain)
+	messageID := generateMessageID(testDomain)
 	msg := "From: " + from + "\r\n" +
 		"To: " + recipient + "\r\n" +
 		"Subject: " + subject + "\r\n" +

@@ -65,10 +65,19 @@ func (g *BounceGenerator) Generate(msg *queue.Message, failureErr error) ([]byte
 	// Classify error code
 	errorCode := classifyErrorCode(failureErr)
 
+	// Determine postmaster address based on sender's domain (multi-domain support)
+	// This ensures the bounce comes from the domain the sender used
+	postmaster := g.postmaster // default fallback
+	if msg.Sender != "" {
+		if parts := strings.Split(msg.Sender, "@"); len(parts) == 2 && parts[1] != "" {
+			postmaster = "postmaster@" + parts[1]
+		}
+	}
+
 	data := BounceData{
 		MessageID:       fmt.Sprintf("<%d.bounce@%s>", time.Now().UnixNano(), g.hostname),
 		Date:            time.Now().Format(time.RFC1123Z),
-		From:            g.postmaster,
+		From:            postmaster,
 		To:              msg.Sender,
 		OriginalSender:  msg.Sender,
 		FailedRecipient: strings.Join(msg.Recipients, ", "),

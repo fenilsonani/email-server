@@ -382,7 +382,7 @@ func (s *Server) handleAppleMobileconfig(w http.ResponseWriter, r *http.Request)
 
 	// Set headers for profile download
 	w.Header().Set("Content-Type", "application/x-apple-aspen-config")
-	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s-email.mobileconfig\"", s.config.Domain))
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s-email.mobileconfig\"", emailDomain))
 
 	if err := tmpl.Execute(w, data); err != nil {
 		s.logger.Error("Failed to execute mobileconfig template", slog.Any("error", err))

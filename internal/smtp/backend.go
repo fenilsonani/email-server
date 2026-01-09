@@ -639,14 +639,18 @@ func (s *Session) handleOutbound(data []byte) error {
 	}
 
 	// Separate local and external recipients
+	// Check against all managed domains in the database, not just the primary domain
 	var localRcpts, externalRcpts []string
-	localDomain := s.backend.config.Server.Domain
 
 	for _, rcpt := range s.rcpts {
 		_, domain := parseAddress(rcpt)
-		if domain == localDomain {
+		// Check if domain exists in database (managed domain)
+		_, err := s.backend.authenticator.GetDomainID(s.ctx, domain)
+		if err == nil {
+			// Domain exists in database - it's a local recipient
 			localRcpts = append(localRcpts, rcpt)
 		} else {
+			// Domain not found or inactive - external recipient
 			externalRcpts = append(externalRcpts, rcpt)
 		}
 	}
@@ -872,6 +876,12 @@ func (s *Session) sendVacationResponse(ctx context.Context, result *sieve.Result
 	}
 
 	// Build vacation message
+	// Extract sender domain for Message-ID (multi-domain support)
+	_, senderDomain := parseAddress(user.Email)
+	if senderDomain == "" {
+		senderDomain = s.backend.config.Server.Domain // fallback
+	}
+
 	var msg bytes.Buffer
 	msg.WriteString(fmt.Sprintf("From: %s\r\n", user.Email))
 	msg.WriteString(fmt.Sprintf("To: %s\r\n", result.VacationTo))
@@ -879,7 +889,7 @@ func (s *Session) sendVacationResponse(ctx context.Context, result *sieve.Result
 	msg.WriteString("Auto-Submitted: auto-replied\r\n")
 	msg.WriteString("X-Auto-Response-Suppress: All\r\n")
 	msg.WriteString(fmt.Sprintf("Date: %s\r\n", time.Now().Format(time.RFC1123Z)))
-	msg.WriteString(fmt.Sprintf("Message-ID: <%s@%s>\r\n", generateID(), s.backend.config.Server.Domain))
+	msg.WriteString(fmt.Sprintf("Message-ID: <%s@%s>\r\n", generateID(), senderDomain))
 	msg.WriteString("MIME-Version: 1.0\r\n")
 	msg.WriteString("Content-Type: text/plain; charset=utf-8\r\n")
 	msg.WriteString("\r\n")
