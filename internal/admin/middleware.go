@@ -416,15 +416,14 @@ func (s *Server) withSecurityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
 
 		// Content Security Policy - restrict resource loading
-		// Note: Removed 'unsafe-inline' from script-src for XSS protection
-		// If inline scripts are needed, use nonces or move to external files
+		// Note: 'unsafe-inline' needed for admin panel inline scripts
 		w.Header().Set("Content-Security-Policy",
 			"default-src 'self'; "+
-				"script-src 'self'; "+ // No inline scripts allowed - prevents XSS
-				"style-src 'self' 'unsafe-inline'; "+ // Inline styles are lower risk
+				"script-src 'self' 'unsafe-inline'; "+ // Allow inline scripts for admin UI
+				"style-src 'self' 'unsafe-inline'; "+
 				"img-src 'self' data:; "+
 				"font-src 'self'; "+
-				"connect-src 'self'; "+ // Restrict AJAX/fetch requests
+				"connect-src 'self'; "+
 				"form-action 'self'; "+
 				"frame-ancestors 'none'; "+
 				"base-uri 'self'; "+
