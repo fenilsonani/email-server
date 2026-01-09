@@ -1,7 +1,11 @@
 <div class="page-header">
     <h1>Domains</h1>
-    <a href="/admin/domains/add" class="btn btn-primary">Add Domain</a>
+    <button onclick="openAddDomainModal()" class="btn btn-primary">Add Domain</button>
 </div>
+
+{{if .Error}}
+<div class="alert alert-danger" style="margin-bottom: 1rem;">{{.Error}}</div>
+{{end}}
 
 <div class="card">
     {{if .Domains}}
@@ -66,7 +70,7 @@
     {{else}}
     <div class="empty-state">
         <p>No domains configured.</p>
-        <a href="/admin/domains/add" class="btn btn-primary">Add your first domain</a>
+        <button onclick="openAddDomainModal()" class="btn btn-primary">Add your first domain</button>
     </div>
     {{end}}
 </div>
@@ -153,6 +157,63 @@
                     </select>
                 </div>
                 <button type="submit" class="btn btn-primary">Generate Key</button>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- Add Domain Modal -->
+<div id="addDomainModal" class="modal" style="display: none;">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h2>Add Domain</h2>
+            <button onclick="closeAddDomainModal()" class="btn btn-sm">&times;</button>
+        </div>
+        <div class="modal-body">
+            <form method="POST" action="/admin/domains/add" id="addDomainForm">
+                <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+
+                <div class="form-group">
+                    <label for="domain_name">Domain Name</label>
+                    <input type="text" id="domain_name" name="name" class="form-control" required
+                           placeholder="example.com" autocomplete="off">
+                    <small style="color: var(--text-muted);">e.g., example.com, mail.example.org</small>
+                </div>
+
+                <div id="addDomainError" class="alert alert-danger" style="display: none;"></div>
+
+                <h3 style="font-size: 1rem; margin: 1.5rem 0 0.75rem;">DKIM Configuration</h3>
+                <div style="padding: 1rem; background: var(--bg); border-radius: 6px;">
+                    <div class="form-group">
+                        <label for="add_dkim_selector">DKIM Selector</label>
+                        <input type="text" id="add_dkim_selector" name="dkim_selector" value="mail" class="form-control">
+                        <small style="color: var(--text-muted);">Usually "mail" or "default"</small>
+                    </div>
+                    <div class="form-group">
+                        <label for="add_dkim_bits">Key Size</label>
+                        <select id="add_dkim_bits" name="dkim_bits" class="form-control">
+                            <option value="2048" selected>2048 bits (recommended)</option>
+                            <option value="4096">4096 bits</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="add_dkim_storage">Key Storage</label>
+                        <select id="add_dkim_storage" name="dkim_storage" class="form-control">
+                            <option value="database" selected>Database</option>
+                            <option value="file">File System</option>
+                            <option value="hybrid">Both (Hybrid)</option>
+                        </select>
+                    </div>
+                    <div class="form-check">
+                        <input type="checkbox" id="add_generate_dkim" name="generate_dkim" checked>
+                        <label for="add_generate_dkim">Generate DKIM key automatically</label>
+                    </div>
+                </div>
+
+                <div style="margin-top: 1.5rem; display: flex; gap: 1rem; justify-content: flex-end;">
+                    <button type="button" onclick="closeAddDomainModal()" class="btn btn-secondary">Cancel</button>
+                    <button type="submit" class="btn btn-primary" id="addDomainBtn">Add Domain</button>
+                </div>
             </form>
         </div>
     </div>
@@ -404,6 +465,17 @@ function showGenerateDKIM(domainId, domainName) {
 
 function closeGenerateDKIMModal() {
     document.getElementById('generateDKIMModal').style.display = 'none';
+}
+
+function openAddDomainModal() {
+    document.getElementById('addDomainError').style.display = 'none';
+    document.getElementById('domain_name').value = '';
+    document.getElementById('addDomainModal').style.display = 'flex';
+    document.getElementById('domain_name').focus();
+}
+
+function closeAddDomainModal() {
+    document.getElementById('addDomainModal').style.display = 'none';
 }
 
 function copyDKIM() {
