@@ -20,10 +20,16 @@
             <tr>
                 <td><strong>{{.Name}}</strong></td>
                 <td>
-                    <button onclick="checkDNS({{.ID}}, '{{.Name}}')" class="btn btn-sm btn-secondary" id="dns-btn-{{.ID}}">
-                        Check DNS
+                    {{if eq .DNSStatus "ready"}}
+                    <span class="badge badge-success" title="All DNS records verified">Ready</span>
+                    {{else if eq .DNSStatus "partial"}}
+                    <span class="badge badge-warning" title="{{.DNSVerifiedCount}}/4 records verified">{{.DNSVerifiedCount}}/4</span>
+                    {{else}}
+                    <span class="badge badge-danger" title="DNS not configured">Pending</span>
+                    {{end}}
+                    <button onclick="verifyDomainDNS({{.ID}}, '{{.Name}}')" class="btn btn-xs btn-link" id="verify-btn-{{.ID}}" title="Re-verify DNS">
+                        &#8635;
                     </button>
-                    <span id="dns-status-{{.ID}}" style="display: none;"></span>
                 </td>
                 <td>
                     {{if .HasDKIMKey}}
@@ -242,6 +248,10 @@
 .dns-checking { background: #e0e7ff; color: #4f46e5; }
 .btn-info { background: #0ea5e9; color: white; }
 .btn-info:hover { background: #0284c7; }
+.badge-danger { background: #fee2e2; color: #dc2626; }
+.btn-xs { font-size: 0.75rem; padding: 0.125rem 0.25rem; }
+.btn-link { background: none; border: none; color: var(--primary); cursor: pointer; text-decoration: none; }
+.btn-link:hover { text-decoration: underline; }
 </style>
 
 <script>
@@ -401,6 +411,25 @@ function copyDKIM() {
     textarea.select();
     document.execCommand('copy');
     alert('DKIM value copied to clipboard!');
+}
+
+// Verify domain DNS and update status (re-verify button)
+function verifyDomainDNS(domainId, domainName) {
+    var btn = document.getElementById('verify-btn-' + domainId);
+    btn.textContent = '...';
+    btn.disabled = true;
+
+    fetch('/admin/domains/dns/verify/' + domainId)
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            // Reload page to show updated status
+            window.location.reload();
+        })
+        .catch(function(err) {
+            btn.innerHTML = '&#8635;';
+            btn.disabled = false;
+            alert('Verification failed: ' + err);
+        });
 }
 
 // Close modals on click outside

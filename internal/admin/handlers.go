@@ -4,8 +4,11 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"context"
+	"crypto/rsa"
+	"crypto/x509"
 	"database/sql"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"net"
@@ -14,6 +17,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/fenilsonani/email-server/internal/audit"
@@ -413,7 +417,13 @@ func (s *Server) handleDomains(w http.ResponseWriter, r *http.Request) {
 		SELECT d.id, d.name, d.created_at, COALESCE(d.dkim_selector, 'mail'),
 			d.dkim_private_key IS NOT NULL AND LENGTH(d.dkim_private_key) > 0,
 			d.dkim_key_file,
-			(SELECT COUNT(*) FROM users WHERE domain_id = d.id) as user_count
+			(SELECT COUNT(*) FROM users WHERE domain_id = d.id) as user_count,
+			COALESCE(d.dns_status, 'pending'),
+			COALESCE(d.dns_mx_verified, 0),
+			COALESCE(d.dns_spf_verified, 0),
+			COALESCE(d.dns_dkim_verified, 0),
+			COALESCE(d.dns_dmarc_verified, 0),
+			d.dns_last_checked
 		FROM domains d
 		ORDER BY d.name
 	`)
@@ -425,12 +435,19 @@ func (s *Server) handleDomains(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	type Domain struct {
-		ID           int64
-		Name         string
-		UserCount    int
-		CreatedAt    time.Time
-		DKIMSelector string
-		HasDKIMKey   bool
+		ID              int64
+		Name            string
+		UserCount       int
+		CreatedAt       time.Time
+		DKIMSelector    string
+		HasDKIMKey      bool
+		DNSStatus       string
+		DNSMXVerified   bool
+		DNSSPFVerified  bool
+		DNSDKIMVerified bool
+		DNSDMARCVerified bool
+		DNSLastChecked  sql.NullTime
+		DNSVerifiedCount int
 	}
 
 	// Get DKIM key directory for file-based check
@@ -442,11 +459,18 @@ func (s *Server) handleDomains(w http.ResponseWriter, r *http.Request) {
 		var selector string
 		var hasDBKey bool
 		var keyFile sql.NullString
-		if err := rows.Scan(&d.ID, &d.Name, &d.CreatedAt, &selector, &hasDBKey, &keyFile, &d.UserCount); err != nil {
+		var mxVerified, spfVerified, dkimVerified, dmarcVerified int
+		if err := rows.Scan(&d.ID, &d.Name, &d.CreatedAt, &selector, &hasDBKey, &keyFile, &d.UserCount,
+			&d.DNSStatus, &mxVerified, &spfVerified, &dkimVerified, &dmarcVerified, &d.DNSLastChecked); err != nil {
 			s.logger.ErrorContext(r.Context(), "Failed to scan domain row", err)
 			continue
 		}
 		d.DKIMSelector = selector
+		d.DNSMXVerified = mxVerified == 1
+		d.DNSSPFVerified = spfVerified == 1
+		d.DNSDKIMVerified = dkimVerified == 1
+		d.DNSDMARCVerified = dmarcVerified == 1
+		d.DNSVerifiedCount = mxVerified + spfVerified + dkimVerified + dmarcVerified
 
 		// Check if key exists either in database or as file
 		d.HasDKIMKey = hasDBKey
@@ -1055,13 +1079,54 @@ func (s *Server) handleDNSVerify(w http.ResponseWriter, r *http.Request) {
 	// Verify DMARC record
 	dmarcResult := s.verifyDMARCRecord(domainName)
 
+	// Persist results to database
+	var mxVerified, spfVerified, dkimVerified, dmarcVerified int
+	if mxResult["ok"].(bool) {
+		mxVerified = 1
+	}
+	if spfResult["ok"].(bool) {
+		spfVerified = 1
+	}
+	if dkimResult["ok"].(bool) {
+		dkimVerified = 1
+	}
+	if dmarcResult["ok"].(bool) {
+		dmarcVerified = 1
+	}
+
+	// Calculate overall status
+	var dnsStatus string
+	if mxVerified == 1 && spfVerified == 1 && dkimVerified == 1 && dmarcVerified == 1 {
+		dnsStatus = "ready"
+	} else if mxVerified == 1 || spfVerified == 1 {
+		dnsStatus = "partial"
+	} else {
+		dnsStatus = "pending"
+	}
+
+	// Update database
+	_, err = s.db.ExecContext(r.Context(),
+		`UPDATE domains SET
+			dns_mx_verified = ?,
+			dns_spf_verified = ?,
+			dns_dkim_verified = ?,
+			dns_dmarc_verified = ?,
+			dns_status = ?,
+			dns_last_checked = ?
+		WHERE id = ?`,
+		mxVerified, spfVerified, dkimVerified, dmarcVerified, dnsStatus, time.Now(), domainID)
+	if err != nil {
+		s.logger.ErrorContext(r.Context(), "Failed to update DNS status", err)
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"mx":     mxResult,
-		"spf":    spfResult,
-		"dkim":   dkimResult,
-		"dmarc":  dmarcResult,
-		"domain": domainName,
+		"mx":        mxResult,
+		"spf":       spfResult,
+		"dkim":      dkimResult,
+		"dmarc":     dmarcResult,
+		"domain":    domainName,
+		"dnsStatus": dnsStatus,
 	})
 }
 
@@ -2092,6 +2157,416 @@ func (s *Server) handleDKIMAutoRotate(w http.ResponseWriter, r *http.Request) {
 		"errors":  errors,
 		"message": fmt.Sprintf("Rotated %d keys. Remember to update DNS records!", len(rotated)),
 	})
+}
+
+// ============================================================================
+// Domain Add Wizard Handlers
+// ============================================================================
+
+// wizardState holds temporary state during domain creation wizard
+type wizardState struct {
+	Domain      string
+	DKIMKey     string // PEM-encoded private key
+	DKIMPublic  string // DNS record value
+	Selector    string
+	Bits        int
+	StorageType string
+	CreatedAt   time.Time
+}
+
+var (
+	wizardStates   = make(map[string]*wizardState)
+	wizardStatesMu sync.Mutex
+)
+
+// handleDomainWizardValidate validates domain name in step 1
+func (s *Server) handleDomainWizardValidate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Domain string `json:"domain"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"valid": false,
+			"error": "Invalid request body",
+		})
+		return
+	}
+
+	// Validate domain format
+	domain := strings.TrimSpace(strings.ToLower(req.Domain))
+	if domain == "" {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"valid": false,
+			"error": "Domain name is required",
+		})
+		return
+	}
+
+	if err := validation.Domain(domain); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"valid": false,
+			"error": err.Error(),
+		})
+		return
+	}
+
+	// Check if domain already exists
+	var count int
+	err := s.db.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM domains WHERE name = ?", domain).Scan(&count)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"valid": false,
+			"error": "Database error",
+		})
+		return
+	}
+
+	if count > 0 {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"valid": false,
+			"error": "Domain already exists",
+		})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"valid":  true,
+		"domain": domain,
+	})
+}
+
+// handleDomainWizardDNSRecords generates DNS records for step 2
+func (s *Server) handleDomainWizardDNSRecords(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Domain   string `json:"domain"`
+		Selector string `json:"selector"`
+		Bits     int    `json:"bits"`
+		Storage  string `json:"storage"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+
+	domain := strings.TrimSpace(strings.ToLower(req.Domain))
+	selector := req.Selector
+	if selector == "" {
+		selector = "mail"
+	}
+	bits := req.Bits
+	if bits != 4096 {
+		bits = 2048
+	}
+	storage := req.Storage
+	if storage == "" {
+		storage = "database"
+	}
+
+	// Generate DKIM key pair (temporary, not saved yet)
+	privateKey, err := security.GenerateDKIMKey(bits)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"error":   "Failed to generate DKIM key: " + err.Error(),
+		})
+		return
+	}
+
+	// Format public key for DNS
+	dkimPublic, err := security.FormatDKIMPublicKey(&privateKey.PublicKey)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"error":   "Failed to format DKIM public key: " + err.Error(),
+		})
+		return
+	}
+
+	// Store state for later use
+	stateID := fmt.Sprintf("%s-%d", domain, time.Now().UnixNano())
+	wizardStatesMu.Lock()
+	wizardStates[stateID] = &wizardState{
+		Domain:      domain,
+		DKIMKey:     encodePEMPrivateKey(privateKey),
+		DKIMPublic:  dkimPublic,
+		Selector:    selector,
+		Bits:        bits,
+		StorageType: storage,
+		CreatedAt:   time.Now(),
+	}
+	wizardStatesMu.Unlock()
+
+	// Clean up old states (older than 1 hour)
+	go cleanupWizardStates()
+
+	// Generate all DNS records
+	hostname := s.config.Server.Hostname
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"stateId": stateID,
+		"records": map[string]interface{}{
+			"mx": map[string]string{
+				"name":     domain,
+				"type":     "MX",
+				"priority": "10",
+				"value":    hostname,
+			},
+			"spf": map[string]string{
+				"name":  domain,
+				"type":  "TXT",
+				"value": fmt.Sprintf("v=spf1 mx a:%s -all", hostname),
+			},
+			"dkim": map[string]string{
+				"name":  fmt.Sprintf("%s._domainkey.%s", selector, domain),
+				"type":  "TXT",
+				"value": dkimPublic,
+			},
+			"dmarc": map[string]string{
+				"name":  fmt.Sprintf("_dmarc.%s", domain),
+				"type":  "TXT",
+				"value": fmt.Sprintf("v=DMARC1; p=quarantine; rua=mailto:postmaster@%s", domain),
+			},
+		},
+		"hostname": hostname,
+		"selector": selector,
+	})
+}
+
+// handleDomainWizardVerify verifies DNS configuration in step 3
+func (s *Server) handleDomainWizardVerify(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Domain   string `json:"domain"`
+		StateID  string `json:"stateId"`
+		Selector string `json:"selector"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+
+	domain := strings.TrimSpace(strings.ToLower(req.Domain))
+	selector := req.Selector
+	if selector == "" {
+		selector = "mail"
+	}
+
+	// Get expected DKIM from state if available
+	var expectedDKIM string
+	wizardStatesMu.Lock()
+	if state, ok := wizardStates[req.StateID]; ok {
+		expectedDKIM = state.DKIMPublic
+	}
+	wizardStatesMu.Unlock()
+
+	// Verify all DNS records
+	mxResult := s.verifyMXRecord(domain, s.config.Server.Hostname)
+	spfResult := s.verifySPFRecord(domain)
+	dkimResult := s.verifyDKIMRecord(domain, selector, expectedDKIM)
+	dmarcResult := s.verifyDMARCRecord(domain)
+
+	// Determine overall status
+	allOk := mxResult["ok"].(bool) && spfResult["ok"].(bool) && dkimResult["ok"].(bool) && dmarcResult["ok"].(bool)
+	requiredOk := mxResult["ok"].(bool) && spfResult["ok"].(bool) // MX and SPF are required
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":    true,
+		"allOk":      allOk,
+		"requiredOk": requiredOk,
+		"mx":         mxResult,
+		"spf":        spfResult,
+		"dkim":       dkimResult,
+		"dmarc":      dmarcResult,
+	})
+}
+
+// handleDomainWizardComplete creates the domain in step 4
+func (s *Server) handleDomainWizardComplete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Domain   string `json:"domain"`
+		StateID  string `json:"stateId"`
+		Selector string `json:"selector"`
+		Bits     int    `json:"bits"`
+		Storage  string `json:"storage"`
+		Skipped  bool   `json:"skipped"` // User skipped DNS verification
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"error":   "Invalid request",
+		})
+		return
+	}
+
+	domain := strings.TrimSpace(strings.ToLower(req.Domain))
+	selector := req.Selector
+	if selector == "" {
+		selector = "mail"
+	}
+
+	// Get wizard state
+	wizardStatesMu.Lock()
+	state, hasState := wizardStates[req.StateID]
+	if hasState {
+		delete(wizardStates, req.StateID) // Clean up
+	}
+	wizardStatesMu.Unlock()
+
+	// Verify DNS if not skipped
+	var dnsStatus string
+	var mxVerified, spfVerified, dkimVerified, dmarcVerified int
+
+	if !req.Skipped {
+		mxResult := s.verifyMXRecord(domain, s.config.Server.Hostname)
+		spfResult := s.verifySPFRecord(domain)
+		var expectedDKIM string
+		if hasState {
+			expectedDKIM = state.DKIMPublic
+		}
+		dkimResult := s.verifyDKIMRecord(domain, selector, expectedDKIM)
+		dmarcResult := s.verifyDMARCRecord(domain)
+
+		if mxResult["ok"].(bool) {
+			mxVerified = 1
+		}
+		if spfResult["ok"].(bool) {
+			spfVerified = 1
+		}
+		if dkimResult["ok"].(bool) {
+			dkimVerified = 1
+		}
+		if dmarcResult["ok"].(bool) {
+			dmarcVerified = 1
+		}
+
+		if mxVerified == 1 && spfVerified == 1 && dkimVerified == 1 && dmarcVerified == 1 {
+			dnsStatus = "ready"
+		} else if mxVerified == 1 || spfVerified == 1 {
+			dnsStatus = "partial"
+		} else {
+			dnsStatus = "pending"
+		}
+	} else {
+		dnsStatus = "pending"
+	}
+
+	// Insert domain
+	result, err := s.db.ExecContext(r.Context(),
+		`INSERT INTO domains (name, dkim_selector, dkim_storage_type, dns_status,
+		 dns_mx_verified, dns_spf_verified, dns_dkim_verified, dns_dmarc_verified, dns_last_checked)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		domain, selector, req.Storage, dnsStatus,
+		mxVerified, spfVerified, dkimVerified, dmarcVerified, time.Now())
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"error":   "Failed to create domain: " + err.Error(),
+		})
+		return
+	}
+
+	domainID, _ := result.LastInsertId()
+
+	// Save DKIM key if we have state
+	if hasState && state.DKIMKey != "" {
+		dkimPath := s.getDKIMPath()
+		store := security.NewKeyStore(req.Storage, dkimPath, s.db)
+
+		privateKey, err := decodePEMPrivateKey(state.DKIMKey)
+		if err == nil {
+			err = store.SaveKey(r.Context(), domain, privateKey, selector, "rsa")
+			if err != nil {
+				s.logger.Error("Failed to save DKIM key", "domain", domain, "error", err.Error())
+			}
+		}
+	}
+
+	// Audit log
+	if s.auditLogger != nil {
+		s.auditLogger.Log(r.Context(), getSessionUsername(r), audit.EventConfigChange, "domain",
+			map[string]interface{}{
+				"action":     "create",
+				"domain":     domain,
+				"dns_status": dnsStatus,
+				"skipped":    req.Skipped,
+			}, getIP(r))
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":   true,
+		"domainId":  domainID,
+		"domain":    domain,
+		"dnsStatus": dnsStatus,
+		"redirect":  "/admin/domains",
+	})
+}
+
+// cleanupWizardStates removes wizard states older than 1 hour
+func cleanupWizardStates() {
+	wizardStatesMu.Lock()
+	defer wizardStatesMu.Unlock()
+
+	cutoff := time.Now().Add(-1 * time.Hour)
+	for id, state := range wizardStates {
+		if state.CreatedAt.Before(cutoff) {
+			delete(wizardStates, id)
+		}
+	}
+}
+
+// encodePEMPrivateKey encodes an RSA private key to PEM format
+func encodePEMPrivateKey(key *rsa.PrivateKey) string {
+	block := &pem.Block{
+		Type:  "RSA PRIVATE KEY",
+		Bytes: x509.MarshalPKCS1PrivateKey(key),
+	}
+	return string(pem.EncodeToMemory(block))
+}
+
+// decodePEMPrivateKey decodes a PEM-encoded RSA private key
+func decodePEMPrivateKey(pemStr string) (*rsa.PrivateKey, error) {
+	block, _ := pem.Decode([]byte(pemStr))
+	if block == nil {
+		return nil, fmt.Errorf("failed to decode PEM block")
+	}
+	return x509.ParsePKCS1PrivateKey(block.Bytes)
 }
 
 // Helper functions for backup/restore

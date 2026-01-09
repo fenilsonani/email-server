@@ -43,6 +43,7 @@ type Server struct {
 	shutdownOnce  sync.Once
 	rateLimiter   *RateLimiter
 	startTime     time.Time
+	dnsChecker    *DNSChecker
 }
 
 // NewServer creates a new admin server
@@ -128,6 +129,7 @@ func NewServer(cfg *config.Config, db *sql.DB, authenticator *auth.Authenticator
 		templates:     templates,
 		rateLimiter:   DefaultRateLimiter(),
 		startTime:     time.Now(),
+		dnsChecker:    NewDNSChecker(db, cfg, logger),
 	}
 
 	return s, nil
@@ -155,6 +157,10 @@ func (s *Server) Start(listen string) error {
 	mux.HandleFunc("/admin/users/delete/", s.withAuth(s.handleUserDelete))
 	mux.HandleFunc("/admin/domains", s.withAuth(s.handleDomains))
 	mux.HandleFunc("/admin/domains/add", s.withAuth(s.handleDomainAdd))
+	mux.HandleFunc("/admin/domains/wizard/validate", s.withAuth(s.handleDomainWizardValidate))
+	mux.HandleFunc("/admin/domains/wizard/dns-records", s.withAuth(s.handleDomainWizardDNSRecords))
+	mux.HandleFunc("/admin/domains/wizard/verify", s.withAuth(s.handleDomainWizardVerify))
+	mux.HandleFunc("/admin/domains/wizard/complete", s.withAuth(s.handleDomainWizardComplete))
 	mux.HandleFunc("/admin/domains/delete/", s.withAuth(s.handleDomainDelete))
 	mux.HandleFunc("/admin/domains/dkim/generate/", s.withAuth(s.handleDKIMGenerate))
 	mux.HandleFunc("/admin/domains/dkim/show/", s.withAuth(s.handleDKIMShow))
@@ -196,6 +202,9 @@ func (s *Server) Start(listen string) error {
 
 	s.logger.Info("Starting admin server", "listen", listen)
 
+	// Start DNS checker background service
+	s.dnsChecker.Start()
+
 	// Start cleanup goroutine
 	CleanupExpiredSessions(s.db)
 
@@ -235,6 +244,11 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	var err error
 	s.shutdownOnce.Do(func() {
 		s.logger.Info("Shutting down admin server")
+
+		// Stop DNS checker
+		if s.dnsChecker != nil {
+			s.dnsChecker.Stop()
+		}
 
 		// Shutdown HTTP server
 		if s.httpServer != nil {

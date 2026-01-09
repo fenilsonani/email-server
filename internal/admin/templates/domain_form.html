@@ -2,68 +2,272 @@
     <h1>Add Domain</h1>
 </div>
 
-<div class="card" style="max-width: 500px;">
-    {{if .Error}}
-    <div class="alert alert-danger">{{.Error}}</div>
-    {{end}}
+<!-- Wizard Progress -->
+<div class="wizard-progress">
+    <div class="wizard-step active" id="progress-1">
+        <div class="step-number">1</div>
+        <div class="step-label">Domain Name</div>
+    </div>
+    <div class="wizard-step" id="progress-2">
+        <div class="step-number">2</div>
+        <div class="step-label">DNS Records</div>
+    </div>
+    <div class="wizard-step" id="progress-3">
+        <div class="step-number">3</div>
+        <div class="step-label">Verify DNS</div>
+    </div>
+    <div class="wizard-step" id="progress-4">
+        <div class="step-number">4</div>
+        <div class="step-label">Complete</div>
+    </div>
+</div>
 
-    <form method="POST" action="/admin/domains/add">
-        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+<!-- Step 1: Domain Name -->
+<div class="card wizard-card" id="step1">
+    <h2>Step 1: Enter Domain Name</h2>
+    <p style="color: var(--text-muted); margin-bottom: 1.5rem;">
+        Enter the domain you want to add to your mail server.
+    </p>
 
-        <div class="form-group">
-            <label for="name">Domain Name</label>
-            <input type="text" id="name" name="name" class="form-control" required
-                   placeholder="example.com" pattern="[a-zA-Z0-9][a-zA-Z0-9.-]*[a-zA-Z0-9]"
-                   title="Enter a valid domain name">
-            <small style="color: var(--text-muted);">e.g., example.com, mail.example.org</small>
-        </div>
+    <div class="form-group">
+        <label for="domain">Domain Name</label>
+        <input type="text" id="domain" class="form-control" required
+               placeholder="example.com" autocomplete="off">
+        <small style="color: var(--text-muted);">e.g., example.com, mail.example.org</small>
+    </div>
 
-        <div class="form-group" style="margin-top: 1.5rem;">
-            <h3 style="font-size: 1rem; margin-bottom: 0.75rem;">DKIM Configuration</h3>
-            <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
-                <input type="checkbox" id="generate_dkim" name="generate_dkim" checked>
-                <span>Generate DKIM Key</span>
-            </label>
-            <small style="color: var(--text-muted);">Automatically generate a DKIM signing key for this domain</small>
-        </div>
-
-        <div id="dkim_options" style="margin-top: 1rem; padding: 1rem; background: var(--bg); border-radius: 6px;">
+    <div class="form-group" style="margin-top: 1.5rem;">
+        <h3 style="font-size: 1rem; margin-bottom: 0.75rem;">DKIM Configuration</h3>
+        <div style="padding: 1rem; background: var(--bg); border-radius: 6px;">
             <div class="form-group">
-                <label for="dkim_selector">DKIM Selector</label>
-                <input type="text" id="dkim_selector" name="dkim_selector" value="mail" class="form-control">
+                <label for="selector">DKIM Selector</label>
+                <input type="text" id="selector" value="mail" class="form-control">
                 <small style="color: var(--text-muted);">Usually "mail" or "default"</small>
             </div>
             <div class="form-group">
-                <label for="dkim_bits">Key Size</label>
-                <select id="dkim_bits" name="dkim_bits" class="form-control">
+                <label for="bits">Key Size</label>
+                <select id="bits" class="form-control">
                     <option value="2048" selected>2048 bits (recommended)</option>
                     <option value="4096">4096 bits</option>
                 </select>
             </div>
             <div class="form-group">
-                <label for="dkim_storage">Key Storage</label>
-                <select id="dkim_storage" name="dkim_storage" class="form-control">
+                <label for="storage">Key Storage</label>
+                <select id="storage" class="form-control">
                     <option value="database" selected>Database</option>
                     <option value="file">File System</option>
                     <option value="hybrid">Both (Hybrid)</option>
                 </select>
             </div>
         </div>
+    </div>
 
-        <div style="display: flex; gap: 1rem; margin-top: 1.5rem;">
-            <button type="submit" class="btn btn-primary">Add Domain</button>
-            <a href="/admin/domains" class="btn btn-secondary">Cancel</a>
-        </div>
-    </form>
+    <div id="step1Error" class="alert alert-danger" style="display: none;"></div>
+
+    <div class="wizard-buttons">
+        <a href="/admin/domains" class="btn btn-secondary">Cancel</a>
+        <button type="button" class="btn btn-primary" onclick="validateDomain()">
+            Next: DNS Records
+        </button>
+    </div>
 </div>
 
-<script>
-document.getElementById('generate_dkim').addEventListener('change', function() {
-    document.getElementById('dkim_options').style.display = this.checked ? 'block' : 'none';
-});
-</script>
+<!-- Step 2: DNS Records -->
+<div class="card wizard-card" id="step2" style="display: none;">
+    <h2>Step 2: Configure DNS Records</h2>
+    <p style="color: var(--text-muted); margin-bottom: 1.5rem;">
+        Add the following DNS records to your domain's DNS settings. You can usually do this through your domain registrar or DNS provider (Cloudflare, Route53, etc.).
+    </p>
+
+    <div class="dns-records-list">
+        <!-- MX Record -->
+        <div class="dns-record-item">
+            <div class="dns-record-header">
+                <span class="dns-record-type">MX</span>
+                <span class="dns-record-name" id="mx-name"></span>
+                <button class="btn btn-sm btn-secondary" onclick="copyRecord('mx')">Copy</button>
+            </div>
+            <div class="dns-record-value">
+                <strong>Priority:</strong> 10<br>
+                <strong>Value:</strong> <code id="mx-value"></code>
+            </div>
+        </div>
+
+        <!-- SPF Record -->
+        <div class="dns-record-item">
+            <div class="dns-record-header">
+                <span class="dns-record-type">TXT (SPF)</span>
+                <span class="dns-record-name" id="spf-name"></span>
+                <button class="btn btn-sm btn-secondary" onclick="copyRecord('spf')">Copy</button>
+            </div>
+            <div class="dns-record-value">
+                <code id="spf-value"></code>
+            </div>
+        </div>
+
+        <!-- DKIM Record -->
+        <div class="dns-record-item">
+            <div class="dns-record-header">
+                <span class="dns-record-type">TXT (DKIM)</span>
+                <span class="dns-record-name" id="dkim-name"></span>
+                <button class="btn btn-sm btn-secondary" onclick="copyRecord('dkim')">Copy</button>
+            </div>
+            <div class="dns-record-value">
+                <textarea id="dkim-value" readonly class="dkim-textarea"></textarea>
+            </div>
+        </div>
+
+        <!-- DMARC Record -->
+        <div class="dns-record-item">
+            <div class="dns-record-header">
+                <span class="dns-record-type">TXT (DMARC)</span>
+                <span class="dns-record-name" id="dmarc-name"></span>
+                <button class="btn btn-sm btn-secondary" onclick="copyRecord('dmarc')">Copy</button>
+            </div>
+            <div class="dns-record-value">
+                <code id="dmarc-value"></code>
+            </div>
+        </div>
+    </div>
+
+    <div class="copy-all-section">
+        <button class="btn btn-secondary" onclick="copyAllRecords()">Copy All Records</button>
+    </div>
+
+    <div class="dns-note">
+        <strong>Note:</strong> DNS changes can take up to 24-48 hours to propagate, but usually complete within minutes.
+    </div>
+
+    <div class="wizard-buttons">
+        <button type="button" class="btn btn-secondary" onclick="goToStep(1)">Back</button>
+        <button type="button" class="btn btn-outline" onclick="skipDNS()">Skip DNS Setup</button>
+        <button type="button" class="btn btn-primary" onclick="goToStep(3)">
+            I've Added These Records
+        </button>
+    </div>
+</div>
+
+<!-- Step 3: Verify DNS -->
+<div class="card wizard-card" id="step3" style="display: none;">
+    <h2>Step 3: Verify DNS Configuration</h2>
+    <p style="color: var(--text-muted); margin-bottom: 1.5rem;">
+        Let's verify that your DNS records are correctly configured.
+    </p>
+
+    <div class="dns-status-list" id="dnsStatusList">
+        <div class="dns-status-item" id="status-mx">
+            <span class="dns-status-icon pending">?</span>
+            <span class="dns-status-label">MX Record</span>
+            <span class="dns-status-result" id="result-mx">Not checked</span>
+        </div>
+        <div class="dns-status-item" id="status-spf">
+            <span class="dns-status-icon pending">?</span>
+            <span class="dns-status-label">SPF Record</span>
+            <span class="dns-status-result" id="result-spf">Not checked</span>
+        </div>
+        <div class="dns-status-item" id="status-dkim">
+            <span class="dns-status-icon pending">?</span>
+            <span class="dns-status-label">DKIM Record</span>
+            <span class="dns-status-result" id="result-dkim">Not checked</span>
+        </div>
+        <div class="dns-status-item" id="status-dmarc">
+            <span class="dns-status-icon pending">?</span>
+            <span class="dns-status-label">DMARC Record</span>
+            <span class="dns-status-result" id="result-dmarc">Not checked</span>
+        </div>
+    </div>
+
+    <div id="verifyResult" style="display: none; margin-top: 1rem; padding: 1rem; border-radius: 6px;"></div>
+
+    <div class="wizard-buttons">
+        <button type="button" class="btn btn-secondary" onclick="goToStep(2)">Back</button>
+        <button type="button" class="btn btn-primary" id="verifyBtn" onclick="verifyDNS()">
+            Verify DNS Records
+        </button>
+        <button type="button" class="btn btn-success" id="completeBtn" onclick="completeDomain(false)" style="display: none;">
+            Complete Setup
+        </button>
+    </div>
+</div>
+
+<!-- Step 4: Complete -->
+<div class="card wizard-card" id="step4" style="display: none;">
+    <div class="complete-icon">&#10003;</div>
+    <h2>Domain Added Successfully!</h2>
+    <p style="color: var(--text-muted); margin-bottom: 1rem;">
+        Your domain <strong id="completeDomain"></strong> has been added to the mail server.
+    </p>
+
+    <div class="complete-status" id="completeStatus"></div>
+
+    <div class="wizard-buttons" style="justify-content: center;">
+        <a href="/admin/domains" class="btn btn-primary">Go to Domains</a>
+        <a href="/admin/users/add" class="btn btn-secondary">Add User</a>
+    </div>
+</div>
 
 <style>
+.wizard-progress {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 2rem;
+    padding: 0 1rem;
+}
+.wizard-step {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    flex: 1;
+    position: relative;
+}
+.wizard-step:not(:last-child)::after {
+    content: '';
+    position: absolute;
+    top: 15px;
+    left: 55%;
+    width: 90%;
+    height: 2px;
+    background: var(--border);
+}
+.wizard-step.active:not(:last-child)::after,
+.wizard-step.completed:not(:last-child)::after {
+    background: var(--primary);
+}
+.step-number {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    background: var(--border);
+    color: var(--text-muted);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: bold;
+    z-index: 1;
+}
+.wizard-step.active .step-number,
+.wizard-step.completed .step-number {
+    background: var(--primary);
+    color: white;
+}
+.step-label {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    margin-top: 0.5rem;
+}
+.wizard-step.active .step-label {
+    color: var(--primary);
+    font-weight: 500;
+}
+.wizard-card {
+    max-width: 700px;
+}
+.wizard-buttons {
+    display: flex;
+    gap: 1rem;
+    margin-top: 2rem;
+    justify-content: flex-end;
+}
 .form-group {
     margin-bottom: 1rem;
 }
@@ -80,20 +284,450 @@ document.getElementById('generate_dkim').addEventListener('change', function() {
     background: var(--card-bg);
     color: var(--text);
 }
+.dns-records-list {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+}
+.dns-record-item {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 1rem;
+    background: var(--bg);
+}
+.dns-record-header {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 0.75rem;
+}
+.dns-record-type {
+    background: var(--primary);
+    color: white;
+    padding: 0.25rem 0.5rem;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    font-weight: bold;
+}
+.dns-record-name {
+    flex: 1;
+    font-family: monospace;
+    font-size: 0.875rem;
+}
+.dns-record-value code {
+    display: block;
+    padding: 0.5rem;
+    background: var(--card-bg);
+    border-radius: 4px;
+    font-size: 0.8rem;
+    word-break: break-all;
+}
+.dkim-textarea {
+    width: 100%;
+    height: 80px;
+    font-family: monospace;
+    font-size: 0.75rem;
+    padding: 0.5rem;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--card-bg);
+    color: var(--text);
+    resize: none;
+}
+.copy-all-section {
+    margin-top: 1rem;
+    text-align: center;
+}
+.dns-note {
+    margin-top: 1rem;
+    padding: 0.75rem;
+    background: #fef3c7;
+    border-radius: 6px;
+    font-size: 0.875rem;
+    color: #92400e;
+}
+.dns-status-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+.dns-status-item {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    padding: 1rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg);
+}
+.dns-status-icon {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: bold;
+    font-size: 0.875rem;
+}
+.dns-status-icon.pending {
+    background: var(--border);
+    color: var(--text-muted);
+}
+.dns-status-icon.checking {
+    background: #e0e7ff;
+    color: #4f46e5;
+    animation: pulse 1s infinite;
+}
+.dns-status-icon.ok {
+    background: #dcfce7;
+    color: #16a34a;
+}
+.dns-status-icon.fail {
+    background: #fee2e2;
+    color: #dc2626;
+}
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}
+.dns-status-label {
+    flex: 1;
+    font-weight: 500;
+}
+.dns-status-result {
+    font-size: 0.875rem;
+    color: var(--text-muted);
+}
+.complete-icon {
+    width: 80px;
+    height: 80px;
+    background: #dcfce7;
+    color: #16a34a;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 2.5rem;
+    margin: 0 auto 1.5rem;
+}
+.complete-status {
+    padding: 1rem;
+    border-radius: 6px;
+    margin-bottom: 1rem;
+}
+.btn-outline {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text);
+}
+.btn-outline:hover {
+    background: var(--bg);
+}
+.btn-success {
+    background: #16a34a;
+    color: white;
+}
+.btn-success:hover {
+    background: #15803d;
+}
 </style>
 
-<div class="card">
-    <h2>After Adding a Domain</h2>
-    <p style="color: var(--text-muted); margin-bottom: 1rem;">
-        After adding your domain, you'll need to configure DNS records. The DKIM DNS record will be displayed after the domain is created.
-    </p>
-    <p style="color: var(--text-muted); margin-bottom: 1rem;">
-        You can also use the CLI to manage DNS:
-    </p>
-    <pre style="background: var(--bg); padding: 1rem; border-radius: 6px; overflow-x: auto; font-size: 0.875rem; line-height: 1.6;">
-# Show DKIM DNS record
-mailserver dkim show yourdomain.com
+<script>
+var wizardData = {
+    domain: '',
+    selector: 'mail',
+    bits: 2048,
+    storage: 'database',
+    stateId: '',
+    records: null,
+    skipped: false
+};
 
-# Check if DNS is configured correctly
-mailserver dns check yourdomain.com</pre>
-</div>
+function goToStep(step) {
+    // Hide all steps
+    for (var i = 1; i <= 4; i++) {
+        document.getElementById('step' + i).style.display = 'none';
+        document.getElementById('progress-' + i).classList.remove('active', 'completed');
+    }
+
+    // Show current step and mark progress
+    document.getElementById('step' + step).style.display = 'block';
+    for (var i = 1; i < step; i++) {
+        document.getElementById('progress-' + i).classList.add('completed');
+    }
+    document.getElementById('progress-' + step).classList.add('active');
+
+    // If going to step 3, reset verification state
+    if (step === 3) {
+        resetVerification();
+    }
+}
+
+function validateDomain() {
+    var domain = document.getElementById('domain').value.trim().toLowerCase();
+    var selector = document.getElementById('selector').value.trim() || 'mail';
+    var bits = parseInt(document.getElementById('bits').value) || 2048;
+    var storage = document.getElementById('storage').value || 'database';
+
+    var errorDiv = document.getElementById('step1Error');
+    errorDiv.style.display = 'none';
+
+    if (!domain) {
+        errorDiv.textContent = 'Please enter a domain name';
+        errorDiv.style.display = 'block';
+        return;
+    }
+
+    // Validate domain format
+    fetch('/admin/domains/wizard/validate', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({domain: domain})
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        if (!data.valid) {
+            errorDiv.textContent = data.error;
+            errorDiv.style.display = 'block';
+            return;
+        }
+
+        wizardData.domain = domain;
+        wizardData.selector = selector;
+        wizardData.bits = bits;
+        wizardData.storage = storage;
+
+        // Get DNS records
+        fetchDNSRecords();
+    })
+    .catch(function(err) {
+        errorDiv.textContent = 'Error validating domain: ' + err;
+        errorDiv.style.display = 'block';
+    });
+}
+
+function fetchDNSRecords() {
+    fetch('/admin/domains/wizard/dns-records', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            domain: wizardData.domain,
+            selector: wizardData.selector,
+            bits: wizardData.bits,
+            storage: wizardData.storage
+        })
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        if (!data.success) {
+            document.getElementById('step1Error').textContent = data.error;
+            document.getElementById('step1Error').style.display = 'block';
+            return;
+        }
+
+        wizardData.stateId = data.stateId;
+        wizardData.records = data.records;
+
+        // Populate DNS records
+        document.getElementById('mx-name').textContent = data.records.mx.name;
+        document.getElementById('mx-value').textContent = data.records.mx.value;
+        document.getElementById('spf-name').textContent = data.records.spf.name;
+        document.getElementById('spf-value').textContent = data.records.spf.value;
+        document.getElementById('dkim-name').textContent = data.records.dkim.name;
+        document.getElementById('dkim-value').value = data.records.dkim.value;
+        document.getElementById('dmarc-name').textContent = data.records.dmarc.name;
+        document.getElementById('dmarc-value').textContent = data.records.dmarc.value;
+
+        goToStep(2);
+    })
+    .catch(function(err) {
+        document.getElementById('step1Error').textContent = 'Error generating DNS records: ' + err;
+        document.getElementById('step1Error').style.display = 'block';
+    });
+}
+
+function copyRecord(type) {
+    var value = '';
+    if (type === 'mx') {
+        value = '10 ' + document.getElementById('mx-value').textContent;
+    } else if (type === 'spf') {
+        value = document.getElementById('spf-value').textContent;
+    } else if (type === 'dkim') {
+        value = document.getElementById('dkim-value').value;
+    } else if (type === 'dmarc') {
+        value = document.getElementById('dmarc-value').textContent;
+    }
+
+    navigator.clipboard.writeText(value).then(function() {
+        alert(type.toUpperCase() + ' record copied!');
+    });
+}
+
+function copyAllRecords() {
+    var records = wizardData.records;
+    var text = '# DNS Records for ' + wizardData.domain + '\n\n';
+    text += '# MX Record\n';
+    text += records.mx.name + '\tMX\t10\t' + records.mx.value + '\n\n';
+    text += '# SPF Record\n';
+    text += records.spf.name + '\tTXT\t"' + records.spf.value + '"\n\n';
+    text += '# DKIM Record\n';
+    text += records.dkim.name + '\tTXT\t"' + records.dkim.value + '"\n\n';
+    text += '# DMARC Record\n';
+    text += records.dmarc.name + '\tTXT\t"' + records.dmarc.value + '"\n';
+
+    navigator.clipboard.writeText(text).then(function() {
+        alert('All records copied!');
+    });
+}
+
+function skipDNS() {
+    wizardData.skipped = true;
+    completeDomain(true);
+}
+
+function resetVerification() {
+    var types = ['mx', 'spf', 'dkim', 'dmarc'];
+    types.forEach(function(type) {
+        var icon = document.querySelector('#status-' + type + ' .dns-status-icon');
+        icon.className = 'dns-status-icon pending';
+        icon.textContent = '?';
+        document.getElementById('result-' + type).textContent = 'Not checked';
+    });
+    document.getElementById('verifyResult').style.display = 'none';
+    document.getElementById('verifyBtn').style.display = 'inline-block';
+    document.getElementById('completeBtn').style.display = 'none';
+}
+
+function verifyDNS() {
+    var btn = document.getElementById('verifyBtn');
+    btn.textContent = 'Checking...';
+    btn.disabled = true;
+
+    // Set all to checking
+    var types = ['mx', 'spf', 'dkim', 'dmarc'];
+    types.forEach(function(type) {
+        var icon = document.querySelector('#status-' + type + ' .dns-status-icon');
+        icon.className = 'dns-status-icon checking';
+        icon.textContent = '...';
+    });
+
+    fetch('/admin/domains/wizard/verify', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            domain: wizardData.domain,
+            stateId: wizardData.stateId,
+            selector: wizardData.selector
+        })
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        // Update status for each record
+        updateStatus('mx', data.mx);
+        updateStatus('spf', data.spf);
+        updateStatus('dkim', data.dkim);
+        updateStatus('dmarc', data.dmarc);
+
+        // Show result summary
+        var resultDiv = document.getElementById('verifyResult');
+        resultDiv.style.display = 'block';
+
+        if (data.allOk) {
+            resultDiv.style.background = '#dcfce7';
+            resultDiv.innerHTML = '<strong style="color: #16a34a;">All DNS records verified!</strong> Your domain is ready.';
+            document.getElementById('completeBtn').style.display = 'inline-block';
+            btn.style.display = 'none';
+        } else if (data.requiredOk) {
+            resultDiv.style.background = '#fef3c7';
+            resultDiv.innerHTML = '<strong style="color: #92400e;">MX and SPF verified.</strong> DKIM/DMARC may still be propagating. You can complete setup now or wait.';
+            document.getElementById('completeBtn').style.display = 'inline-block';
+            btn.textContent = 'Retry Verification';
+            btn.disabled = false;
+        } else {
+            resultDiv.style.background = '#fee2e2';
+            resultDiv.innerHTML = '<strong style="color: #dc2626;">Required records not found.</strong> Please add MX and SPF records, then retry. DNS changes can take up to 24-48 hours to propagate.';
+            btn.textContent = 'Retry Verification';
+            btn.disabled = false;
+        }
+    })
+    .catch(function(err) {
+        btn.textContent = 'Retry Verification';
+        btn.disabled = false;
+        alert('Verification failed: ' + err);
+    });
+}
+
+function updateStatus(type, result) {
+    var icon = document.querySelector('#status-' + type + ' .dns-status-icon');
+    var resultSpan = document.getElementById('result-' + type);
+
+    if (result.ok) {
+        icon.className = 'dns-status-icon ok';
+        icon.textContent = '\u2713';
+        resultSpan.textContent = result.found ? 'Found' : 'OK';
+        resultSpan.style.color = '#16a34a';
+    } else {
+        icon.className = 'dns-status-icon fail';
+        icon.textContent = '\u2717';
+        resultSpan.textContent = result.found ? 'Incorrect' : 'Not found';
+        resultSpan.style.color = '#dc2626';
+    }
+}
+
+function completeDomain(skipped) {
+    var btn = document.getElementById('completeBtn') || document.querySelector('.btn-primary');
+    if (btn) {
+        btn.textContent = 'Creating...';
+        btn.disabled = true;
+    }
+
+    fetch('/admin/domains/wizard/complete', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            domain: wizardData.domain,
+            stateId: wizardData.stateId,
+            selector: wizardData.selector,
+            bits: wizardData.bits,
+            storage: wizardData.storage,
+            skipped: skipped
+        })
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        if (!data.success) {
+            alert('Error: ' + data.error);
+            if (btn) {
+                btn.textContent = 'Complete Setup';
+                btn.disabled = false;
+            }
+            return;
+        }
+
+        // Show completion
+        document.getElementById('completeDomain').textContent = data.domain;
+
+        var statusDiv = document.getElementById('completeStatus');
+        if (data.dnsStatus === 'ready') {
+            statusDiv.style.background = '#dcfce7';
+            statusDiv.innerHTML = '<strong style="color: #16a34a;">DNS Status: Ready</strong><br>All DNS records are verified. Your domain is ready to send and receive emails.';
+        } else if (data.dnsStatus === 'partial') {
+            statusDiv.style.background = '#fef3c7';
+            statusDiv.innerHTML = '<strong style="color: #92400e;">DNS Status: Partial</strong><br>Some DNS records are configured. Check the Domains page to verify the rest.';
+        } else {
+            statusDiv.style.background = '#fee2e2';
+            statusDiv.innerHTML = '<strong style="color: #dc2626;">DNS Status: Pending</strong><br>DNS records need to be configured. Visit the Domains page and click "Check DNS" after adding records.';
+        }
+
+        goToStep(4);
+    })
+    .catch(function(err) {
+        alert('Error creating domain: ' + err);
+        if (btn) {
+            btn.textContent = 'Complete Setup';
+            btn.disabled = false;
+        }
+    });
+}
+</script>
