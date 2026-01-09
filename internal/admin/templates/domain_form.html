@@ -441,7 +441,8 @@ var wizardData = {
     storage: 'database',
     stateId: '',
     records: null,
-    skipped: false
+    skipped: false,
+    csrfToken: '{{.CSRFToken}}'
 };
 
 function goToStep(step) {
@@ -482,7 +483,10 @@ function validateDomain() {
     // Validate domain format
     fetch('/admin/domains/wizard/validate', {
         method: 'POST',
-        headers: {'Content-Type': 'application/json'},
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRF-Token': wizardData.csrfToken
+        },
         body: JSON.stringify({domain: domain})
     })
     .then(function(r) { return r.json(); })
@@ -510,7 +514,10 @@ function validateDomain() {
 function fetchDNSRecords() {
     fetch('/admin/domains/wizard/dns-records', {
         method: 'POST',
-        headers: {'Content-Type': 'application/json'},
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRF-Token': wizardData.csrfToken
+        },
         body: JSON.stringify({
             domain: wizardData.domain,
             selector: wizardData.selector,
@@ -614,7 +621,10 @@ function verifyDNS() {
 
     fetch('/admin/domains/wizard/verify', {
         method: 'POST',
-        headers: {'Content-Type': 'application/json'},
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRF-Token': wizardData.csrfToken
+        },
         body: JSON.stringify({
             domain: wizardData.domain,
             stateId: wizardData.stateId,
@@ -684,7 +694,10 @@ function completeDomain(skipped) {
 
     fetch('/admin/domains/wizard/complete', {
         method: 'POST',
-        headers: {'Content-Type': 'application/json'},
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRF-Token': wizardData.csrfToken
+        },
         body: JSON.stringify({
             domain: wizardData.domain,
             stateId: wizardData.stateId,

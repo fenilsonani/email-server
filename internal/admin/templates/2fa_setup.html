@@ -69,12 +69,14 @@
                 <h4>Step 2: Scan QR Code or Enter Key</h4>
                 <div style="display: flex; gap: 2rem; flex-wrap: wrap; margin: 1rem 0;">
                     <div style="text-align: center;">
-                        <div id="qrcode" style="background: white; padding: 1rem; border-radius: 8px; display: inline-block;"></div>
+                        <div style="background: white; padding: 1rem; border-radius: 8px; display: inline-block;">
+                            <img src="data:image/png;base64,{{.QRCode}}" alt="QR Code" width="200" height="200">
+                        </div>
                         <p style="margin-top: 0.5rem; color: #64748b; font-size: 0.875rem;">Scan with your app</p>
                     </div>
                     <div style="flex: 1; min-width: 200px;">
                         <p style="margin-bottom: 0.5rem;"><strong>Or enter this key manually:</strong></p>
-                        <div style="background: #f1f5f9; padding: 1rem; border-radius: 6px; font-family: monospace; font-size: 1.1rem; word-break: break-all;">
+                        <div style="background: #f1f5f9; padding: 1rem; border-radius: 6px; font-family: monospace; font-size: 1.1rem; word-break: break-all;" id="secretKey">
                             {{.Secret}}
                         </div>
                         <button type="button" class="btn btn-secondary" style="margin-top: 0.5rem;" onclick="copySecret()">
@@ -140,21 +142,13 @@
 }
 </style>
 
-<script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
 <script>
-{{if not .Enabled}}
-// Generate QR code
-document.addEventListener('DOMContentLoaded', function() {
-    var qr = qrcode(0, 'M');
-    qr.addData('{{.QRCodeURL}}');
-    qr.make();
-    document.getElementById('qrcode').innerHTML = qr.createImgTag(5, 0);
-});
-
 function copySecret() {
-    navigator.clipboard.writeText('{{.Secret}}').then(function() {
-        alert('Secret key copied to clipboard!');
-    });
+    var secretKey = document.getElementById('secretKey');
+    if (secretKey) {
+        navigator.clipboard.writeText(secretKey.textContent.trim()).then(function() {
+            alert('Secret key copied to clipboard!');
+        });
+    }
 }
-{{end}}
 </script>

@@ -1,10 +1,12 @@
 package admin
 
 import (
+	"bytes"
 	"crypto/rand"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"image/png"
 	"net/http"
 	"time"
 
@@ -52,6 +54,21 @@ func (s *Server) generateTOTPSecret(username string) (*otp.Key, error) {
 		Digits:      otp.DigitsSix,
 		Algorithm:   otp.AlgorithmSHA1,
 	})
+}
+
+// generateQRCodeBase64 generates a QR code image as a base64-encoded PNG
+func generateQRCodeBase64(key *otp.Key) (string, error) {
+	img, err := key.Image(200, 200)
+	if err != nil {
+		return "", err
+	}
+
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		return "", err
+	}
+
+	return base64.StdEncoding.EncodeToString(buf.Bytes()), nil
 }
 
 // validateTOTPCode validates a TOTP code against the user's secret
@@ -192,6 +209,16 @@ func (s *Server) handle2FASetup(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		// Generate QR code as base64
+		qrCodeBase64, err := generateQRCodeBase64(key)
+		if err != nil {
+			s.renderTemplate(w, "2fa_setup.html", map[string]interface{}{
+				"Title": "Two-Factor Setup",
+				"Error": "Failed to generate QR code",
+			})
+			return
+		}
+
 		// Store secret temporarily (not enabled yet)
 		_, err = s.db.Exec(
 			"UPDATE users SET totp_secret = ? WHERE id = ?",
@@ -206,12 +233,12 @@ func (s *Server) handle2FASetup(w http.ResponseWriter, r *http.Request) {
 		}
 
 		s.renderTemplate(w, "2fa_setup.html", map[string]interface{}{
-			"Title":        "Two-Factor Setup",
-			"Enabled":      false,
-			"Secret":       key.Secret(),
-			"QRCodeURL":    key.URL(),
-			"AccountName":  username,
-			"CSRFToken":    w.Header().Get("X-CSRF-Token"),
+			"Title":       "Two-Factor Setup",
+			"Enabled":     false,
+			"Secret":      key.Secret(),
+			"QRCode":      qrCodeBase64,
+			"AccountName": username,
+			"CSRFToken":   w.Header().Get("X-CSRF-Token"),
 		})
 		return
 	}
@@ -272,12 +299,17 @@ func (s *Server) handle2FASetup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !s.validateTOTPCode(secret, code) {
-		key, _ := s.generateTOTPSecret(username)
+		// Generate QR code from existing secret
+		key, err := otp.NewKeyFromURL("otpauth://totp/" + totpIssuer + ":" + username + "?secret=" + secret + "&issuer=" + totpIssuer)
+		var qrCodeBase64 string
+		if err == nil {
+			qrCodeBase64, _ = generateQRCodeBase64(key)
+		}
 		s.renderTemplate(w, "2fa_setup.html", map[string]interface{}{
 			"Title":       "Two-Factor Setup",
 			"Enabled":     false,
 			"Secret":      secret,
-			"QRCodeURL":   key.URL(),
+			"QRCode":      qrCodeBase64,
 			"AccountName": username,
 			"Error":       "Invalid verification code. Please try again.",
 			"CSRFToken":   w.Header().Get("X-CSRF-Token"),
