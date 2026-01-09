@@ -1145,13 +1145,21 @@ func (s *Server) verifyMXRecord(domain, expectedHost string) map[string]interfac
 		return result
 	}
 
-	// Check if any MX record matches our hostname
+	// Valid MX targets: server hostname OR mail.<domain>
+	validHosts := []string{
+		expectedHost,
+		"mail." + domain,
+	}
+
+	// Check if any MX record matches valid hosts
 	var foundHosts []string
 	for _, mx := range mxRecords {
 		host := strings.TrimSuffix(mx.Host, ".")
 		foundHosts = append(foundHosts, host)
-		if strings.EqualFold(host, expectedHost) || strings.EqualFold(host, expectedHost+".") {
-			result["ok"] = true
+		for _, validHost := range validHosts {
+			if strings.EqualFold(host, validHost) || strings.EqualFold(host, validHost+".") {
+				result["ok"] = true
+			}
 		}
 	}
 	result["found"] = strings.Join(foundHosts, ", ")
