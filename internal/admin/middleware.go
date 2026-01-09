@@ -225,20 +225,9 @@ func (s *Server) withCSRF(next http.Handler) http.Handler {
 			return
 		}
 
-		// Remove used token with proper locking
-		csrfTokensMu.Lock()
-		// Double-check it still exists
-		if exp, ok := csrfTokens[token]; ok && !now.After(exp) {
-			delete(csrfTokens, token)
-		}
-		csrfTokensMu.Unlock()
-
-		// Generate new token for response
-		newToken := generateToken()
-		csrfTokensMu.Lock()
-		csrfTokens[newToken] = time.Now().Add(1 * time.Hour)
-		csrfTokensMu.Unlock()
-		w.Header().Set("X-CSRF-Token", newToken)
+		// Keep token valid for reuse (for multi-step wizards and AJAX calls)
+		// Token will naturally expire after 1 hour
+		w.Header().Set("X-CSRF-Token", token)
 
 		next.ServeHTTP(w, r)
 	})
