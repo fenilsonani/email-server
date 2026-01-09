@@ -107,12 +107,23 @@ func (s *Server) handleMozillaAutoconfig(w http.ResponseWriter, r *http.Request)
 		email = "%EMAILADDRESS%"
 	}
 
+	// Extract domain from email for multi-domain support
+	domain := s.config.Domain
+	displayName := s.config.DisplayName
+	if email != "%EMAILADDRESS%" {
+		parts := strings.Split(email, "@")
+		if len(parts) == 2 && parts[1] != "" {
+			domain = parts[1]
+			displayName = domain + " Mail"
+		}
+	}
+
 	config := mozillaConfig{
 		Version: "1.1",
 	}
-	config.EmailProvider.ID = s.config.Domain
-	config.EmailProvider.Domain = s.config.Domain
-	config.EmailProvider.DisplayName = s.config.DisplayName
+	config.EmailProvider.ID = domain
+	config.EmailProvider.Domain = domain
+	config.EmailProvider.DisplayName = displayName
 
 	// IMAP settings
 	config.EmailProvider.InServer.Type = "imap"
@@ -166,6 +177,14 @@ func (s *Server) handleMicrosoftAutodiscover(w http.ResponseWriter, r *http.Requ
 	if email == "" {
 		email = "user@" + s.config.Domain
 	}
+
+	// Extract domain from email for multi-domain support
+	domain := s.config.Domain
+	parts := strings.Split(email, "@")
+	if len(parts) == 2 && parts[1] != "" {
+		domain = parts[1]
+	}
+	_ = domain // Currently unused but available for future customization
 
 	response := fmt.Sprintf(`<?xml version="1.0" encoding="utf-8"?>
 <Autodiscover xmlns="http://schemas.microsoft.com/exchange/autodiscover/responseschema/2006">
@@ -319,12 +338,16 @@ func (s *Server) handleAppleMobileconfig(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Validate email domain
+	// Validate email and extract domain
 	parts := strings.Split(email, "@")
-	if len(parts) != 2 {
+	if len(parts) != 2 || parts[1] == "" {
 		http.Error(w, "Invalid email address", http.StatusBadRequest)
 		return
 	}
+
+	// Use the email's domain for profile identity (multi-domain support)
+	emailDomain := parts[1]
+	displayName := emailDomain + " Mail"
 
 	// Generate deterministic UUIDs based on email
 	uuid := generateUUID(email)
@@ -340,9 +363,9 @@ func (s *Server) handleAppleMobileconfig(w http.ResponseWriter, r *http.Request)
 		UUID        string
 		ProfileUUID string
 	}{
-		DisplayName: s.config.DisplayName,
-		Domain:      s.config.Domain,
-		Hostname:    s.config.Hostname,
+		DisplayName: displayName,
+		Domain:      emailDomain,
+		Hostname:    s.config.Hostname, // Server hostname stays the same
 		Email:       email,
 		IMAPPort:    s.config.IMAPPort,
 		SMTPPort:    s.config.SMTPPort,
