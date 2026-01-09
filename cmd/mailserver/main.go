@@ -458,10 +458,12 @@ var serveCmd = &cobra.Command{
 		}
 
 		// Start autodiscover server if enabled
+		// Note: Autodiscover handlers dynamically extract domain from email addresses
+		// for multi-domain support. These config values are defaults/fallbacks.
 		if cfg.Autodiscover.Enabled {
 			displayName := cfg.Autodiscover.DisplayName
 			if displayName == "" {
-				displayName = cfg.Server.Domain + " Mail"
+				displayName = "Mail Service" // Generic default; handlers use email domain dynamically
 			}
 			autodiscoverSrv := autodiscover.NewServer(autodiscover.Config{
 				Domain:      cfg.Server.Domain,

@@ -96,7 +96,7 @@ func RunSetupWithOptions(force bool) error {
 	}
 	cfg.Hostname = hostname
 
-	// Admin email
+	// Admin email (defaults to primary domain; additional domains can be added later via admin panel)
 	defaultAdmin := "admin@" + cfg.Domain
 	fmt.Printf("Enter admin email [%s]: ", defaultAdmin)
 	adminEmail, _ := reader.ReadString('\n')
@@ -287,6 +287,8 @@ func verifyConfig(cfg *SetupConfig) error {
 	return err
 }
 
+// generateDKIM generates DKIM keys for the primary domain during initial setup.
+// Additional domains added via the admin panel get their DKIM keys generated separately.
 func generateDKIM(cfg *SetupConfig) error {
 	keyPath := cfg.ConfigDir + "/dkim/" + cfg.Domain + ".key"
 

@@ -46,17 +46,22 @@ func (s *Server) handleSendEmail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Generate message ID and tracking ID
-	messageID := generateMessageID(s.config.Server.Hostname)
+	// Extract sender domain for Message-ID (multi-domain support)
+	senderDomain := s.config.Server.Hostname // fallback
+	if parts := splitEmail(req.From); len(parts) == 2 && parts[1] != "" {
+		senderDomain = parts[1]
+	}
+	messageID := generateMessageID(senderDomain)
 	trackingID := generateTrackingID()
 
 	// Process HTML for tracking if enabled
 	htmlBody := req.HTML
 	if s.config.API.EnableTracking {
 		if req.TrackOpens {
-			htmlBody = injectOpenTracking(htmlBody, trackingID, s.config.API.TrackingDomain, s.config.Server.Hostname)
+			htmlBody = injectOpenTracking(htmlBody, trackingID, s.config.API.TrackingDomain, senderDomain)
 		}
 		if req.TrackClicks {
-			htmlBody = rewriteLinksForTracking(htmlBody, trackingID, s.config.API.TrackingDomain, s.config.Server.Hostname)
+			htmlBody = rewriteLinksForTracking(htmlBody, trackingID, s.config.API.TrackingDomain, senderDomain)
 		}
 	}
 
@@ -146,8 +151,12 @@ func (s *Server) handleSendTemplate(w http.ResponseWriter, r *http.Request) {
 	htmlBody := renderTemplateString(template.HTMLBody, req.Variables)
 	textBody := renderTemplateString(template.TextBody, req.Variables)
 
-	// Generate IDs
-	messageID := generateMessageID(s.config.Server.Hostname)
+	// Generate IDs - use sender domain for Message-ID (multi-domain support)
+	senderDomain := s.config.Server.Hostname // fallback
+	if parts := splitEmail(req.From); len(parts) == 2 && parts[1] != "" {
+		senderDomain = parts[1]
+	}
+	messageID := generateMessageID(senderDomain)
 	trackingID := generateTrackingID()
 
 	// Process tracking
@@ -155,10 +164,10 @@ func (s *Server) handleSendTemplate(w http.ResponseWriter, r *http.Request) {
 	trackClicks := req.TrackClick == nil || *req.TrackClick
 	if s.config.API.EnableTracking {
 		if trackOpens {
-			htmlBody = injectOpenTracking(htmlBody, trackingID, s.config.API.TrackingDomain, s.config.Server.Hostname)
+			htmlBody = injectOpenTracking(htmlBody, trackingID, s.config.API.TrackingDomain, senderDomain)
 		}
 		if trackClicks {
-			htmlBody = rewriteLinksForTracking(htmlBody, trackingID, s.config.API.TrackingDomain, s.config.Server.Hostname)
+			htmlBody = rewriteLinksForTracking(htmlBody, trackingID, s.config.API.TrackingDomain, senderDomain)
 		}
 	}
 
@@ -236,6 +245,12 @@ func (s *Server) handleSendBatch(w http.ResponseWriter, r *http.Request) {
 	domainID, _ := s.getDomainID(r.Context())
 	apiKey := getAPIKeyFromContext(r.Context())
 
+	// Extract sender domain for Message-ID (multi-domain support)
+	senderDomain := s.config.Server.Hostname // fallback
+	if parts := splitEmail(req.From); len(parts) == 2 && parts[1] != "" {
+		senderDomain = parts[1]
+	}
+
 	var responses []SendResponse
 	var errors []BatchError
 
@@ -245,7 +260,7 @@ func (s *Server) handleSendBatch(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		messageID := generateMessageID(s.config.Server.Hostname)
+		messageID := generateMessageID(senderDomain)
 		trackingID := generateTrackingID()
 
 		tagsJSON, _ := json.Marshal(msg.Tags)
