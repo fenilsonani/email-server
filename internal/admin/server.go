@@ -28,6 +28,9 @@ import (
 //go:embed templates/*.html
 var templatesFS embed.FS
 
+//go:embed static/*
+var staticFS embed.FS
+
 // Server handles the admin web interface
 type Server struct {
 	config        *config.Config
@@ -158,6 +161,10 @@ func (s *Server) Start(listen string) error {
 
 	// Prometheus metrics endpoint (no auth for scraping)
 	mux.Handle("/metrics", promhttp.Handler())
+
+	// Static files (CSS, JS)
+	staticHTTP := http.FileServer(http.FS(staticFS))
+	mux.Handle("/static/", http.StripPrefix("/", staticHTTP))
 
 	// Admin routes
 	mux.HandleFunc("/admin/", s.withAuth(s.handleDashboard))
