@@ -94,7 +94,7 @@ func TestRecordDelivery(t *testing.T) {
 }
 
 func TestRecordConnection(t *testing.T) {
-	protocols := []string{"smtp", "imap", "pop3"}
+	protocols := []string{"smtp", "imap"}
 
 	for _, protocol := range protocols {
 		t.Run(protocol, func(t *testing.T) {

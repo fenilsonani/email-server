@@ -20,7 +20,6 @@
             <option value="">all protocols</option>
             <option value="IMAP" {{if eq .FilterProtocol "IMAP"}}selected{{end}}>imap</option>
             <option value="SMTP" {{if eq .FilterProtocol "SMTP"}}selected{{end}}>smtp</option>
-            <option value="POP3" {{if eq .FilterProtocol "POP3"}}selected{{end}}>pop3</option>
         </select>
         <label for="status-filter" class="sr-only">status</label>
         <select id="status-filter" name="status" class="form-control" aria-label="Filter by status">
