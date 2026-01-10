@@ -719,6 +719,13 @@ func (s *Server) handleSieve(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, r.URL.Path, http.StatusSeeOther)
 }
 
+// handleLogs shows the logs landing page
+func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
+	s.renderTemplate(w, "logs.html", map[string]interface{}{
+		"Title": "Logs",
+	})
+}
+
 // handleAuthLogs shows authentication logs
 func (s *Server) handleAuthLogs(w http.ResponseWriter, r *http.Request) {
 	// Get pagination parameters

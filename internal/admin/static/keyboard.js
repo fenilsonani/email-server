@@ -5,7 +5,7 @@
     'g u': '/admin/users',
     'g o': '/admin/domains',
     'g q': '/admin/queue',
-    'g l': '/admin/logs/auth',
+    'g l': '/admin/logs',
     'g s': '/admin/system'
   };
 

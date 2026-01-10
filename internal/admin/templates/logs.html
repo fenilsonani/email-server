@@ -1,0 +1,47 @@
+<div class="breadcrumbs">
+    <a href="/admin/">home</a>
+    <span>&gt;</span>
+    <span>logs</span>
+</div>
+
+<div class="page-header">
+    <h1>Logs</h1>
+</div>
+
+<div class="card">
+    <h2>Log Types</h2>
+    <p style="margin-bottom: 1.5rem; color: var(--text-muted);">
+        View different types of server logs to monitor activity and troubleshoot issues.
+    </p>
+
+    <div style="display: flex; flex-direction: column; gap: 1rem;">
+        <a href="/admin/logs/auth" class="btn btn-primary" style="text-align: left; padding: 1rem;" aria-label="View authentication logs">
+            <strong>Authentication Logs</strong>
+            <br>
+            <small style="color: var(--text-muted);">View login attempts, successful and failed authentications via IMAP, SMTP, and POP3</small>
+        </a>
+
+        <a href="/admin/logs/delivery" class="btn btn-primary" style="text-align: left; padding: 1rem;" aria-label="View delivery logs">
+            <strong>Delivery Logs</strong>
+            <br>
+            <small style="color: var(--text-muted);">View email delivery attempts, status, and errors for inbound and outbound messages</small>
+        </a>
+
+        <a href="/admin/logs/audit" class="btn btn-primary" style="text-align: left; padding: 1rem;" aria-label="View audit logs">
+            <strong>Audit Logs</strong>
+            <br>
+            <small style="color: var(--text-muted);">View administrative actions, configuration changes, and security events</small>
+        </a>
+    </div>
+</div>
+
+<div class="card">
+    <h2>Quick Access</h2>
+    <p style="margin-bottom: 1rem; color: var(--text-muted);">Keyboard shortcuts:</p>
+    <ul style="font-size: 12px; line-height: 1.8;">
+        <li><kbd>g</kbd> <kbd>l</kbd> - Go to logs page (here)</li>
+        <li><kbd>/</kbd> - Focus search/filter field on log pages</li>
+        <li><kbd>j</kbd> / <kbd>k</kbd> - Navigate table rows</li>
+        <li><kbd>n</kbd> / <kbd>p</kbd> - Next/previous page</li>
+    </ul>
+</div>

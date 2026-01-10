@@ -85,6 +85,7 @@ func NewServer(cfg *config.Config, db *sql.DB, authenticator *auth.Authenticator
 		"domains.html",
 		"domain_form.html",
 		"sieve.html",
+		"logs.html",
 		"auth_logs.html",
 		"delivery_logs.html",
 		"audit_logs.html",
@@ -204,6 +205,7 @@ func (s *Server) Start(listen string) error {
 	mux.HandleFunc("/admin/domains/dns/verify/", s.withAuth(s.handleDNSVerify))
 	mux.HandleFunc("/admin/domains/dns/", s.withAuth(s.handleDomainDNS))
 	mux.HandleFunc("/admin/sieve/", s.withAuth(s.handleSieve))
+	mux.HandleFunc("/admin/logs", s.withAuth(s.handleLogs))
 	mux.HandleFunc("/admin/logs/auth", s.withAuth(s.handleAuthLogs))
 	mux.HandleFunc("/admin/logs/delivery", s.withAuth(s.handleDeliveryLogs))
 	mux.HandleFunc("/admin/logs/audit", s.withAuth(s.handleAuditLogs))
