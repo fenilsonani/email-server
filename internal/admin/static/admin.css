@@ -47,6 +47,13 @@ nav .container {
     flex-wrap: wrap;
 }
 
+.nav-links {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
 nav a {
     color: var(--text);
     text-decoration: none;
@@ -491,23 +498,209 @@ code {
     background: #1a1a1a;
 }
 
+/* Hamburger Menu */
+.hamburger {
+    display: none;
+    flex-direction: column;
+    gap: 4px;
+    background: none;
+    border: 1px solid var(--text);
+    padding: 6px 8px;
+    cursor: pointer;
+    margin-left: auto;
+}
+
+.hamburger span {
+    width: 18px;
+    height: 2px;
+    background: var(--text);
+    display: block;
+    transition: all 0.3s;
+}
+
+.hamburger.active span:nth-child(1) {
+    transform: rotate(45deg) translate(5px, 5px);
+}
+
+.hamburger.active span:nth-child(2) {
+    opacity: 0;
+}
+
+.hamburger.active span:nth-child(3) {
+    transform: rotate(-45deg) translate(6px, -6px);
+}
+
 /* Responsive */
 @media (max-width: 768px) {
     body {
         font-size: 12px;
     }
+
     .page-header {
         flex-direction: column;
         align-items: flex-start;
     }
+
     table {
         display: block;
         overflow-x: auto;
         font-size: 11px;
     }
+
+    /* Mobile Navigation */
     nav .container {
+        flex-wrap: nowrap;
+        position: relative;
+    }
+
+    .hamburger {
+        display: flex;
+    }
+
+    .nav-links {
+        display: none;
+        position: absolute;
+        top: 100%;
+        left: 0;
+        right: 0;
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-top: none;
         flex-direction: column;
-        align-items: flex-start;
+        padding: 0.5rem;
+        gap: 0.75rem;
+        z-index: 1000;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    }
+
+    .nav-links.active {
+        display: flex;
+    }
+
+    .nav-links a {
+        padding: 0.5rem;
+        border-bottom: 1px solid var(--border);
+    }
+
+    .nav-links a:last-child {
+        border-bottom: none;
+    }
+
+    .nav-separator {
+        display: none;
+    }
+
+    /* Filter forms on mobile */
+    .filter-form {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .filter-form input,
+    .filter-form select,
+    .filter-form .btn {
+        width: 100%;
+        min-width: unset;
+    }
+
+    /* Stats grid on mobile */
+    .stats-grid {
+        grid-template-columns: repeat(2, 1fr);
+    }
+
+    /* Modal on mobile */
+    .modal-content {
+        width: 95%;
+        max-width: unset;
+    }
+
+    /* Breadcrumbs */
+    .breadcrumbs {
+        font-size: 10px;
+        overflow-x: auto;
+        white-space: nowrap;
+    }
+
+    /* Actions in page header */
+    .actions {
+        width: 100%;
+        justify-content: flex-start;
+    }
+
+    /* Touch-friendly buttons on mobile */
+    .btn {
+        padding: 8px 12px;
+        font-size: 12px;
+        min-height: 44px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+    }
+
+    .btn-sm {
+        padding: 6px 10px;
+        min-height: 36px;
+    }
+
+    /* Better spacing on mobile */
+    .card {
+        padding: 0.75rem;
+        margin-bottom: 0.75rem;
+    }
+
+    .container {
+        padding: 0 0.75rem;
+    }
+
+    /* Form controls touch-friendly */
+    .form-control {
+        padding: 8px 10px;
+        font-size: 14px;
+        min-height: 44px;
+    }
+
+    /* Page header spacing */
+    .page-header {
+        margin-bottom: 0.75rem;
+        padding-bottom: 0.75rem;
+        gap: 0.5rem;
+    }
+
+    .page-header h1 {
+        font-size: 1.1rem;
+    }
+
+    /* Pagination on mobile */
+    .pagination {
+        justify-content: center;
+    }
+
+    .pagination a,
+    .pagination span {
+        min-height: 36px;
+        min-width: 36px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+    }
+
+    /* DNS records on mobile */
+    .dns-record {
+        padding-bottom: 0.5rem;
+        margin-bottom: 0.75rem;
+    }
+
+    .dns-record code {
+        font-size: 10px;
+        display: block;
+        margin: 0.25rem 0;
+    }
+
+    /* Login card on mobile */
+    .login-card {
+        padding: 1rem;
+        max-width: 100%;
+        border: 1px solid var(--border);
     }
 }
 
