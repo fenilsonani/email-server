@@ -10,15 +10,36 @@
 </div>
 
 <div class="card">
+    <h2>filters</h2>
+    <form method="GET" class="filter-form" role="search" aria-label="Filter users">
+        <label for="username-filter" class="sr-only">username</label>
+        <input type="text" id="username-filter" name="username" class="form-control" placeholder="username" value="{{.FilterUsername}}" aria-label="Filter by username">
+        <label for="domain-filter" class="sr-only">domain</label>
+        <select id="domain-filter" name="domain" class="form-control" aria-label="Filter by domain">
+            <option value="">all domains</option>
+            {{range .Domains}}
+            <option value="{{.}}" {{if eq $.FilterDomain .}}selected{{end}}>{{.}}</option>
+            {{end}}
+        </select>
+        <div class="form-check">
+            <input type="checkbox" id="is_admin" name="is_admin" value="1" {{if eq .FilterIsAdmin "1"}}checked{{end}} aria-label="Show admin users only">
+            <label for="is_admin">admin only</label>
+        </div>
+        <button type="submit" class="btn btn-primary" aria-label="Apply filters">filter</button>
+        <a href="/admin/users" class="btn btn-secondary" aria-label="Clear all filters">clear</a>
+    </form>
+</div>
+
+<div class="card">
     {{if .Users}}
-    <table>
+    <table role="table" aria-label="Users list">
         <thead>
-            <tr>
-                <th>Email</th>
-                <th>Domain</th>
-                <th>Admin</th>
-                <th>Created</th>
-                <th>Actions</th>
+            <tr role="row">
+                <th role="columnheader" scope="col">Email</th>
+                <th role="columnheader" scope="col">Domain</th>
+                <th role="columnheader" scope="col">Admin</th>
+                <th role="columnheader" scope="col">Created</th>
+                <th role="columnheader" scope="col">Actions</th>
             </tr>
         </thead>
         <tbody>
@@ -35,13 +56,13 @@
                 </td>
                 <td>{{.CreatedAt.Format "Jan 02, 2006"}}</td>
                 <td class="actions">
-                    <a href="/admin/users/edit/{{.ID}}" class="btn btn-sm btn-primary">Edit</a>
-                    <a href="/admin/sieve/{{.ID}}" class="btn btn-sm btn-secondary">Sieve</a>
-                    <a href="/email.mobileconfig?email={{.Email}}" class="btn btn-sm btn-secondary" title="Download Apple Mail profile">Setup</a>
+                    <a href="/admin/users/edit/{{.ID}}" class="btn btn-sm btn-primary" aria-label="Edit user {{.Email}}">Edit</a>
+                    <a href="/admin/sieve/{{.ID}}" class="btn btn-sm btn-secondary" aria-label="Manage Sieve filters for {{.Email}}">Sieve</a>
+                    <a href="/email.mobileconfig?email={{.Email}}" class="btn btn-sm btn-secondary" title="Download Apple Mail profile" aria-label="Download email setup profile for {{.Email}}">Setup</a>
                     <form method="POST" action="/admin/users/delete/{{.ID}}" style="display: inline;"
                           onsubmit="return confirm('Are you sure you want to delete this user? This cannot be undone.');">
                         <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
-                        <button type="submit" class="btn btn-sm btn-danger">Delete</button>
+                        <button type="submit" class="btn btn-sm btn-danger" aria-label="Delete user {{.Email}}">Delete</button>
                     </form>
                 </td>
             </tr>
@@ -55,3 +76,29 @@
     </div>
     {{end}}
 </div>
+
+{{if gt .TotalPages 1}}
+<div class="pagination" role="navigation" aria-label="Pagination">
+    {{if gt .CurrentPage 1}}
+    <a href="?page={{sub .CurrentPage 1}}&username={{.FilterUsername}}&domain={{.FilterDomain}}&is_admin={{.FilterIsAdmin}}" rel="prev" aria-label="Previous page">previous</a>
+    {{end}}
+
+    {{range $page := untilStep 1 (add .TotalPages 1) 1}}
+    {{if eq $page $.CurrentPage}}
+    <span class="active" aria-current="page" aria-label="Current page, page {{$page}}">{{$page}}</span>
+    {{else if or (le $page 3) (ge $page (sub $.TotalPages 2)) (and (ge $page (sub $.CurrentPage 2)) (le $page (add $.CurrentPage 2)))}}
+    <a href="?page={{$page}}&username={{$.FilterUsername}}&domain={{$.FilterDomain}}&is_admin={{$.FilterIsAdmin}}" aria-label="Go to page {{$page}}">{{$page}}</a>
+    {{else if eq $page 4}}
+    <span>...</span>
+    {{end}}
+    {{end}}
+
+    {{if lt .CurrentPage .TotalPages}}
+    <a href="?page={{add .CurrentPage 1}}&username={{.FilterUsername}}&domain={{.FilterDomain}}&is_admin={{.FilterIsAdmin}}" rel="next" aria-label="Next page">next</a>
+    {{end}}
+
+    <span style="margin-left: 1rem; color: var(--text-muted); font-size: 11px;">
+        ({{.TotalCount}} total)
+    </span>
+</div>
+{{end}}

@@ -232,3 +232,63 @@ func (rl *RateLimiter) cleanup() {
 		rl.mu.Unlock()
 	}
 }
+
+// PreviewRateLimiter limits email preview requests per session
+type PreviewRateLimiter struct {
+	mu      sync.Mutex
+	buckets map[string]*previewBucket
+}
+
+type previewBucket struct {
+	count     int
+	resetTime time.Time
+}
+
+// NewPreviewRateLimiter creates a new preview rate limiter
+func NewPreviewRateLimiter() *PreviewRateLimiter {
+	prl := &PreviewRateLimiter{
+		buckets: make(map[string]*previewBucket),
+	}
+	// Start cleanup goroutine
+	go prl.cleanup()
+	return prl
+}
+
+// Allow checks if a session can preview an email (max 10 per minute)
+func (prl *PreviewRateLimiter) Allow(sessionID string) bool {
+	prl.mu.Lock()
+	defer prl.mu.Unlock()
+
+	now := time.Now()
+	bucket, exists := prl.buckets[sessionID]
+
+	if !exists || now.After(bucket.resetTime) {
+		prl.buckets[sessionID] = &previewBucket{
+			count:     1,
+			resetTime: now.Add(time.Minute),
+		}
+		return true
+	}
+
+	if bucket.count >= 10 {
+		return false
+	}
+
+	bucket.count++
+	return true
+}
+
+// cleanup removes stale buckets every 5 minutes
+func (prl *PreviewRateLimiter) cleanup() {
+	ticker := time.NewTicker(5 * time.Minute)
+	for range ticker.C {
+		prl.mu.Lock()
+		now := time.Now()
+		for sessionID, bucket := range prl.buckets {
+			if now.After(bucket.resetTime.Add(5 * time.Minute)) {
+				delete(prl.buckets, sessionID)
+			}
+		}
+		prl.mu.Unlock()
+	}
+}

@@ -11,16 +11,40 @@
 </div>
 
 <div class="card">
+    <h2>filters</h2>
+    <form method="GET" class="filter-form" role="search" aria-label="Filter delivery logs">
+        <label for="sender-filter" class="sr-only">sender</label>
+        <input type="text" id="sender-filter" name="sender" class="form-control" placeholder="sender" value="{{.FilterSender}}" aria-label="Filter by sender">
+        <label for="recipient-filter" class="sr-only">recipient</label>
+        <input type="text" id="recipient-filter" name="recipient" class="form-control" placeholder="recipient" value="{{.FilterRecipient}}" aria-label="Filter by recipient">
+        <label for="status-filter" class="sr-only">status</label>
+        <select id="status-filter" name="status" class="form-control" aria-label="Filter by status">
+            <option value="">all status</option>
+            <option value="delivered" {{if eq .FilterStatus "delivered"}}selected{{end}}>delivered</option>
+            <option value="bounced" {{if eq .FilterStatus "bounced"}}selected{{end}}>bounced</option>
+            <option value="deferred" {{if eq .FilterStatus "deferred"}}selected{{end}}>deferred</option>
+            <option value="rejected" {{if eq .FilterStatus "rejected"}}selected{{end}}>rejected</option>
+        </select>
+        <label for="date-from-filter" class="sr-only">date from</label>
+        <input type="date" id="date-from-filter" name="date_from" class="form-control" value="{{.FilterDateFrom}}" aria-label="Filter by date from">
+        <label for="date-to-filter" class="sr-only">date to</label>
+        <input type="date" id="date-to-filter" name="date_to" class="form-control" value="{{.FilterDateTo}}" aria-label="Filter by date to">
+        <button type="submit" class="btn btn-primary" aria-label="Apply filters">filter</button>
+        <a href="/admin/logs/delivery" class="btn btn-secondary" aria-label="Clear all filters">clear</a>
+    </form>
+</div>
+
+<div class="card">
     {{if .Logs}}
-    <table>
+    <table role="table" aria-label="Delivery logs">
         <thead>
-            <tr>
-                <th>Time</th>
-                <th>From</th>
-                <th>To</th>
-                <th>Status</th>
-                <th>Code</th>
-                <th>Error</th>
+            <tr role="row">
+                <th role="columnheader" scope="col">Time</th>
+                <th role="columnheader" scope="col">From</th>
+                <th role="columnheader" scope="col">To</th>
+                <th role="columnheader" scope="col">Status</th>
+                <th role="columnheader" scope="col">Code</th>
+                <th role="columnheader" scope="col">Error</th>
             </tr>
         </thead>
         <tbody>
@@ -64,3 +88,29 @@
     </div>
     {{end}}
 </div>
+
+{{if gt .TotalPages 1}}
+<div class="pagination" role="navigation" aria-label="Pagination">
+    {{if gt .CurrentPage 1}}
+    <a href="?page={{sub .CurrentPage 1}}&sender={{.FilterSender}}&recipient={{.FilterRecipient}}&status={{.FilterStatus}}&date_from={{.FilterDateFrom}}&date_to={{.FilterDateTo}}" rel="prev" aria-label="Previous page">previous</a>
+    {{end}}
+
+    {{range $page := untilStep 1 (add .TotalPages 1) 1}}
+    {{if eq $page $.CurrentPage}}
+    <span class="active" aria-current="page" aria-label="Current page, page {{$page}}">{{$page}}</span>
+    {{else if or (le $page 3) (ge $page (sub $.TotalPages 2)) (and (ge $page (sub $.CurrentPage 2)) (le $page (add $.CurrentPage 2)))}}
+    <a href="?page={{$page}}&sender={{$.FilterSender}}&recipient={{$.FilterRecipient}}&status={{$.FilterStatus}}&date_from={{$.FilterDateFrom}}&date_to={{$.FilterDateTo}}" aria-label="Go to page {{$page}}">{{$page}}</a>
+    {{else if eq $page 4}}
+    <span>...</span>
+    {{end}}
+    {{end}}
+
+    {{if lt .CurrentPage .TotalPages}}
+    <a href="?page={{add .CurrentPage 1}}&sender={{.FilterSender}}&recipient={{.FilterRecipient}}&status={{.FilterStatus}}&date_from={{.FilterDateFrom}}&date_to={{.FilterDateTo}}" rel="next" aria-label="Next page">next</a>
+    {{end}}
+
+    <span style="margin-left: 1rem; color: var(--text-muted); font-size: 11px;">
+        ({{.TotalCount}} total)
+    </span>
+</div>
+{{end}}

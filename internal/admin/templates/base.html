@@ -7,7 +7,8 @@
     <link rel="stylesheet" href="/static/admin.css">
 </head>
 <body>
-    <nav>
+    <a href="#main-content" class="skip-link">skip to main content</a>
+    <nav role="navigation" aria-label="Main navigation">
         <div class="container">
             <a href="/" class="brand">Mail Server Admin</a>
             <span class="nav-separator">|</span>
@@ -25,11 +26,14 @@
             <span class="nav-separator">|</span>
             <a href="/admin/system">system</a>
             <span style="flex: 1"></span>
+            <a href="#" onclick="event.preventDefault(); document.dispatchEvent(new KeyboardEvent('keydown', {key: '?'}));" title="Keyboard shortcuts">[?]</a>
+            <span class="nav-separator">|</span>
             <a href="/admin/logout">logout</a>
         </div>
     </nav>
-    <main class="container">
+    <main role="main" class="container" id="main-content" aria-label="Main content">
         <!-- CONTENT_PLACEHOLDER -->
     </main>
+    <script src="/static/keyboard.js"></script>
 </body>
 </html>

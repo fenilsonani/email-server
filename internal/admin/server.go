@@ -42,11 +42,12 @@ type Server struct {
 	logger        *logging.Logger
 	auditLogger   *audit.Logger
 	templates     map[string]*template.Template
-	httpServer    *http.Server
-	shutdownOnce  sync.Once
-	rateLimiter   *RateLimiter
-	startTime     time.Time
-	dnsChecker    *DNSChecker
+	httpServer         *http.Server
+	shutdownOnce       sync.Once
+	rateLimiter        *RateLimiter
+	previewRateLimiter *PreviewRateLimiter
+	startTime          time.Time
+	dnsChecker         *DNSChecker
 }
 
 // NewServer creates a new admin server
@@ -140,11 +141,12 @@ func NewServer(cfg *config.Config, db *sql.DB, authenticator *auth.Authenticator
 		sieveStore:    sieveStore,
 		queue:         q,
 		logger:        logger,
-		auditLogger:   auditLog,
-		templates:     templates,
-		rateLimiter:   DefaultRateLimiter(),
-		startTime:     time.Now(),
-		dnsChecker:    NewDNSChecker(db, cfg, logger),
+		auditLogger:        auditLog,
+		templates:          templates,
+		rateLimiter:        DefaultRateLimiter(),
+		previewRateLimiter: NewPreviewRateLimiter(),
+		startTime:          time.Now(),
+		dnsChecker:         NewDNSChecker(db, cfg, logger),
 	}
 
 	return s, nil
@@ -193,6 +195,7 @@ func (s *Server) Start(listen string) error {
 	mux.HandleFunc("/admin/queue", s.withAuth(s.handleQueue))
 	mux.HandleFunc("/admin/queue/retry/", s.withAuth(s.handleQueueRetry))
 	mux.HandleFunc("/admin/queue/delete/", s.withAuth(s.handleQueueDelete))
+	mux.HandleFunc("/admin/email/preview/", s.withAuth(s.handleEmailPreview))
 	mux.HandleFunc("/admin/api/stats", s.withAuth(s.handleAPIStats))
 	mux.HandleFunc("/admin/tools/dns", s.withAuth(s.handleDNSCheck))
 	mux.HandleFunc("/admin/tools/test-email", s.withAuth(s.handleTestEmail))

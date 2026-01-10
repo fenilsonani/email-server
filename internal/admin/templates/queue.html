@@ -12,21 +12,21 @@
 <div class="alert alert-danger">{{.Error}}</div>
 {{else}}
 
-<div class="stats-grid">
+<div class="stats-grid" role="region" aria-label="Queue statistics">
     <div class="card stat-card">
-        <div class="stat-value">{{.Stats.Pending}}</div>
+        <div class="stat-value" aria-label="Pending messages count">{{.Stats.Pending}}</div>
         <div class="stat-label">Pending</div>
     </div>
     <div class="card stat-card">
-        <div class="stat-value">{{.Stats.Processing}}</div>
+        <div class="stat-value" aria-label="Processing messages count">{{.Stats.Processing}}</div>
         <div class="stat-label">Processing</div>
     </div>
     <div class="card stat-card">
-        <div class="stat-value">{{.Stats.Sent}}</div>
+        <div class="stat-value" aria-label="Sent messages count">{{.Stats.Sent}}</div>
         <div class="stat-label">Sent</div>
     </div>
     <div class="card stat-card">
-        <div class="stat-value">{{.Stats.Failed}}</div>
+        <div class="stat-value" aria-label="Failed messages count">{{.Stats.Failed}}</div>
         <div class="stat-label">Failed</div>
     </div>
 </div>
@@ -53,16 +53,16 @@
 {{if .PendingMessages}}
 <div class="card">
     <h2>Pending Messages</h2>
-    <table>
+    <table role="table" aria-label="Pending messages">
         <thead>
-            <tr>
-                <th>ID</th>
-                <th>From</th>
-                <th>To</th>
-                <th>Status</th>
-                <th>Attempts</th>
-                <th>Next Retry</th>
-                <th>Actions</th>
+            <tr role="row">
+                <th role="columnheader" scope="col">ID</th>
+                <th role="columnheader" scope="col">From</th>
+                <th role="columnheader" scope="col">To</th>
+                <th role="columnheader" scope="col">Status</th>
+                <th role="columnheader" scope="col">Attempts</th>
+                <th role="columnheader" scope="col">Next Retry</th>
+                <th role="columnheader" scope="col">Actions</th>
             </tr>
         </thead>
         <tbody>
@@ -83,9 +83,10 @@
                 <td>{{.Attempts}}/{{.MaxAttempts}}</td>
                 <td>{{.NextAttempt.Format "Jan 02 15:04:05"}}</td>
                 <td class="actions">
+                    <a href="/admin/email/preview/{{.ID}}" class="btn btn-info btn-sm" aria-label="Preview message {{.ID}}">Preview</a>
                     <form method="POST" action="/admin/queue/delete/{{.ID}}" style="display:inline;">
                         <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
-                        <button type="submit" class="btn btn-danger btn-sm" onclick="return confirm('Delete this message?')">Delete</button>
+                        <button type="submit" class="btn btn-danger btn-sm" onclick="return confirm('Delete this message?')" aria-label="Delete message {{.ID}}">Delete</button>
                     </form>
                 </td>
             </tr>
@@ -105,16 +106,16 @@
 {{if .FailedMessages}}
 <div class="card">
     <h2>Failed Messages</h2>
-    <table>
+    <table role="table" aria-label="Failed messages">
         <thead>
-            <tr>
-                <th>ID</th>
-                <th>From</th>
-                <th>To</th>
-                <th>Attempts</th>
-                <th>Error</th>
-                <th>Created</th>
-                <th>Actions</th>
+            <tr role="row">
+                <th role="columnheader" scope="col">ID</th>
+                <th role="columnheader" scope="col">From</th>
+                <th role="columnheader" scope="col">To</th>
+                <th role="columnheader" scope="col">Attempts</th>
+                <th role="columnheader" scope="col">Error</th>
+                <th role="columnheader" scope="col">Created</th>
+                <th role="columnheader" scope="col">Actions</th>
             </tr>
         </thead>
         <tbody>
@@ -127,9 +128,10 @@
                 <td><small style="color: var(--danger);">{{.LastError}}</small></td>
                 <td>{{.CreatedAt.Format "Jan 02 15:04:05"}}</td>
                 <td class="actions">
+                    <a href="/admin/email/preview/{{.ID}}" class="btn btn-info btn-sm" aria-label="Preview message {{.ID}}">Preview</a>
                     <form method="POST" action="/admin/queue/retry/{{.ID}}" style="display:inline;">
                         <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
-                        <button type="submit" class="btn btn-primary btn-sm">Retry</button>
+                        <button type="submit" class="btn btn-primary btn-sm" aria-label="Retry sending message {{.ID}}">Retry</button>
                     </form>
                 </td>
             </tr>
@@ -142,14 +144,14 @@
 {{if .SentMessages}}
 <div class="card">
     <h2>Recently Sent</h2>
-    <table>
+    <table role="table" aria-label="Recently sent messages">
         <thead>
-            <tr>
-                <th>ID</th>
-                <th>From</th>
-                <th>To</th>
-                <th>Attempts</th>
-                <th>Sent At</th>
+            <tr role="row">
+                <th role="columnheader" scope="col">ID</th>
+                <th role="columnheader" scope="col">From</th>
+                <th role="columnheader" scope="col">To</th>
+                <th role="columnheader" scope="col">Attempts</th>
+                <th role="columnheader" scope="col">Sent At</th>
             </tr>
         </thead>
         <tbody>

@@ -3,41 +3,49 @@
 </div>
 
 <div class="page-header">
-    <h1>Dashboard</h1>
+    <h1>
+        Dashboard
+        <span class="badge badge-success" id="live-indicator" style="display:none; font-size: 10px; margin-left: 0.5rem;">live</span>
+    </h1>
+    <span id="last-update" style="font-size:11px; color:var(--text-muted);">loading...</span>
 </div>
 
-<div class="stats-grid">
+<div class="stats-grid" role="region" aria-live="polite" aria-atomic="false" aria-label="Server statistics">
     <div class="card stat-card">
-        <div class="stat-value">{{.Stats.TotalUsers}}</div>
-        <div class="stat-label">Total Users</div>
+        <div class="stat-value" id="stat-users" aria-label="Total users">{{.Stats.TotalUsers}}</div>
+        <div class="stat-label">total users</div>
     </div>
     <div class="card stat-card">
-        <div class="stat-value">{{.Stats.TotalDomains}}</div>
-        <div class="stat-label">Domains</div>
+        <div class="stat-value" id="stat-domains" aria-label="Total domains">{{.Stats.TotalDomains}}</div>
+        <div class="stat-label">domains</div>
     </div>
     <div class="card stat-card">
-        <div class="stat-value">{{.Stats.TotalMessages}}</div>
-        <div class="stat-label">Messages</div>
+        <div class="stat-value" id="stat-messages" aria-label="Total messages">{{.Stats.TotalMessages}}</div>
+        <div class="stat-label">messages</div>
     </div>
     <div class="card stat-card">
-        <div class="stat-value">{{.Stats.QueuePending}}</div>
-        <div class="stat-label">Queue Pending</div>
+        <div class="stat-value" id="stat-queue" aria-label="Queue pending count">{{.Stats.QueuePending}}</div>
+        <div class="stat-label">queue pending</div>
+    </div>
+    <div class="card stat-card">
+        <div class="stat-value" id="stat-uptime" aria-label="Server uptime">calculating...</div>
+        <div class="stat-label">uptime</div>
     </div>
 </div>
 
 <div class="card">
-    <h2>Recent Activity</h2>
-    {{if .Stats.RecentActivity}}
-    <table>
+    <h2>recent activity</h2>
+    <table id="recent-activity" role="table" aria-label="Recent server activity">
         <thead>
-            <tr>
-                <th>Time</th>
-                <th>Type</th>
-                <th>Description</th>
-                <th>Status</th>
+            <tr role="row">
+                <th role="columnheader" scope="col">time</th>
+                <th role="columnheader" scope="col">type</th>
+                <th role="columnheader" scope="col">details</th>
+                <th role="columnheader" scope="col">status</th>
             </tr>
         </thead>
         <tbody>
+            {{if .Stats.RecentActivity}}
             {{range .Stats.RecentActivity}}
             <tr>
                 <td>{{.Time.Format "Jan 02 15:04:05"}}</td>
@@ -45,20 +53,20 @@
                 <td>{{.Description}}</td>
                 <td>
                     {{if eq .Status "success"}}
-                    <span class="badge badge-success">Success</span>
+                    <span class="badge badge-success">success</span>
                     {{else}}
-                    <span class="badge badge-danger">Failed</span>
+                    <span class="badge badge-danger">failed</span>
                     {{end}}
                 </td>
             </tr>
             {{end}}
+            {{else}}
+            <tr>
+                <td colspan="4" style="text-align: center; color: var(--text-muted);">loading activity...</td>
+            </tr>
+            {{end}}
         </tbody>
     </table>
-    {{else}}
-    <div class="empty-state">
-        <p>No recent activity.</p>
-    </div>
-    {{end}}
 </div>
 
 <div class="card">
@@ -70,3 +78,5 @@
         <a href="/admin/logs/delivery" class="btn btn-secondary">View Delivery Logs</a>
     </div>
 </div>
+
+<script src="/static/dashboard.js"></script>

@@ -1,0 +1,83 @@
+<div class="breadcrumbs">
+    <a href="/admin/">home</a>
+    <span>&gt;</span>
+    <a href="/admin/queue">queue</a>
+    <span>&gt;</span>
+    <span>preview</span>
+</div>
+
+<div class="page-header">
+    <h1>email preview</h1>
+    <a href="/admin/queue" class="btn btn-secondary">back to queue</a>
+</div>
+
+<div class="card">
+    <h2>headers</h2>
+    <table class="email-headers">
+        <tr>
+            <td><strong>message id:</strong></td>
+            <td><code>{{.MessageID}}</code></td>
+        </tr>
+        <tr>
+            <td><strong>from:</strong></td>
+            <td>{{.Sender}}</td>
+        </tr>
+        <tr>
+            <td><strong>to:</strong></td>
+            <td>{{.Recipients}}</td>
+        </tr>
+        {{if .Parsed.Headers.Cc}}
+        <tr>
+            <td><strong>cc:</strong></td>
+            <td>{{.Parsed.Headers.Cc}}</td>
+        </tr>
+        {{end}}
+        {{if .Parsed.Headers.Subject}}
+        <tr>
+            <td><strong>subject:</strong></td>
+            <td>{{.Parsed.Headers.Subject}}</td>
+        </tr>
+        {{end}}
+        {{if .Parsed.Headers.Date}}
+        <tr>
+            <td><strong>date:</strong></td>
+            <td>{{.Parsed.Headers.Date}}</td>
+        </tr>
+        {{end}}
+        {{if .Parsed.Headers.MessageID}}
+        <tr>
+            <td><strong>message-id:</strong></td>
+            <td><code>{{.Parsed.Headers.MessageID}}</code></td>
+        </tr>
+        {{end}}
+    </table>
+</div>
+
+{{if .Parsed.Attachments}}
+<div class="card">
+    <h2>attachments</h2>
+    <ul style="list-style: none; padding: 0;">
+        {{range .Parsed.Attachments}}
+        <li style="padding: 0.25rem 0;">
+            <span class="badge badge-secondary">{{.Filename}}</span>
+            <span style="color: var(--text-muted); font-size: 11px;">({{.ContentType}})</span>
+        </li>
+        {{end}}
+    </ul>
+</div>
+{{end}}
+
+<div class="card">
+    <h2>content</h2>
+    {{if .Parsed.HTMLBody}}
+    <div class="email-content-html">
+        {{.Parsed.HTMLBody}}
+    </div>
+    {{else if .Parsed.TextBody}}
+    <pre class="email-content-text">{{.Parsed.TextBody}}</pre>
+    {{else}}
+    <div class="empty-state">
+        <p>no displayable content</p>
+    </div>
+    {{end}}
+</div>

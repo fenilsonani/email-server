@@ -27,6 +27,36 @@ import (
 	"github.com/fenilsonani/email-server/internal/validation"
 )
 
+// PaginationParams holds pagination parameters from request
+type PaginationParams struct {
+	Page     int
+	PageSize int
+	Offset   int
+}
+
+// getPaginationParams extracts and validates pagination parameters from request
+func getPaginationParams(r *http.Request) PaginationParams {
+	page := 1
+	if p := r.URL.Query().Get("page"); p != "" {
+		if parsed, err := strconv.Atoi(p); err == nil && parsed > 0 {
+			page = parsed
+		}
+	}
+
+	pageSize := 50
+	if ps := r.URL.Query().Get("page_size"); ps != "" {
+		if parsed, err := strconv.Atoi(ps); err == nil && parsed > 0 && parsed <= 200 {
+			pageSize = parsed
+		}
+	}
+
+	return PaginationParams{
+		Page:     page,
+		PageSize: pageSize,
+		Offset:   (page - 1) * pageSize,
+	}
+}
+
 // handleDashboard shows the main dashboard
 func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/admin/" {
@@ -170,12 +200,52 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 
 // handleUsers shows user list
 func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.db.QueryContext(r.Context(), `
-		SELECT u.id, u.username, d.name as domain, u.is_admin, u.created_at
+	// Get pagination parameters
+	pagination := getPaginationParams(r)
+
+	// Get filter parameters
+	filterUsername := r.URL.Query().Get("username")
+	filterDomain := r.URL.Query().Get("domain")
+	filterIsAdmin := r.URL.Query().Get("is_admin")
+
+	// Build query with filters
+	query := `SELECT u.id, u.username, d.name as domain, u.is_admin, u.created_at
 		FROM users u
-		JOIN domains d ON u.domain_id = d.id
-		ORDER BY d.name, u.username
-	`)
+		JOIN domains d ON u.domain_id = d.id WHERE 1=1`
+	countQuery := `SELECT COUNT(*) FROM users u
+		JOIN domains d ON u.domain_id = d.id WHERE 1=1`
+	args := []interface{}{}
+
+	// Add filters to query
+	if filterUsername != "" {
+		query += " AND u.username LIKE ?"
+		countQuery += " AND u.username LIKE ?"
+		args = append(args, "%"+filterUsername+"%")
+	}
+	if filterDomain != "" {
+		query += " AND d.name = ?"
+		countQuery += " AND d.name = ?"
+		args = append(args, filterDomain)
+	}
+	if filterIsAdmin == "1" {
+		query += " AND u.is_admin = 1"
+		countQuery += " AND u.is_admin = 1"
+	}
+
+	// Get total count
+	var totalCount int
+	err := s.db.QueryRowContext(r.Context(), countQuery, args...).Scan(&totalCount)
+	if err != nil {
+		s.logger.ErrorContext(r.Context(), "Failed to count users", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	// Add order and pagination
+	query += " ORDER BY d.name, u.username LIMIT ? OFFSET ?"
+	args = append(args, pagination.PageSize, pagination.Offset)
+
+	rows, err := s.db.QueryContext(r.Context(), query, args...)
 	if err != nil {
 		s.logger.ErrorContext(r.Context(), "Failed to get users", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
@@ -203,9 +273,39 @@ func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 		users = append(users, u)
 	}
 
+	// Get domains list for filter dropdown
+	domainRows, err := s.db.QueryContext(r.Context(), "SELECT name FROM domains ORDER BY name")
+	if err != nil {
+		s.logger.ErrorContext(r.Context(), "Failed to get domains", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	defer domainRows.Close()
+
+	var domains []string
+	for domainRows.Next() {
+		var domain string
+		if err := domainRows.Scan(&domain); err == nil {
+			domains = append(domains, domain)
+		}
+	}
+
+	// Calculate pagination info
+	totalPages := (totalCount + pagination.PageSize - 1) / pagination.PageSize
+	if totalPages == 0 {
+		totalPages = 1
+	}
+
 	s.renderTemplate(w, "users.html", map[string]interface{}{
-		"Title": "Users",
-		"Users": users,
+		"Title":          "Users",
+		"Users":          users,
+		"Domains":        domains,
+		"FilterUsername": filterUsername,
+		"FilterDomain":   filterDomain,
+		"FilterIsAdmin":  filterIsAdmin,
+		"CurrentPage":    pagination.Page,
+		"TotalPages":     totalPages,
+		"TotalCount":     totalCount,
 	})
 }
 
@@ -422,8 +522,14 @@ func (s *Server) handleUserDelete(w http.ResponseWriter, r *http.Request) {
 
 // handleDomains shows domain list
 func (s *Server) handleDomains(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.db.QueryContext(r.Context(), `
-		SELECT d.id, d.name, d.created_at, COALESCE(d.dkim_selector, 'mail'),
+	// Get pagination parameters
+	pagination := getPaginationParams(r)
+
+	// Get filter parameters
+	filterName := r.URL.Query().Get("name")
+
+	// Build query with filters
+	query := `SELECT d.id, d.name, d.created_at, COALESCE(d.dkim_selector, 'mail'),
 			d.dkim_private_key IS NOT NULL AND LENGTH(d.dkim_private_key) > 0,
 			d.dkim_key_file,
 			(SELECT COUNT(*) FROM users WHERE domain_id = d.id) as user_count,
@@ -433,9 +539,31 @@ func (s *Server) handleDomains(w http.ResponseWriter, r *http.Request) {
 			COALESCE(d.dns_dkim_verified, 0),
 			COALESCE(d.dns_dmarc_verified, 0),
 			d.dns_last_checked
-		FROM domains d
-		ORDER BY d.name
-	`)
+		FROM domains d WHERE 1=1`
+	countQuery := `SELECT COUNT(*) FROM domains WHERE 1=1`
+	args := []interface{}{}
+
+	// Add filter to query
+	if filterName != "" {
+		query += " AND d.name LIKE ?"
+		countQuery += " AND name LIKE ?"
+		args = append(args, "%"+filterName+"%")
+	}
+
+	// Get total count
+	var totalCount int
+	err := s.db.QueryRowContext(r.Context(), countQuery, args...).Scan(&totalCount)
+	if err != nil {
+		s.logger.ErrorContext(r.Context(), "Failed to count domains", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	// Add order and pagination
+	query += " ORDER BY d.name LIMIT ? OFFSET ?"
+	args = append(args, pagination.PageSize, pagination.Offset)
+
+	rows, err := s.db.QueryContext(r.Context(), query, args...)
 	if err != nil {
 		s.logger.ErrorContext(r.Context(), "Failed to get domains", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
@@ -504,10 +632,20 @@ func (s *Server) handleDomains(w http.ResponseWriter, r *http.Request) {
 	// Check for error message in query params
 	errorMsg := r.URL.Query().Get("error")
 
+	// Calculate pagination info
+	totalPages := (totalCount + pagination.PageSize - 1) / pagination.PageSize
+	if totalPages == 0 {
+		totalPages = 1
+	}
+
 	s.renderTemplate(w, "domains.html", map[string]interface{}{
-		"Title":   "Domains",
-		"Domains": domains,
-		"Error":   errorMsg,
+		"Title":      "Domains",
+		"Domains":    domains,
+		"Error":      errorMsg,
+		"FilterName": filterName,
+		"CurrentPage": pagination.Page,
+		"TotalPages":  totalPages,
+		"TotalCount":  totalCount,
 	})
 }
 
@@ -583,12 +721,65 @@ func (s *Server) handleSieve(w http.ResponseWriter, r *http.Request) {
 
 // handleAuthLogs shows authentication logs
 func (s *Server) handleAuthLogs(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.db.QueryContext(r.Context(), `
-		SELECT id, username, remote_addr, protocol, success, failure_reason, created_at
-		FROM auth_log
-		ORDER BY created_at DESC
-		LIMIT 100
-	`)
+	// Get pagination parameters
+	pagination := getPaginationParams(r)
+
+	// Get filter parameters
+	filterUsername := r.URL.Query().Get("username")
+	filterProtocol := r.URL.Query().Get("protocol")
+	filterStatus := r.URL.Query().Get("status")
+	filterDateFrom := r.URL.Query().Get("date_from")
+	filterDateTo := r.URL.Query().Get("date_to")
+
+	// Build query with filters
+	query := `SELECT id, username, remote_addr, protocol, success, failure_reason, created_at
+		FROM auth_log WHERE 1=1`
+	countQuery := `SELECT COUNT(*) FROM auth_log WHERE 1=1`
+	args := []interface{}{}
+
+	// Add filters to query
+	if filterUsername != "" {
+		query += " AND username LIKE ?"
+		countQuery += " AND username LIKE ?"
+		args = append(args, "%"+filterUsername+"%")
+	}
+	if filterProtocol != "" {
+		query += " AND protocol = ?"
+		countQuery += " AND protocol = ?"
+		args = append(args, filterProtocol)
+	}
+	if filterStatus == "success" {
+		query += " AND success = 1"
+		countQuery += " AND success = 1"
+	} else if filterStatus == "failed" {
+		query += " AND success = 0"
+		countQuery += " AND success = 0"
+	}
+	if filterDateFrom != "" {
+		query += " AND created_at >= ?"
+		countQuery += " AND created_at >= ?"
+		args = append(args, filterDateFrom)
+	}
+	if filterDateTo != "" {
+		query += " AND created_at <= ?"
+		countQuery += " AND created_at <= ?"
+		args = append(args, filterDateTo+" 23:59:59")
+	}
+
+	// Get total count
+	var totalCount int
+	err := s.db.QueryRowContext(r.Context(), countQuery, args...).Scan(&totalCount)
+	if err != nil {
+		s.logger.ErrorContext(r.Context(), "Failed to count auth logs", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	// Add order and pagination
+	query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+	args = append(args, pagination.PageSize, pagination.Offset)
+
+	rows, err := s.db.QueryContext(r.Context(), query, args...)
 	if err != nil {
 		s.logger.ErrorContext(r.Context(), "Failed to get auth logs", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
@@ -616,20 +807,85 @@ func (s *Server) handleAuthLogs(w http.ResponseWriter, r *http.Request) {
 		logs = append(logs, l)
 	}
 
+	// Calculate pagination info
+	totalPages := (totalCount + pagination.PageSize - 1) / pagination.PageSize
+	if totalPages == 0 {
+		totalPages = 1
+	}
+
 	s.renderTemplate(w, "auth_logs.html", map[string]interface{}{
-		"Title": "Authentication Logs",
-		"Logs":  logs,
+		"Title":          "Authentication Logs",
+		"Logs":           logs,
+		"FilterUsername": filterUsername,
+		"FilterProtocol": filterProtocol,
+		"FilterStatus":   filterStatus,
+		"FilterDateFrom": filterDateFrom,
+		"FilterDateTo":   filterDateTo,
+		"CurrentPage":    pagination.Page,
+		"TotalPages":     totalPages,
+		"TotalCount":     totalCount,
 	})
 }
 
 // handleDeliveryLogs shows delivery logs
 func (s *Server) handleDeliveryLogs(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.db.QueryContext(r.Context(), `
-		SELECT id, message_id, sender, recipient, status, smtp_code, error_message, created_at
-		FROM delivery_log
-		ORDER BY created_at DESC
-		LIMIT 100
-	`)
+	// Get pagination parameters
+	pagination := getPaginationParams(r)
+
+	// Get filter parameters
+	filterSender := r.URL.Query().Get("sender")
+	filterRecipient := r.URL.Query().Get("recipient")
+	filterStatus := r.URL.Query().Get("status")
+	filterDateFrom := r.URL.Query().Get("date_from")
+	filterDateTo := r.URL.Query().Get("date_to")
+
+	// Build query with filters
+	query := `SELECT id, message_id, sender, recipient, status, smtp_code, error_message, created_at
+		FROM delivery_log WHERE 1=1`
+	countQuery := `SELECT COUNT(*) FROM delivery_log WHERE 1=1`
+	args := []interface{}{}
+
+	// Add filters to query
+	if filterSender != "" {
+		query += " AND sender LIKE ?"
+		countQuery += " AND sender LIKE ?"
+		args = append(args, "%"+filterSender+"%")
+	}
+	if filterRecipient != "" {
+		query += " AND recipient LIKE ?"
+		countQuery += " AND recipient LIKE ?"
+		args = append(args, "%"+filterRecipient+"%")
+	}
+	if filterStatus != "" {
+		query += " AND status = ?"
+		countQuery += " AND status = ?"
+		args = append(args, filterStatus)
+	}
+	if filterDateFrom != "" {
+		query += " AND created_at >= ?"
+		countQuery += " AND created_at >= ?"
+		args = append(args, filterDateFrom)
+	}
+	if filterDateTo != "" {
+		query += " AND created_at <= ?"
+		countQuery += " AND created_at <= ?"
+		args = append(args, filterDateTo+" 23:59:59")
+	}
+
+	// Get total count
+	var totalCount int
+	err := s.db.QueryRowContext(r.Context(), countQuery, args...).Scan(&totalCount)
+	if err != nil {
+		s.logger.ErrorContext(r.Context(), "Failed to count delivery logs", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	// Add order and pagination
+	query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+	args = append(args, pagination.PageSize, pagination.Offset)
+
+	rows, err := s.db.QueryContext(r.Context(), query, args...)
 	if err != nil {
 		s.logger.ErrorContext(r.Context(), "Failed to get delivery logs", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
@@ -658,9 +914,23 @@ func (s *Server) handleDeliveryLogs(w http.ResponseWriter, r *http.Request) {
 		logs = append(logs, l)
 	}
 
+	// Calculate pagination info
+	totalPages := (totalCount + pagination.PageSize - 1) / pagination.PageSize
+	if totalPages == 0 {
+		totalPages = 1
+	}
+
 	s.renderTemplate(w, "delivery_logs.html", map[string]interface{}{
-		"Title": "Delivery Logs",
-		"Logs":  logs,
+		"Title":           "Delivery Logs",
+		"Logs":            logs,
+		"FilterSender":    filterSender,
+		"FilterRecipient": filterRecipient,
+		"FilterStatus":    filterStatus,
+		"FilterDateFrom":  filterDateFrom,
+		"FilterDateTo":    filterDateTo,
+		"CurrentPage":     pagination.Page,
+		"TotalPages":      totalPages,
+		"TotalCount":      totalCount,
 	})
 }
 
@@ -1297,16 +1567,81 @@ func (s *Server) handleAPIStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Get queue stats
+	queueStats, err := s.queue.Stats(r.Context())
+	if err != nil {
+		s.logger.ErrorContext(r.Context(), "Failed to get queue stats", err)
+		// Continue with nil queue stats rather than failing entirely
+	}
+
+	// Get recent auth logs (last 5)
+	type RecentAuth struct {
+		Username string    `json:"username"`
+		Success  bool      `json:"success"`
+		Time     time.Time `json:"time"`
+	}
+	var recentAuth []RecentAuth
+	authRows, err := s.db.QueryContext(r.Context(), `
+		SELECT username, success, created_at
+		FROM auth_log
+		ORDER BY created_at DESC
+		LIMIT 5
+	`)
+	if err == nil {
+		defer authRows.Close()
+		for authRows.Next() {
+			var ra RecentAuth
+			if err := authRows.Scan(&ra.Username, &ra.Success, &ra.Time); err == nil {
+				recentAuth = append(recentAuth, ra)
+			}
+		}
+	}
+
+	// Get recent delivery logs (last 5)
+	type RecentDelivery struct {
+		From   string    `json:"from"`
+		To     string    `json:"to"`
+		Status string    `json:"status"`
+		Time   time.Time `json:"time"`
+	}
+	var recentDelivery []RecentDelivery
+	deliveryRows, err := s.db.QueryContext(r.Context(), `
+		SELECT sender, recipient, status, created_at
+		FROM delivery_log
+		ORDER BY created_at DESC
+		LIMIT 5
+	`)
+	if err == nil {
+		defer deliveryRows.Close()
+		for deliveryRows.Next() {
+			var rd RecentDelivery
+			if err := deliveryRows.Scan(&rd.From, &rd.To, &rd.Status, &rd.Time); err == nil {
+				recentDelivery = append(recentDelivery, rd)
+			}
+		}
+	}
+
+	// Calculate uptime
+	uptime := time.Since(s.startTime).Round(time.Second).String()
+
 	w.Header().Set("Content-Type", "application/json")
 	// Use proper JSON encoding to prevent injection
 	response := struct {
-		Users    int `json:"users"`
-		Domains  int `json:"domains"`
-		Messages int `json:"messages"`
+		Users          int              `json:"users"`
+		Domains        int              `json:"domains"`
+		Messages       int              `json:"messages"`
+		Queue          *queue.QueueStats `json:"queue"`
+		RecentAuth     []RecentAuth     `json:"recent_auth"`
+		RecentDelivery []RecentDelivery `json:"recent_delivery"`
+		Uptime         string           `json:"uptime"`
 	}{
-		Users:    stats.TotalUsers,
-		Domains:  stats.TotalDomains,
-		Messages: stats.TotalMessages,
+		Users:          stats.TotalUsers,
+		Domains:        stats.TotalDomains,
+		Messages:       stats.TotalMessages,
+		Queue:          queueStats,
+		RecentAuth:     recentAuth,
+		RecentDelivery: recentDelivery,
+		Uptime:         uptime,
 	}
 	json.NewEncoder(w).Encode(response)
 }
@@ -1476,6 +1811,82 @@ func (s *Server) handleQueueDelete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.Redirect(w, r, "/admin/queue", http.StatusSeeOther)
+}
+
+// handleEmailPreview shows a preview of an email from the queue
+func (s *Server) handleEmailPreview(w http.ResponseWriter, r *http.Request) {
+	// Extract message ID from path: /admin/email/preview/{messageID}
+	parts := strings.Split(r.URL.Path, "/")
+	if len(parts) < 5 {
+		http.Error(w, "Invalid URL", http.StatusBadRequest)
+		return
+	}
+	messageID := parts[4]
+
+	// Get session ID for rate limiting
+	cookie, err := r.Cookie("admin_session")
+	if err != nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	// Rate limit: 10 previews per minute per session
+	if !s.previewRateLimiter.Allow(cookie.Value) {
+		http.Error(w, "Rate limit exceeded. Please wait before previewing more emails.", http.StatusTooManyRequests)
+		return
+	}
+
+	// Get message from queue with timeout
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	msg, err := s.queue.GetMessage(ctx, messageID)
+	if err != nil {
+		http.Error(w, "Message not found", http.StatusNotFound)
+		return
+	}
+
+	// Size check (prevent loading huge emails)
+	if msg.Size > 512*1024 { // 512KB limit
+		http.Error(w, "Message too large to preview (max 512KB)", http.StatusRequestEntityTooLarge)
+		return
+	}
+
+	// Read message from file
+	messageFile, err := os.Open(msg.MessagePath)
+	if err != nil {
+		http.Error(w, "Failed to read message file", http.StatusInternalServerError)
+		return
+	}
+	defer messageFile.Close()
+
+	// Parse email
+	parsed, err := parseMessageContent(messageFile)
+	if err != nil {
+		http.Error(w, "Failed to parse message", http.StatusInternalServerError)
+		return
+	}
+
+	// Sanitize HTML if present
+	if parsed.HTMLBody != "" {
+		parsed.HTMLBody = sanitizeHTML(parsed.HTMLBody)
+	}
+
+	// Audit log
+	userID, _ := s.getSessionUserID(r)
+	var username string
+	s.db.QueryRowContext(ctx, "SELECT username FROM users WHERE id = ?", userID).Scan(&username)
+	s.auditLogger.Log(ctx, username, audit.EventConfigChange,
+		"Email preview: "+messageID, nil, getIP(r))
+
+	// Render template
+	s.renderTemplate(w, "email_preview.html", map[string]interface{}{
+		"Title":     "Email Preview",
+		"MessageID": messageID,
+		"Sender":    msg.Sender,
+		"Recipients": strings.Join(msg.Recipients, ", "),
+		"Parsed":    parsed,
+	})
 }
 
 // HealthStatus represents the health check response

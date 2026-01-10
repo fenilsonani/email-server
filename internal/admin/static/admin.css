@@ -510,3 +510,217 @@ code {
         align-items: flex-start;
     }
 }
+
+/* Pagination */
+.pagination {
+    display: flex;
+    gap: 0.5rem;
+    margin: 1rem 0;
+    font-size: 12px;
+    flex-wrap: wrap;
+}
+
+.pagination a,
+.pagination span {
+    padding: 0.25rem 0.5rem;
+    border: 1px solid var(--border);
+    text-decoration: none;
+    color: var(--text);
+}
+
+.pagination a:hover {
+    background: var(--primary);
+    color: var(--card);
+}
+
+.pagination .active {
+    background: var(--primary);
+    color: var(--card);
+    border-color: var(--primary);
+}
+
+/* Filter Form */
+.filter-form {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    align-items: center;
+}
+
+.filter-form input,
+.filter-form select {
+    flex: 0 1 auto;
+    min-width: 150px;
+}
+
+.filter-form .btn {
+    flex: 0 0 auto;
+}
+
+/* Live Indicator */
+#live-indicator {
+    animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}
+
+/* Email Preview */
+.email-headers {
+    width: 100%;
+    font-size: 12px;
+}
+
+.email-headers td {
+    padding: 0.25rem 0.5rem;
+    vertical-align: top;
+    border-bottom: 1px solid var(--border);
+}
+
+.email-headers td:first-child {
+    width: 150px;
+    font-weight: 700;
+}
+
+.email-content-html {
+    border: 1px solid var(--border);
+    padding: 1rem;
+    background: #fafafa;
+    max-height: 600px;
+    overflow-y: auto;
+    font-size: 13px;
+    line-height: 1.6;
+}
+
+.email-content-text {
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    font-family: 'Courier New', Monaco, monospace;
+    font-size: 12px;
+    background: #f8f8f8;
+    padding: 1rem;
+    border: 1px solid var(--border);
+    max-height: 600px;
+    overflow-y: auto;
+    line-height: 1.5;
+}
+
+/* Keyboard Help Dialog */
+.keyboard-help-dialog {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 9999;
+    justify-content: center;
+    align-items: center;
+}
+
+.keyboard-help-content {
+    background: var(--card);
+    border: 2px solid var(--border);
+    padding: 2rem;
+    max-width: 500px;
+    max-height: 80vh;
+    overflow-y: auto;
+}
+
+.keyboard-help-content h2 {
+    margin: 0 0 1rem 0;
+    font-size: 1.25rem;
+    font-weight: 700;
+    text-transform: lowercase;
+}
+
+.keyboard-help-content table {
+    width: 100%;
+    font-size: 12px;
+}
+
+.keyboard-help-content th {
+    text-align: left;
+    padding: 0.5rem;
+    border-bottom: 2px solid var(--border);
+    text-transform: lowercase;
+}
+
+.keyboard-help-content td {
+    padding: 0.5rem;
+    border-bottom: 1px solid var(--border);
+}
+
+.keyboard-help-content kbd {
+    display: inline-block;
+    padding: 0.1rem 0.4rem;
+    font-family: monospace;
+    font-size: 11px;
+    border: 1px solid var(--border);
+    background: #f5f5f5;
+    border-radius: 2px;
+}
+
+.help-footer {
+    margin-top: 1rem;
+    text-align: center;
+    font-size: 11px;
+    color: var(--text-muted);
+}
+
+/* Row Selection (j/k navigation) */
+tr.row-selected {
+    background-color: #ffffcc !important;
+    outline: 2px solid var(--primary);
+    outline-offset: -2px;
+}
+
+/* Accessibility */
+.skip-link {
+    position: absolute;
+    top: -40px;
+    left: 0;
+    background: var(--primary);
+    color: white;
+    padding: 8px 12px;
+    text-decoration: none;
+    z-index: 10000;
+    font-size: 14px;
+}
+
+.skip-link:focus {
+    top: 0;
+}
+
+/* Screen reader only content */
+.sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border-width: 0;
+}
+
+/* Enhanced focus indicators for accessibility */
+a:focus,
+button:focus,
+input:focus,
+select:focus,
+textarea:focus,
+.btn:focus {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
+}
+
+/* Ensure focus is visible even with button styles */
+.btn:focus {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
+}

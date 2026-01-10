@@ -11,16 +11,43 @@
 </div>
 
 <div class="card">
+    <h2>filters</h2>
+    <form method="GET" class="filter-form" role="search" aria-label="Filter authentication logs">
+        <label for="username-filter" class="sr-only">username</label>
+        <input type="text" id="username-filter" name="username" class="form-control" placeholder="username" value="{{.FilterUsername}}" aria-label="Filter by username">
+        <label for="protocol-filter" class="sr-only">protocol</label>
+        <select id="protocol-filter" name="protocol" class="form-control" aria-label="Filter by protocol">
+            <option value="">all protocols</option>
+            <option value="IMAP" {{if eq .FilterProtocol "IMAP"}}selected{{end}}>imap</option>
+            <option value="SMTP" {{if eq .FilterProtocol "SMTP"}}selected{{end}}>smtp</option>
+            <option value="POP3" {{if eq .FilterProtocol "POP3"}}selected{{end}}>pop3</option>
+        </select>
+        <label for="status-filter" class="sr-only">status</label>
+        <select id="status-filter" name="status" class="form-control" aria-label="Filter by status">
+            <option value="">all status</option>
+            <option value="success" {{if eq .FilterStatus "success"}}selected{{end}}>success</option>
+            <option value="failed" {{if eq .FilterStatus "failed"}}selected{{end}}>failed</option>
+        </select>
+        <label for="date-from-filter" class="sr-only">date from</label>
+        <input type="date" id="date-from-filter" name="date_from" class="form-control" value="{{.FilterDateFrom}}" aria-label="Filter by date from">
+        <label for="date-to-filter" class="sr-only">date to</label>
+        <input type="date" id="date-to-filter" name="date_to" class="form-control" value="{{.FilterDateTo}}" aria-label="Filter by date to">
+        <button type="submit" class="btn btn-primary" aria-label="Apply filters">filter</button>
+        <a href="/admin/logs/auth" class="btn btn-secondary" aria-label="Clear all filters">clear</a>
+    </form>
+</div>
+
+<div class="card">
     {{if .Logs}}
-    <table>
+    <table role="table" aria-label="Authentication logs">
         <thead>
-            <tr>
-                <th>Time</th>
-                <th>Username</th>
-                <th>Protocol</th>
-                <th>Remote IP</th>
-                <th>Status</th>
-                <th>Reason</th>
+            <tr role="row">
+                <th role="columnheader" scope="col">Time</th>
+                <th role="columnheader" scope="col">Username</th>
+                <th role="columnheader" scope="col">Protocol</th>
+                <th role="columnheader" scope="col">Remote IP</th>
+                <th role="columnheader" scope="col">Status</th>
+                <th role="columnheader" scope="col">Reason</th>
             </tr>
         </thead>
         <tbody>
@@ -52,3 +79,29 @@
     </div>
     {{end}}
 </div>
+
+{{if gt .TotalPages 1}}
+<div class="pagination" role="navigation" aria-label="Pagination">
+    {{if gt .CurrentPage 1}}
+    <a href="?page={{sub .CurrentPage 1}}&username={{.FilterUsername}}&protocol={{.FilterProtocol}}&status={{.FilterStatus}}&date_from={{.FilterDateFrom}}&date_to={{.FilterDateTo}}" rel="prev" aria-label="Previous page">previous</a>
+    {{end}}
+
+    {{range $page := untilStep 1 (add .TotalPages 1) 1}}
+    {{if eq $page $.CurrentPage}}
+    <span class="active" aria-current="page" aria-label="Current page, page {{$page}}">{{$page}}</span>
+    {{else if or (le $page 3) (ge $page (sub $.TotalPages 2)) (and (ge $page (sub $.CurrentPage 2)) (le $page (add $.CurrentPage 2)))}}
+    <a href="?page={{$page}}&username={{$.FilterUsername}}&protocol={{$.FilterProtocol}}&status={{$.FilterStatus}}&date_from={{$.FilterDateFrom}}&date_to={{$.FilterDateTo}}" aria-label="Go to page {{$page}}">{{$page}}</a>
+    {{else if eq $page 4}}
+    <span>...</span>
+    {{end}}
+    {{end}}
+
+    {{if lt .CurrentPage .TotalPages}}
+    <a href="?page={{add .CurrentPage 1}}&username={{.FilterUsername}}&protocol={{.FilterProtocol}}&status={{.FilterStatus}}&date_from={{.FilterDateFrom}}&date_to={{.FilterDateTo}}" rel="next" aria-label="Next page">next</a>
+    {{end}}
+
+    <span style="margin-left: 1rem; color: var(--text-muted); font-size: 11px;">
+        ({{.TotalCount}} total)
+    </span>
+</div>
+{{end}}
