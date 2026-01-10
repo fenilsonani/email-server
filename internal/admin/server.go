@@ -59,6 +59,20 @@ func NewServer(cfg *config.Config, db *sql.DB, authenticator *auth.Authenticator
 	}
 	baseStr := string(baseContent)
 
+	// Create template function map
+	funcMap := template.FuncMap{
+		"sub": func(a, b int) int { return a - b },
+		"add": func(a, b int) int { return a + b },
+		"untilStep": func(start, stop, step int) []int {
+			result := []int{}
+			for i := start; i < stop; i += step {
+				result = append(result, i)
+			}
+			return result
+		},
+		"safeHTML": func(s string) template.HTML { return template.HTML(s) },
+	}
+
 	// Create template map
 	templates := make(map[string]*template.Template)
 
@@ -79,6 +93,7 @@ func NewServer(cfg *config.Config, db *sql.DB, authenticator *auth.Authenticator
 		"test_email.html",
 		"system.html",
 		"2fa_setup.html",
+		"email_preview.html",
 	}
 
 	for _, page := range pages {
@@ -91,8 +106,8 @@ func NewServer(cfg *config.Config, db *sql.DB, authenticator *auth.Authenticator
 		// Replace the placeholder in base template with page content
 		combined := strings.Replace(baseStr, "<!-- CONTENT_PLACEHOLDER -->", string(pageContent), 1)
 
-		// Parse the combined template
-		tmpl, err := template.New(page).Parse(combined)
+		// Parse the combined template with function map
+		tmpl, err := template.New(page).Funcs(funcMap).Parse(combined)
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse template %s: %w", page, err)
 		}
@@ -105,7 +120,7 @@ func NewServer(cfg *config.Config, db *sql.DB, authenticator *auth.Authenticator
 	if err != nil {
 		return nil, fmt.Errorf("failed to read login template: %w", err)
 	}
-	loginTmpl, err := template.New("login.html").Parse(string(loginContent))
+	loginTmpl, err := template.New("login.html").Funcs(funcMap).Parse(string(loginContent))
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse login template: %w", err)
 	}
@@ -116,7 +131,7 @@ func NewServer(cfg *config.Config, db *sql.DB, authenticator *auth.Authenticator
 	if err != nil {
 		return nil, fmt.Errorf("failed to read 2fa_verify template: %w", err)
 	}
-	verifyTmpl, err := template.New("2fa_verify.html").Parse(string(verifyContent))
+	verifyTmpl, err := template.New("2fa_verify.html").Funcs(funcMap).Parse(string(verifyContent))
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse 2fa_verify template: %w", err)
 	}
