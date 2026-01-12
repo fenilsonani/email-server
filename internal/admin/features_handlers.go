@@ -208,7 +208,7 @@ func (s *Server) handleAliasAdd(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get domains for dropdown
-	rows, err := s.db.QueryContext(r.Context(), "SELECT id, domain FROM domains ORDER BY domain")
+	rows, err := s.db.QueryContext(r.Context(), "SELECT id, name FROM domains ORDER BY name")
 	if err != nil {
 		s.logger.ErrorContext(r.Context(), "Failed to get domains", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
@@ -248,7 +248,7 @@ func (s *Server) handleAliasAdd(w http.ResponseWriter, r *http.Request) {
 
 	// Get domain name
 	var domainName string
-	s.db.QueryRowContext(r.Context(), "SELECT domain FROM domains WHERE id = ?", domainID).Scan(&domainName)
+	s.db.QueryRowContext(r.Context(), "SELECT name FROM domains WHERE id = ?", domainID).Scan(&domainName)
 
 	// Generate or use custom local part
 	localPart := customLocal
