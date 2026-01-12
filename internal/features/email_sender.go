@@ -124,6 +124,10 @@ func (s *SMTPEmailSender) SendEmail(ctx context.Context, from string, to []strin
 			tlsConfig := &tls.Config{
 				ServerName: s.host,
 			}
+			// Skip certificate verification for localhost (self-signed certs)
+			if s.host == "localhost" || s.host == "127.0.0.1" {
+				tlsConfig.InsecureSkipVerify = true
+			}
 			if err := client.StartTLS(tlsConfig); err != nil {
 				// Continue without TLS for localhost
 				if s.host != "localhost" && s.host != "127.0.0.1" {
