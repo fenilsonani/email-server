@@ -542,13 +542,19 @@ var serveCmd = &cobra.Command{
 				// Start feature scheduler for scheduled sends, snooze wake-ups, undo send
 				featureScheduler := features.NewScheduler(featuresStore, logger)
 
-				// Configure email sender for scheduled sends (use local SMTP)
-				emailSender := features.NewLocalEmailSender()
-				featureScheduler.SetEmailSender(emailSender)
+				// Configure email sender for scheduled sends using delivery queue
+				if resources.deliveryEngine != nil {
+					queuePath := filepath.Join(cfg.Storage.DataDir, "queue")
+					emailSender := features.NewQueueEmailSender(resources.deliveryEngine, queuePath)
+					featureScheduler.SetEmailSender(emailSender)
+					logger.Info("Feature scheduler configured with delivery queue")
+				} else {
+					logger.Warn("Delivery engine not available, scheduled sends disabled")
+				}
 
 				featureScheduler.Start()
 				resources.featureScheduler = featureScheduler
-				logger.Info("Feature scheduler started with email sender")
+				logger.Info("Feature scheduler started")
 
 				resources.adminSrv = adminSrv
 				adminAddr := fmt.Sprintf("%s:%d", cfg.Admin.Listen, cfg.Admin.Port)
