@@ -785,3 +785,74 @@ func (s *Store) CancelSnooze(ctx context.Context, userID, messageID int64) error
 		userID, messageID)
 	return err
 }
+
+// MoveMessageToMailbox moves a message to a different mailbox (for snooze wake-ups)
+// This implements the MessageMover interface used by the scheduler
+func (s *Store) MoveMessageToMailbox(ctx context.Context, userID, messageID, targetMailboxID int64, markUnread bool) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Verify the target mailbox belongs to the user
+	var mailboxUserID int64
+	err = tx.QueryRowContext(ctx,
+		"SELECT u.id FROM mailboxes m JOIN users u ON m.user_id = u.id WHERE m.id = ?",
+		targetMailboxID).Scan(&mailboxUserID)
+	if err != nil {
+		return fmt.Errorf("target mailbox not found: %w", err)
+	}
+	if mailboxUserID != userID {
+		return fmt.Errorf("mailbox does not belong to user")
+	}
+
+	// Get the next UID for the target mailbox
+	var nextUID int64
+	err = tx.QueryRowContext(ctx,
+		"SELECT COALESCE(MAX(uid), 0) + 1 FROM messages WHERE mailbox_id = ?",
+		targetMailboxID).Scan(&nextUID)
+	if err != nil {
+		return fmt.Errorf("failed to get next UID: %w", err)
+	}
+
+	// Get current message flags
+	var flags string
+	err = tx.QueryRowContext(ctx,
+		"SELECT flags FROM messages WHERE id = ?",
+		messageID).Scan(&flags)
+	if err != nil {
+		return fmt.Errorf("message not found: %w", err)
+	}
+
+	// Update flags if marking unread (remove \Seen flag)
+	if markUnread {
+		flagList := strings.Split(flags, ",")
+		var newFlags []string
+		for _, f := range flagList {
+			f = strings.TrimSpace(f)
+			if f != "" && f != "\\Seen" {
+				newFlags = append(newFlags, f)
+			}
+		}
+		flags = strings.Join(newFlags, ",")
+	}
+
+	// Move the message to the target mailbox with new UID
+	_, err = tx.ExecContext(ctx,
+		"UPDATE messages SET mailbox_id = ?, uid = ?, flags = ? WHERE id = ?",
+		targetMailboxID, nextUID, flags, messageID)
+	if err != nil {
+		return fmt.Errorf("failed to move message: %w", err)
+	}
+
+	// Update mailbox UIDNEXT
+	_, err = tx.ExecContext(ctx,
+		"UPDATE mailboxes SET uid_next = ? WHERE id = ? AND uid_next <= ?",
+		nextUID+1, targetMailboxID, nextUID)
+	if err != nil {
+		return fmt.Errorf("failed to update UIDNEXT: %w", err)
+	}
+
+	return tx.Commit()
+}

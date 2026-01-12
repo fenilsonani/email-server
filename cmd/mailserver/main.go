@@ -552,6 +552,10 @@ var serveCmd = &cobra.Command{
 					logger.Warn("Delivery engine not available, scheduled sends disabled")
 				}
 
+				// Configure message mover for snooze wake-ups
+				featureScheduler.SetMessageMover(featuresStore)
+				logger.Info("Feature scheduler configured with message mover for snooze")
+
 				featureScheduler.Start()
 				resources.featureScheduler = featureScheduler
 				logger.Info("Feature scheduler started")
