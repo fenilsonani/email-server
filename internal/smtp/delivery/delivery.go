@@ -232,6 +232,18 @@ func (e *Engine) deliverMessage(msg *queue.Message) {
 
 	// Check circuit breaker for this domain
 	breaker := e.breakers.Get(msg.Domain)
+	if breaker == nil {
+		err := fmt.Errorf("invalid domain: %q", msg.Domain)
+		logger.ErrorContext(ctx, "No circuit breaker available (empty domain?), failing delivery", err)
+		e.queue.Fail(ctx, msg.ID, err.Error())
+		e.mu.Lock()
+		e.totalFailed++
+		e.mu.Unlock()
+		for _, rcpt := range msg.Recipients {
+			e.logDelivery(ctx, msg.ID, msg.Sender, rcpt, "rejected", 0, err.Error())
+		}
+		return
+	}
 	if breaker.State() == resilience.StateOpen {
 		logger.WarnContext(ctx, "Circuit breaker open, deferring")
 		e.queue.Retry(ctx, msg.ID, ErrCircuitOpen)
