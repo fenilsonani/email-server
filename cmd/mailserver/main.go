@@ -92,16 +92,17 @@ var serveCmd = &cobra.Command{
 
 		// Track resources for cleanup
 		type resourceTracker struct {
-			db             metadata.Store
-			redisQueue     *queue.RedisQueue
-			deliveryEngine *delivery.Engine
-			imapSrv        *imapserver.Server
-			smtpSrv        *smtpserver.Server
-			davSrv         *dav.Server
-			adminSrv       *admin.Server
-			apiSrv         *api.Server
-			logger         *logging.Logger
-			healthMonitor  *health.Monitor
+			db               metadata.Store
+			redisQueue       *queue.RedisQueue
+			deliveryEngine   *delivery.Engine
+			imapSrv          *imapserver.Server
+			smtpSrv          *smtpserver.Server
+			davSrv           *dav.Server
+			adminSrv         *admin.Server
+			apiSrv           *api.Server
+			logger           *logging.Logger
+			healthMonitor    *health.Monitor
+			featureScheduler *features.Scheduler
 		}
 		resources := &resourceTracker{}
 
@@ -172,6 +173,14 @@ var serveCmd = &cobra.Command{
 						fmt.Fprintf(os.Stderr, "API server shutdown error: %v\n", err)
 					}
 				}
+			}
+
+			// Stop feature scheduler
+			if resources.featureScheduler != nil {
+				if resources.logger != nil {
+					resources.logger.Info("Shutting down feature scheduler")
+				}
+				resources.featureScheduler.Stop()
 			}
 
 			if resources.adminSrv != nil {
@@ -529,6 +538,12 @@ var serveCmd = &cobra.Command{
 				// Initialize features store for unique features (Screener, Aliases, etc.)
 				featuresStore := features.NewStore(db.RawDB())
 				adminSrv.SetFeaturesStore(featuresStore)
+
+				// Start feature scheduler for scheduled sends, snooze wake-ups, undo send
+				featureScheduler := features.NewScheduler(featuresStore, logger)
+				featureScheduler.Start()
+				resources.featureScheduler = featureScheduler
+				logger.Info("Feature scheduler started")
 
 				resources.adminSrv = adminSrv
 				adminAddr := fmt.Sprintf("%s:%d", cfg.Admin.Listen, cfg.Admin.Port)
