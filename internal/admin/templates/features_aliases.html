@@ -1,0 +1,106 @@
+<div class="breadcrumbs">
+    <a href="/admin/">home</a>
+    <span>&gt;</span>
+    <a href="/admin/features">features</a>
+    <span>&gt;</span>
+    <span>aliases</span>
+</div>
+
+<div class="page-header">
+    <h1>Email Aliases</h1>
+    <a href="/admin/features/aliases/add" class="btn btn-primary">Create Alias</a>
+</div>
+
+<div class="card">
+    <div class="stats-row">
+        <div class="stat">
+            <span class="stat-value">{{.TotalCount}}</span>
+            <span class="stat-label">Total</span>
+        </div>
+        <div class="stat">
+            <span class="stat-value text-success">{{.ActiveCount}}</span>
+            <span class="stat-label">Active</span>
+        </div>
+        <div class="stat">
+            <span class="stat-value text-muted">{{.InactiveCount}}</span>
+            <span class="stat-label">Disabled</span>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    {{if .Aliases}}
+    <table role="table" aria-label="Email aliases">
+        <thead>
+            <tr>
+                <th>Alias Address</th>
+                <th>Description</th>
+                <th>Emails Received</th>
+                <th>Status</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {{range .Aliases}}
+            <tr>
+                <td>
+                    <code style="font-size: 0.9em;">{{.AliasAddress}}</code>
+                </td>
+                <td>{{.Description}}</td>
+                <td>{{.EmailCount}}</td>
+                <td>
+                    {{if .IsActive}}
+                    <span class="badge badge-success">Active</span>
+                    {{else}}
+                    <span class="badge badge-secondary">Disabled</span>
+                    {{end}}
+                </td>
+                <td class="actions">
+                    <form method="POST" action="/admin/features/aliases/toggle/{{.ID}}" style="display: inline;">
+                        <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                        <button type="submit" class="btn btn-sm {{if .IsActive}}btn-warning{{else}}btn-success{{end}}">
+                            {{if .IsActive}}Disable{{else}}Enable{{end}}
+                        </button>
+                    </form>
+                    <form method="POST" action="/admin/features/aliases/delete/{{.ID}}" style="display: inline;"
+                          onsubmit="return confirm('Delete this alias? Emails to this address will stop working.');">
+                        <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                        <button type="submit" class="btn btn-sm btn-danger">Delete</button>
+                    </form>
+                </td>
+            </tr>
+            {{end}}
+        </tbody>
+    </table>
+    {{else}}
+    <div class="empty-state">
+        <p>No aliases created yet.</p>
+        <a href="/admin/features/aliases/add" class="btn btn-primary">Create your first alias</a>
+    </div>
+    {{end}}
+</div>
+
+<style>
+.stats-row {
+    display: flex;
+    gap: 2rem;
+}
+
+.stat {
+    text-align: center;
+}
+
+.stat-value {
+    display: block;
+    font-size: 1.5rem;
+    font-weight: 600;
+}
+
+.stat-label {
+    font-size: 0.875rem;
+    color: var(--text-muted);
+}
+
+.text-success { color: var(--success); }
+.text-muted { color: var(--text-muted); }
+</style>

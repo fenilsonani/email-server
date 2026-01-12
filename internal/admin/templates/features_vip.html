@@ -1,0 +1,55 @@
+<div class="breadcrumbs">
+    <a href="/admin/">home</a>
+    <span>&gt;</span>
+    <a href="/admin/features">features</a>
+    <span>&gt;</span>
+    <span>vip</span>
+</div>
+
+<div class="page-header">
+    <h1>VIP Contacts</h1>
+    <a href="/admin/features/vip/add" class="btn btn-primary">Add VIP</a>
+</div>
+
+<div class="card">
+    <p style="color: var(--text-muted);">
+        VIP contacts are your priority senders. Emails from VIPs always go to your Priority inbox zone
+        and can trigger special notifications.
+    </p>
+</div>
+
+<div class="card">
+    {{if .VIPs}}
+    <table role="table" aria-label="VIP contacts">
+        <thead>
+            <tr>
+                <th>Email</th>
+                <th>Name</th>
+                <th>Added</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {{range .VIPs}}
+            <tr>
+                <td><strong>{{.Email}}</strong></td>
+                <td>{{.Name}}</td>
+                <td>{{.CreatedAt.Format "Jan 02, 2006"}}</td>
+                <td class="actions">
+                    <form method="POST" action="/admin/features/vip/delete/{{.ID}}" style="display: inline;"
+                          onsubmit="return confirm('Remove this VIP contact?');">
+                        <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                        <button type="submit" class="btn btn-sm btn-danger">Remove</button>
+                    </form>
+                </td>
+            </tr>
+            {{end}}
+        </tbody>
+    </table>
+    {{else}}
+    <div class="empty-state">
+        <p>No VIP contacts yet.</p>
+        <a href="/admin/features/vip/add" class="btn btn-primary">Add your first VIP</a>
+    </div>
+    {{end}}
+</div>

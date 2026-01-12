@@ -1,0 +1,42 @@
+<div class="breadcrumbs">
+    <a href="/admin/">home</a>
+    <span>&gt;</span>
+    <a href="/admin/features">features</a>
+    <span>&gt;</span>
+    <a href="/admin/features/vip">vip</a>
+    <span>&gt;</span>
+    <span>add</span>
+</div>
+
+<div class="page-header">
+    <h1>Add VIP Contact</h1>
+</div>
+
+{{if .Error}}
+<div class="alert alert-danger">{{.Error}}</div>
+{{end}}
+
+<div class="card">
+    <form method="POST" action="/admin/features/vip/add">
+        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+
+        <div class="form-group">
+            <label for="email">Email Address</label>
+            <input type="email" id="email" name="email" class="form-control" required
+                   placeholder="boss@company.com">
+            <small class="form-text">Emails from this address will be marked as VIP</small>
+        </div>
+
+        <div class="form-group">
+            <label for="name">Name (optional)</label>
+            <input type="text" id="name" name="name" class="form-control"
+                   placeholder="e.g., John Smith">
+            <small class="form-text">A friendly name to help you identify this contact</small>
+        </div>
+
+        <div class="form-actions">
+            <button type="submit" class="btn btn-primary">Add VIP</button>
+            <a href="/admin/features/vip" class="btn btn-secondary">Cancel</a>
+        </div>
+    </form>
+</div>

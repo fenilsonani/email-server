@@ -1,0 +1,92 @@
+<div class="breadcrumbs">
+    <a href="/admin/">home</a>
+    <span>&gt;</span>
+    <a href="/admin/features">features</a>
+    <span>&gt;</span>
+    <span>preferences</span>
+</div>
+
+<div class="page-header">
+    <h1>Feature Preferences</h1>
+</div>
+
+{{if .Error}}
+<div class="alert alert-danger">{{.Error}}</div>
+{{end}}
+
+{{if .Success}}
+<div class="alert alert-success">{{.Success}}</div>
+{{end}}
+
+<div class="card">
+    <form method="POST" action="/admin/features/preferences">
+        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+
+        <h2>Inbox Control</h2>
+
+        <div class="form-group">
+            <label class="form-check">
+                <input type="checkbox" name="screener_enabled" {{if .Preferences.ScreenerEnabled}}checked{{end}}>
+                <span>Enable Screener</span>
+            </label>
+            <small class="form-text">Hold emails from unknown senders for approval</small>
+        </div>
+
+        <div class="form-group">
+            <label class="form-check">
+                <input type="checkbox" name="zones_enabled" {{if .Preferences.ZonesEnabled}}checked{{end}}>
+                <span>Enable Smart Zones</span>
+            </label>
+            <small class="form-text">Auto-sort emails into Priority, Feed, and Paper Trail zones</small>
+        </div>
+
+        <hr>
+        <h2>Privacy</h2>
+
+        <div class="form-group">
+            <label for="tracker_blocking">Tracker Blocking</label>
+            <select id="tracker_blocking" name="tracker_blocking" class="form-control">
+                <option value="block" {{if eq .Preferences.TrackerBlocking "block"}}selected{{end}}>Block (hide tracking pixels)</option>
+                <option value="proxy" {{if eq .Preferences.TrackerBlocking "proxy"}}selected{{end}}>Proxy (load through server)</option>
+                <option value="off" {{if eq .Preferences.TrackerBlocking "off"}}selected{{end}}>Off (allow all)</option>
+            </select>
+            <small class="form-text">How to handle spy pixels and tracking in emails</small>
+        </div>
+
+        <hr>
+        <h2>Productivity</h2>
+
+        <div class="form-group">
+            <label for="undo_send_delay">Undo Send Delay</label>
+            <select id="undo_send_delay" name="undo_send_delay" class="form-control">
+                <option value="0" {{if eq .Preferences.UndoSendDelay 0}}selected{{end}}>Off (send immediately)</option>
+                <option value="5" {{if eq .Preferences.UndoSendDelay 5}}selected{{end}}>5 seconds</option>
+                <option value="10" {{if eq .Preferences.UndoSendDelay 10}}selected{{end}}>10 seconds</option>
+                <option value="20" {{if eq .Preferences.UndoSendDelay 20}}selected{{end}}>20 seconds</option>
+                <option value="30" {{if eq .Preferences.UndoSendDelay 30}}selected{{end}}>30 seconds</option>
+            </select>
+            <small class="form-text">Time to cancel a sent email before it's actually delivered</small>
+        </div>
+
+        <div class="form-group">
+            <label class="form-check">
+                <input type="checkbox" name="snooze_mark_unread" {{if .Preferences.SnoozeMarkUnread}}checked{{end}}>
+                <span>Mark snoozed emails as unread when they return</span>
+            </label>
+            <small class="form-text">When a snoozed email wakes up, mark it unread so you notice it</small>
+        </div>
+
+        <div class="form-actions">
+            <button type="submit" class="btn btn-primary">Save Preferences</button>
+            <a href="/admin/features" class="btn btn-secondary">Cancel</a>
+        </div>
+    </form>
+</div>
+
+<style>
+hr {
+    margin: 1.5rem 0;
+    border: none;
+    border-top: 1px solid var(--border-color);
+}
+</style>

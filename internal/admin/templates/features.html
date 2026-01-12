@@ -1,0 +1,118 @@
+<div class="breadcrumbs">
+    <a href="/admin/">home</a>
+    <span>&gt;</span>
+    <span>features</span>
+</div>
+
+<div class="page-header">
+    <h1>Features</h1>
+</div>
+
+<div class="card">
+    <h2>Inbox Control</h2>
+    <p style="color: var(--text-muted); margin-bottom: 1rem;">Manage who can reach your inbox</p>
+
+    <div class="feature-grid">
+        <a href="/admin/features/screener" class="feature-card">
+            <h3>Screener</h3>
+            <p>First-contact filtering. Unknown senders are held until you approve them.</p>
+            {{if .Preferences}}
+            <span class="badge {{if .Preferences.ScreenerEnabled}}badge-success{{else}}badge-secondary{{end}}">
+                {{if .Preferences.ScreenerEnabled}}Enabled{{else}}Disabled{{end}}
+            </span>
+            {{end}}
+        </a>
+
+        <a href="/admin/features/vip" class="feature-card">
+            <h3>VIP Contacts</h3>
+            <p>Mark important senders for priority handling and notifications.</p>
+        </a>
+    </div>
+</div>
+
+<div class="card">
+    <h2>Privacy</h2>
+    <p style="color: var(--text-muted); margin-bottom: 1rem;">Protect your identity and block trackers</p>
+
+    <div class="feature-grid">
+        <a href="/admin/features/aliases" class="feature-card">
+            <h3>Email Aliases</h3>
+            <p>Create disposable addresses like shop_x7k2@domain.com. Disable anytime.</p>
+        </a>
+
+        <div class="feature-card">
+            <h3>Tracker Blocking</h3>
+            <p>Block spy pixels and tracking links in emails.</p>
+            {{if .Preferences}}
+            <span class="badge {{if eq .Preferences.TrackerBlocking "block"}}badge-success{{else if eq .Preferences.TrackerBlocking "proxy"}}badge-warning{{else}}badge-secondary{{end}}">
+                {{.Preferences.TrackerBlocking}}
+            </span>
+            {{end}}
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <h2>Productivity</h2>
+    <p style="color: var(--text-muted); margin-bottom: 1rem;">Email that works for you</p>
+
+    <div class="feature-grid">
+        <div class="feature-card">
+            <h3>Undo Send</h3>
+            <p>Delay before sending. Catch mistakes before they happen.</p>
+            {{if .Preferences}}
+            <span class="badge badge-info">{{.Preferences.UndoSendDelay}}s delay</span>
+            {{end}}
+        </div>
+
+        <div class="feature-card">
+            <h3>Smart Zones</h3>
+            <p>Auto-sort emails into Priority, Feed, Paper Trail zones.</p>
+            {{if .Preferences}}
+            <span class="badge {{if .Preferences.ZonesEnabled}}badge-success{{else}}badge-secondary{{end}}">
+                {{if .Preferences.ZonesEnabled}}Enabled{{else}}Disabled{{end}}
+            </span>
+            {{end}}
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <a href="/admin/features/preferences" class="btn btn-primary">Configure Preferences</a>
+</div>
+
+<style>
+.feature-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 1rem;
+}
+
+.feature-card {
+    display: block;
+    padding: 1.25rem;
+    background: var(--card-bg);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    text-decoration: none;
+    color: inherit;
+    transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.feature-card:hover {
+    border-color: var(--primary);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+
+.feature-card h3 {
+    margin: 0 0 0.5rem 0;
+    font-size: 1rem;
+    color: var(--text-color);
+}
+
+.feature-card p {
+    margin: 0 0 0.75rem 0;
+    font-size: 0.875rem;
+    color: var(--text-muted);
+}
+</style>

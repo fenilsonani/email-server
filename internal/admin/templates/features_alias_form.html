@@ -1,0 +1,54 @@
+<div class="breadcrumbs">
+    <a href="/admin/">home</a>
+    <span>&gt;</span>
+    <a href="/admin/features">features</a>
+    <span>&gt;</span>
+    <a href="/admin/features/aliases">aliases</a>
+    <span>&gt;</span>
+    <span>create</span>
+</div>
+
+<div class="page-header">
+    <h1>Create Alias</h1>
+</div>
+
+{{if .Error}}
+<div class="alert alert-danger">{{.Error}}</div>
+{{end}}
+
+<div class="card">
+    <form method="POST" action="/admin/features/aliases/add">
+        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+
+        <div class="form-group">
+            <label for="domain_id">Domain</label>
+            <select id="domain_id" name="domain_id" class="form-control" required>
+                <option value="">Select a domain</option>
+                {{range .Domains}}
+                <option value="{{.ID}}">{{.Domain}}</option>
+                {{end}}
+            </select>
+            <small class="form-text">The domain for your alias address</small>
+        </div>
+
+        <div class="form-group">
+            <label for="description">Description</label>
+            <input type="text" id="description" name="description" class="form-control"
+                   placeholder="e.g., Amazon shopping, Newsletter signups">
+            <small class="form-text">Optional: helps you remember what this alias is for</small>
+        </div>
+
+        <div class="form-group">
+            <label for="local_part">Custom Local Part (optional)</label>
+            <input type="text" id="local_part" name="local_part" class="form-control"
+                   placeholder="Leave blank to auto-generate"
+                   pattern="[a-z0-9_]+" title="Only lowercase letters, numbers, and underscores">
+            <small class="form-text">Leave blank to auto-generate like "shop_a1b2c3d4"</small>
+        </div>
+
+        <div class="form-actions">
+            <button type="submit" class="btn btn-primary">Create Alias</button>
+            <a href="/admin/features/aliases" class="btn btn-secondary">Cancel</a>
+        </div>
+    </form>
+</div>

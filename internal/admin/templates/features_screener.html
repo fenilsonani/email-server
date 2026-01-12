@@ -1,0 +1,125 @@
+<div class="breadcrumbs">
+    <a href="/admin/">home</a>
+    <span>&gt;</span>
+    <a href="/admin/features">features</a>
+    <span>&gt;</span>
+    <span>screener</span>
+</div>
+
+<div class="page-header">
+    <h1>Screener</h1>
+</div>
+
+<div class="card">
+    <h2>Filter by Status</h2>
+    <div class="status-tabs">
+        <a href="/admin/features/screener" class="status-tab {{if eq .FilterStatus ""}}active{{end}}">
+            All
+        </a>
+        <a href="/admin/features/screener?status=pending" class="status-tab {{if eq .FilterStatus "pending"}}active{{end}}">
+            Pending <span class="badge">{{.PendingCount}}</span>
+        </a>
+        <a href="/admin/features/screener?status=approved" class="status-tab {{if eq .FilterStatus "approved"}}active{{end}}">
+            Approved <span class="badge badge-success">{{.ApprovedCount}}</span>
+        </a>
+        <a href="/admin/features/screener?status=blocked" class="status-tab {{if eq .FilterStatus "blocked"}}active{{end}}">
+            Blocked <span class="badge badge-danger">{{.BlockedCount}}</span>
+        </a>
+    </div>
+</div>
+
+<div class="card">
+    {{if .Contacts}}
+    <table role="table" aria-label="Screener contacts">
+        <thead>
+            <tr>
+                <th>Sender</th>
+                <th>Status</th>
+                <th>Last Updated</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {{range .Contacts}}
+            <tr>
+                <td>
+                    {{if .Email}}
+                    <strong>{{.Email}}</strong>
+                    {{else}}
+                    <strong>*@{{.Domain}}</strong>
+                    <span class="badge badge-secondary">domain</span>
+                    {{end}}
+                </td>
+                <td>
+                    {{if eq .Status "pending"}}
+                    <span class="badge badge-warning">Pending</span>
+                    {{else if eq .Status "approved"}}
+                    <span class="badge badge-success">Approved</span>
+                    {{else if eq .Status "blocked"}}
+                    <span class="badge badge-danger">Blocked</span>
+                    {{end}}
+                </td>
+                <td>{{.UpdatedAt.Format "Jan 02, 2006 15:04"}}</td>
+                <td class="actions">
+                    {{if ne .Status "approved"}}
+                    <form method="POST" action="/admin/features/screener/approve/{{.ID}}" style="display: inline;">
+                        <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                        <button type="submit" class="btn btn-sm btn-success">Approve</button>
+                    </form>
+                    {{end}}
+                    {{if ne .Status "blocked"}}
+                    <form method="POST" action="/admin/features/screener/block/{{.ID}}" style="display: inline;">
+                        <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                        <button type="submit" class="btn btn-sm btn-warning">Block</button>
+                    </form>
+                    {{end}}
+                    <form method="POST" action="/admin/features/screener/delete/{{.ID}}" style="display: inline;"
+                          onsubmit="return confirm('Remove this contact from the screener?');">
+                        <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                        <button type="submit" class="btn btn-sm btn-danger">Delete</button>
+                    </form>
+                </td>
+            </tr>
+            {{end}}
+        </tbody>
+    </table>
+    {{else}}
+    <div class="empty-state">
+        <p>No contacts in the screener yet.</p>
+        <p style="color: var(--text-muted);">When new senders email you, they'll appear here for approval.</p>
+    </div>
+    {{end}}
+</div>
+
+<style>
+.status-tabs {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+.status-tab {
+    padding: 0.5rem 1rem;
+    text-decoration: none;
+    color: var(--text-muted);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    background: transparent;
+    transition: all 0.2s;
+}
+
+.status-tab:hover {
+    border-color: var(--primary);
+    color: var(--primary);
+}
+
+.status-tab.active {
+    background: var(--primary);
+    border-color: var(--primary);
+    color: white;
+}
+
+.status-tab .badge {
+    margin-left: 0.5rem;
+}
+</style>

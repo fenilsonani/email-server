@@ -97,6 +97,13 @@ func NewServer(cfg *config.Config, db *sql.DB, authenticator *auth.Authenticator
 		"system.html",
 		"2fa_setup.html",
 		"email_preview.html",
+		"features.html",
+		"features_screener.html",
+		"features_aliases.html",
+		"features_alias_form.html",
+		"features_vip.html",
+		"features_vip_form.html",
+		"features_preferences.html",
 	}
 
 	for _, page := range pages {
@@ -232,20 +239,20 @@ func (s *Server) Start(listen string) error {
 	mux.HandleFunc("/admin/2fa/setup", s.withAuth(s.handle2FASetup))
 	mux.HandleFunc("/admin/2fa/verify", s.handle2FAVerify) // No auth - used during login
 
-	// Features API routes (JSON responses)
-	mux.HandleFunc("/admin/api/screener", s.withAuth(s.handleScreenerList))
-	mux.HandleFunc("/admin/api/screener/approve", s.withAuth(s.handleScreenerApprove))
-	mux.HandleFunc("/admin/api/screener/block", s.withAuth(s.handleScreenerBlock))
-	mux.HandleFunc("/admin/api/screener/", s.withAuth(s.handleScreenerDelete))
-	mux.HandleFunc("/admin/api/aliases", s.withAuth(s.handleAliasesRouter))
-	mux.HandleFunc("/admin/api/aliases/", s.withAuth(s.handleAliasRouter))
-	mux.HandleFunc("/admin/api/scheduled", s.withAuth(s.handleScheduledRouter))
-	mux.HandleFunc("/admin/api/scheduled/", s.withAuth(s.handleScheduledCancel))
-	mux.HandleFunc("/admin/api/snoozed", s.withAuth(s.handleSnoozedList))
-	mux.HandleFunc("/admin/api/messages/", s.withAuth(s.handleSnoozeRouter))
-	mux.HandleFunc("/admin/api/vip", s.withAuth(s.handleVIPRouter))
-	mux.HandleFunc("/admin/api/vip/", s.withAuth(s.handleVIPDelete))
-	mux.HandleFunc("/admin/api/preferences", s.withAuth(s.handlePreferencesRouter))
+	// Features management routes (Screener, Aliases, etc.)
+	mux.HandleFunc("/admin/features", s.withAuth(s.handleFeatures))
+	mux.HandleFunc("/admin/features/screener", s.withAuth(s.handleScreener))
+	mux.HandleFunc("/admin/features/screener/approve/", s.withAuth(s.handleScreenerAction))
+	mux.HandleFunc("/admin/features/screener/block/", s.withAuth(s.handleScreenerAction))
+	mux.HandleFunc("/admin/features/screener/delete/", s.withAuth(s.handleScreenerAction))
+	mux.HandleFunc("/admin/features/aliases", s.withAuth(s.handleAliases))
+	mux.HandleFunc("/admin/features/aliases/add", s.withAuth(s.handleAliasAdd))
+	mux.HandleFunc("/admin/features/aliases/toggle/", s.withAuth(s.handleAliasToggle))
+	mux.HandleFunc("/admin/features/aliases/delete/", s.withAuth(s.handleAliasDelete))
+	mux.HandleFunc("/admin/features/vip", s.withAuth(s.handleVIP))
+	mux.HandleFunc("/admin/features/vip/add", s.withAuth(s.handleVIPAdd))
+	mux.HandleFunc("/admin/features/vip/delete/", s.withAuth(s.handleVIPRemove))
+	mux.HandleFunc("/admin/features/preferences", s.withAuth(s.handlePreferences))
 
 	// Build middleware chain (order matters: innermost first, then wrapping outward)
 	// The execution order will be: logging -> security headers -> panic recovery -> CSRF -> routes
