@@ -541,9 +541,14 @@ var serveCmd = &cobra.Command{
 
 				// Start feature scheduler for scheduled sends, snooze wake-ups, undo send
 				featureScheduler := features.NewScheduler(featuresStore, logger)
+
+				// Configure email sender for scheduled sends (use local SMTP)
+				emailSender := features.NewLocalEmailSender()
+				featureScheduler.SetEmailSender(emailSender)
+
 				featureScheduler.Start()
 				resources.featureScheduler = featureScheduler
-				logger.Info("Feature scheduler started")
+				logger.Info("Feature scheduler started with email sender")
 
 				resources.adminSrv = adminSrv
 				adminAddr := fmt.Sprintf("%s:%d", cfg.Admin.Listen, cfg.Admin.Port)
