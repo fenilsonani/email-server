@@ -104,6 +104,9 @@ func NewServer(cfg *config.Config, db *sql.DB, authenticator *auth.Authenticator
 		"features_vip.html",
 		"features_vip_form.html",
 		"features_preferences.html",
+		"features_scheduled.html",
+		"features_scheduled_form.html",
+		"features_snoozed.html",
 	}
 
 	for _, page := range pages {
@@ -253,6 +256,11 @@ func (s *Server) Start(listen string) error {
 	mux.HandleFunc("/admin/features/vip/add", s.withAuth(s.handleVIPAdd))
 	mux.HandleFunc("/admin/features/vip/delete/", s.withAuth(s.handleVIPRemove))
 	mux.HandleFunc("/admin/features/preferences", s.withAuth(s.handlePreferences))
+	mux.HandleFunc("/admin/features/scheduled", s.withAuth(s.handleScheduled))
+	mux.HandleFunc("/admin/features/scheduled/add", s.withAuth(s.handleScheduledAdd))
+	mux.HandleFunc("/admin/features/scheduled/cancel/", s.withAuth(s.handleScheduledCancel))
+	mux.HandleFunc("/admin/features/snoozed", s.withAuth(s.handleSnoozed))
+	mux.HandleFunc("/admin/features/snoozed/cancel/", s.withAuth(s.handleSnoozeCancel))
 
 	// Build middleware chain (order matters: innermost first, then wrapping outward)
 	// The execution order will be: logging -> security headers -> panic recovery -> CSRF -> routes

@@ -1,0 +1,88 @@
+<div class="breadcrumbs">
+    <a href="/admin/">home</a>
+    <span>&gt;</span>
+    <a href="/admin/features">features</a>
+    <span>&gt;</span>
+    <span>send later</span>
+</div>
+
+<div class="page-header">
+    <h1>send later</h1>
+    <a href="/admin/features/scheduled/add" class="btn btn-primary">schedule email</a>
+</div>
+
+<div class="stats-grid">
+    <div class="card stat-card">
+        <div class="stat-value">{{.PendingCount}}</div>
+        <div class="stat-label">pending</div>
+    </div>
+    <div class="card stat-card">
+        <div class="stat-value">{{.SentCount}}</div>
+        <div class="stat-label">sent</div>
+    </div>
+    <div class="card stat-card">
+        <div class="stat-value">{{.CancelledCount}}</div>
+        <div class="stat-label">cancelled</div>
+    </div>
+</div>
+
+<div class="card">
+    <h2>filter</h2>
+    <div class="filter-form">
+        <a href="/admin/features/scheduled?status=pending" class="btn {{if eq .FilterStatus "pending"}}btn-primary{{else}}btn-secondary{{end}}">pending</a>
+        <a href="/admin/features/scheduled?status=sent" class="btn {{if eq .FilterStatus "sent"}}btn-primary{{else}}btn-secondary{{end}}">sent</a>
+        <a href="/admin/features/scheduled?status=cancelled" class="btn {{if eq .FilterStatus "cancelled"}}btn-primary{{else}}btn-secondary{{end}}">cancelled</a>
+    </div>
+</div>
+
+<div class="card">
+    {{if .Emails}}
+    <table>
+        <thead>
+            <tr>
+                <th>to</th>
+                <th>subject</th>
+                <th>scheduled for</th>
+                <th>status</th>
+                <th>actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {{range .Emails}}
+            <tr>
+                <td><code>{{index .Recipients 0}}{{if gt (len .Recipients) 1}} +{{sub (len .Recipients) 1}}{{end}}</code></td>
+                <td>{{if .Subject}}{{.Subject}}{{else}}(no subject){{end}}</td>
+                <td>{{.SendAt.Format "Jan 02, 2006 15:04"}}</td>
+                <td>
+                    {{if eq .Status "pending"}}
+                    <span class="badge badge-warning">pending</span>
+                    {{else if eq .Status "sent"}}
+                    <span class="badge badge-success">sent</span>
+                    {{else if eq .Status "cancelled"}}
+                    <span class="badge badge-secondary">cancelled</span>
+                    {{else if eq .Status "failed"}}
+                    <span class="badge badge-danger">failed</span>
+                    {{end}}
+                </td>
+                <td>
+                    {{if eq .Status "pending"}}
+                    <form method="POST" action="/admin/features/scheduled/cancel/{{.ID}}" style="display: inline;"
+                          onsubmit="return confirm('Cancel this scheduled email?');">
+                        <button type="submit" class="btn btn-sm btn-danger">cancel</button>
+                    </form>
+                    {{else}}
+                    --
+                    {{end}}
+                </td>
+            </tr>
+            {{end}}
+        </tbody>
+    </table>
+    {{else}}
+    <div class="empty-state">
+        <p>no scheduled emails</p>
+        <p>schedule an email to be sent at a specific time</p>
+        <a href="/admin/features/scheduled/add" class="btn btn-primary">schedule your first email</a>
+    </div>
+    {{end}}
+</div>

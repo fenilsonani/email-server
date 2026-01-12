@@ -1,0 +1,66 @@
+<div class="breadcrumbs">
+    <a href="/admin/">home</a>
+    <span>&gt;</span>
+    <a href="/admin/features">features</a>
+    <span>&gt;</span>
+    <span>snoozed</span>
+</div>
+
+<div class="page-header">
+    <h1>snoozed emails</h1>
+</div>
+
+<div class="stats-grid">
+    <div class="card stat-card">
+        <div class="stat-value">{{.Count}}</div>
+        <div class="stat-label">snoozed</div>
+    </div>
+</div>
+
+<div class="card">
+    <p style="color: var(--text-muted); font-size: 12px; margin-bottom: 1rem;">
+        snoozed emails are hidden from your inbox and will reappear at the scheduled time.
+        to snooze an email, use your email client's snooze feature or the API.
+    </p>
+
+    {{if .Snoozed}}
+    <table>
+        <thead>
+            <tr>
+                <th>message id</th>
+                <th>wake at</th>
+                <th>mark unread</th>
+                <th>snoozed at</th>
+                <th>actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {{range .Snoozed}}
+            <tr>
+                <td><code>#{{.MessageID}}</code></td>
+                <td>{{.WakeAt.Format "Jan 02, 2006 15:04"}}</td>
+                <td>
+                    {{if .MarkUnread}}
+                    <span class="badge badge-success">yes</span>
+                    {{else}}
+                    <span class="badge badge-secondary">no</span>
+                    {{end}}
+                </td>
+                <td>{{.CreatedAt.Format "Jan 02 15:04"}}</td>
+                <td>
+                    <form method="POST" action="/admin/features/snoozed/cancel/{{.ID}}" style="display: inline;"
+                          onsubmit="return confirm('Wake this email now?');">
+                        <button type="submit" class="btn btn-sm">wake now</button>
+                    </form>
+                </td>
+            </tr>
+            {{end}}
+        </tbody>
+    </table>
+    {{else}}
+    <div class="empty-state">
+        <p>no snoozed emails</p>
+        <p>snoozed emails will appear here when you snooze them from your email client</p>
+    </div>
+    {{end}}
+</div>

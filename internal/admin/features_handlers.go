@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/fenilsonani/email-server/internal/features"
 )
@@ -515,4 +516,214 @@ func (s *Server) handlePreferences(w http.ResponseWriter, r *http.Request) {
 		"Success":     "Preferences saved successfully",
 	}
 	s.renderTemplate(w, "features_preferences.html", data)
+}
+
+// =============================================================================
+// Scheduled Email (Send Later) Handlers
+// =============================================================================
+
+// handleScheduled shows the list of scheduled emails
+func (s *Server) handleScheduled(w http.ResponseWriter, r *http.Request) {
+	userID, ok := s.getSessionUserID(r)
+	if !ok {
+		http.Redirect(w, r, "/admin/login", http.StatusSeeOther)
+		return
+	}
+
+	if s.featuresStore == nil {
+		http.Error(w, "Features not enabled", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Get filter status
+	filterStatus := r.URL.Query().Get("status")
+	if filterStatus == "" {
+		filterStatus = features.ScheduledStatusPending
+	}
+
+	emails, err := s.featuresStore.ListScheduledEmails(r.Context(), userID, filterStatus)
+	if err != nil {
+		s.logger.ErrorContext(r.Context(), "Failed to list scheduled emails", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	// Count by status
+	pending, _ := s.featuresStore.ListScheduledEmails(r.Context(), userID, features.ScheduledStatusPending)
+	sent, _ := s.featuresStore.ListScheduledEmails(r.Context(), userID, features.ScheduledStatusSent)
+	cancelled, _ := s.featuresStore.ListScheduledEmails(r.Context(), userID, features.ScheduledStatusCancelled)
+
+	data := map[string]interface{}{
+		"Title":          "Scheduled Emails",
+		"Emails":         emails,
+		"FilterStatus":   filterStatus,
+		"PendingCount":   len(pending),
+		"SentCount":      len(sent),
+		"CancelledCount": len(cancelled),
+	}
+
+	s.renderTemplate(w, "features_scheduled.html", data)
+}
+
+// handleScheduledAdd shows the schedule email form and handles creation
+func (s *Server) handleScheduledAdd(w http.ResponseWriter, r *http.Request) {
+	userID, ok := s.getSessionUserID(r)
+	if !ok {
+		http.Redirect(w, r, "/admin/login", http.StatusSeeOther)
+		return
+	}
+
+	if s.featuresStore == nil {
+		http.Error(w, "Features not enabled", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Get user's email for default from address
+	var userEmail string
+	s.db.QueryRowContext(r.Context(), "SELECT username FROM users WHERE id = ?", userID).Scan(&userEmail)
+
+	if r.Method == http.MethodGet {
+		data := map[string]interface{}{
+			"Title":     "Schedule Email",
+			"FromEmail": userEmail,
+		}
+		s.renderTemplate(w, "features_scheduled_form.html", data)
+		return
+	}
+
+	// POST: Create scheduled email
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "Bad request", http.StatusBadRequest)
+		return
+	}
+
+	// Parse send time
+	sendAtStr := r.FormValue("send_at")
+	sendAt, err := time.Parse("2006-01-02T15:04", sendAtStr)
+	if err != nil {
+		data := map[string]interface{}{
+			"Title":     "Schedule Email",
+			"FromEmail": userEmail,
+			"Error":     "Invalid date/time format",
+		}
+		s.renderTemplate(w, "features_scheduled_form.html", data)
+		return
+	}
+
+	// Parse recipients
+	recipientsStr := r.FormValue("recipients")
+	recipients := strings.Split(recipientsStr, ",")
+	for i, r := range recipients {
+		recipients[i] = strings.TrimSpace(r)
+	}
+
+	email := &features.ScheduledEmail{
+		UserID:      userID,
+		SendAt:      sendAt,
+		FromAddress: r.FormValue("from_address"),
+		Recipients:  recipients,
+		Subject:     r.FormValue("subject"),
+		Body:        r.FormValue("body"),
+	}
+
+	if err := s.featuresStore.CreateScheduledEmail(r.Context(), email); err != nil {
+		data := map[string]interface{}{
+			"Title":     "Schedule Email",
+			"FromEmail": userEmail,
+			"Error":     "Failed to schedule email: " + err.Error(),
+		}
+		s.renderTemplate(w, "features_scheduled_form.html", data)
+		return
+	}
+
+	http.Redirect(w, r, "/admin/features/scheduled", http.StatusSeeOther)
+}
+
+// handleScheduledCancel cancels a scheduled email
+func (s *Server) handleScheduledCancel(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	userID, ok := s.getSessionUserID(r)
+	if !ok {
+		http.Redirect(w, r, "/admin/login", http.StatusSeeOther)
+		return
+	}
+
+	if s.featuresStore == nil {
+		http.Error(w, "Features not enabled", http.StatusServiceUnavailable)
+		return
+	}
+
+	emailID, err := strconv.ParseInt(strings.TrimPrefix(r.URL.Path, "/admin/features/scheduled/cancel/"), 10, 64)
+	if err != nil {
+		http.Error(w, "Invalid email ID", http.StatusBadRequest)
+		return
+	}
+
+	s.featuresStore.CancelScheduledEmail(r.Context(), userID, emailID)
+	http.Redirect(w, r, "/admin/features/scheduled", http.StatusSeeOther)
+}
+
+// =============================================================================
+// Snoozed Email Handlers
+// =============================================================================
+
+// handleSnoozed shows the list of snoozed emails
+func (s *Server) handleSnoozed(w http.ResponseWriter, r *http.Request) {
+	userID, ok := s.getSessionUserID(r)
+	if !ok {
+		http.Redirect(w, r, "/admin/login", http.StatusSeeOther)
+		return
+	}
+
+	if s.featuresStore == nil {
+		http.Error(w, "Features not enabled", http.StatusServiceUnavailable)
+		return
+	}
+
+	snoozed, err := s.featuresStore.ListSnoozedEmails(r.Context(), userID)
+	if err != nil {
+		s.logger.ErrorContext(r.Context(), "Failed to list snoozed emails", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	data := map[string]interface{}{
+		"Title":   "Snoozed Emails",
+		"Snoozed": snoozed,
+		"Count":   len(snoozed),
+	}
+
+	s.renderTemplate(w, "features_snoozed.html", data)
+}
+
+// handleSnoozeCancel cancels a snooze (wakes the email immediately)
+func (s *Server) handleSnoozeCancel(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	userID, ok := s.getSessionUserID(r)
+	if !ok {
+		http.Redirect(w, r, "/admin/login", http.StatusSeeOther)
+		return
+	}
+
+	if s.featuresStore == nil {
+		http.Error(w, "Features not enabled", http.StatusServiceUnavailable)
+		return
+	}
+
+	snoozeID, err := strconv.ParseInt(strings.TrimPrefix(r.URL.Path, "/admin/features/snoozed/cancel/"), 10, 64)
+	if err != nil {
+		http.Error(w, "Invalid snooze ID", http.StatusBadRequest)
+		return
+	}
+
+	s.featuresStore.DeleteSnoozedEmail(r.Context(), userID, snoozeID)
+	http.Redirect(w, r, "/admin/features/snoozed", http.StatusSeeOther)
 }
