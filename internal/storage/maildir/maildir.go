@@ -147,6 +147,7 @@ func (s *Store) InitializeUserMailboxes(ctx context.Context, userID int64) error
 		{"Junk", storage.SpecialUseJunk},
 		{"Trash", storage.SpecialUseTrash},
 		{"Archive", storage.SpecialUseArchive},
+		{"Screener", ""}, // For first-contact filtering feature
 	}
 
 	for _, mb := range defaultMailboxes {

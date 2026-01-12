@@ -19,6 +19,7 @@ import (
 	"github.com/emersion/go-smtp"
 	"github.com/fenilsonani/email-server/internal/auth"
 	"github.com/fenilsonani/email-server/internal/config"
+	"github.com/fenilsonani/email-server/internal/features"
 	"github.com/fenilsonani/email-server/internal/greylist"
 	"github.com/fenilsonani/email-server/internal/logging"
 	"github.com/fenilsonani/email-server/internal/metrics"
@@ -179,6 +180,7 @@ type Backend struct {
 	greylister      *greylist.Greylister
 	userRateLimiter *UserRateLimiter // Per-user sending rate limiter
 	vacationSem     chan struct{}    // Semaphore to limit concurrent vacation responses
+	featuresStore   *features.Store  // Store for unique features (Screener, Aliases, etc.)
 }
 
 // NewBackend creates a new SMTP backend
@@ -226,6 +228,11 @@ func (b *Backend) SetGreylister(gl *greylist.Greylister) {
 // SetSieveExecutor sets the Sieve script executor for mail filtering
 func (b *Backend) SetSieveExecutor(executor *sieve.Executor) {
 	b.sieveExecutor = executor
+}
+
+// SetFeaturesStore sets the features store for Screener, Aliases, etc.
+func (b *Backend) SetFeaturesStore(store *features.Store) {
+	b.featuresStore = store
 }
 
 // NewSession is called when a new SMTP connection is established
@@ -521,6 +528,31 @@ func (s *Session) deliverToLocalRecipient(rcpt string, data []byte) error {
 		return nil
 	}
 
+	// Check for features-based email alias (masked/disposable addresses)
+	var aliasID int64
+	if s.backend.featuresStore != nil && userID == nil {
+		alias, err := s.backend.featuresStore.GetAliasByAddress(ctx, rcpt)
+		if err == nil && alias != nil {
+			if !alias.IsActive {
+				s.backend.logger.InfoContext(ctx, "Email alias is disabled, rejecting",
+					"alias", rcpt,
+				)
+				return &smtp.SMTPError{
+					Code:         550,
+					EnhancedCode: smtp.EnhancedCode{5, 1, 1},
+					Message:      "Mailbox disabled",
+				}
+			}
+			// Resolve to the alias owner
+			userID = &alias.UserID
+			aliasID = alias.ID
+			s.backend.logger.InfoContext(ctx, "Email delivered via alias",
+				"alias", rcpt,
+				"user_id", alias.UserID,
+			)
+		}
+	}
+
 	// Get user for direct delivery
 	var user *auth.User
 	if userID != nil {
@@ -533,8 +565,59 @@ func (s *Session) deliverToLocalRecipient(rcpt string, data []byte) error {
 		return fmt.Errorf("user not found: %w", err)
 	}
 
-	// Execute Sieve filtering if available
+	// Track alias usage (increment count) if delivered via alias
+	if aliasID > 0 && s.backend.featuresStore != nil {
+		if err := s.backend.featuresStore.IncrementAliasCount(ctx, aliasID); err != nil {
+			s.backend.logger.WarnContext(ctx, "Failed to increment alias count",
+				"alias_id", aliasID,
+				"error", err.Error(),
+			)
+		}
+	}
+
+	// Check Screener (first-contact filtering) if enabled
 	targetMailbox := "INBOX"
+	screenerHandled := false
+	if s.backend.featuresStore != nil {
+		prefs, err := s.backend.featuresStore.GetPreferences(ctx, user.ID)
+		if err == nil && prefs.ScreenerEnabled {
+			// Get sender email from the from address
+			senderEmail := s.from
+			status, err := s.backend.featuresStore.GetScreenerStatus(ctx, user.ID, senderEmail)
+			if err != nil {
+				s.backend.logger.WarnContext(ctx, "Screener lookup failed, delivering normally",
+					"error", err.Error(),
+					"sender", senderEmail,
+				)
+			} else {
+				switch status {
+				case features.ScreenerBlocked:
+					// Blocked senders go to Trash
+					s.backend.logger.InfoContext(ctx, "Sender blocked by Screener, delivering to Trash",
+						"sender", senderEmail,
+						"recipient", rcpt,
+					)
+					targetMailbox = "Trash"
+					screenerHandled = true
+				case features.ScreenerPending:
+					// Unknown/pending senders go to Screener mailbox
+					s.backend.logger.InfoContext(ctx, "Unknown sender held in Screener",
+						"sender", senderEmail,
+						"recipient", rcpt,
+					)
+					targetMailbox = "Screener"
+					screenerHandled = true
+				case features.ScreenerApproved:
+					// Approved senders go through normal flow
+					s.backend.logger.DebugContext(ctx, "Sender approved by Screener",
+						"sender", senderEmail,
+					)
+				}
+			}
+		}
+	}
+
+	// Execute Sieve filtering if available (skip if Screener already handled routing)
 	if s.backend.sieveExecutor != nil {
 		msg := s.parseMessageForSieve(data)
 		result, err := s.backend.sieveExecutor.Execute(ctx, user.ID, msg)
@@ -588,8 +671,8 @@ func (s *Session) deliverToLocalRecipient(rcpt string, data []byte) error {
 				}
 			}
 
-			// Handle fileinto
-			if result.Filed && result.FileInto != "" {
+			// Handle fileinto (only if Screener hasn't overridden)
+			if result.Filed && result.FileInto != "" && !screenerHandled {
 				targetMailbox = result.FileInto
 			}
 

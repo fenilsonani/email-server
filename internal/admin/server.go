@@ -18,6 +18,7 @@ import (
 	"github.com/fenilsonani/email-server/internal/audit"
 	"github.com/fenilsonani/email-server/internal/auth"
 	"github.com/fenilsonani/email-server/internal/config"
+	"github.com/fenilsonani/email-server/internal/features"
 	"github.com/fenilsonani/email-server/internal/logging"
 	"github.com/fenilsonani/email-server/internal/queue"
 	"github.com/fenilsonani/email-server/internal/sieve"
@@ -38,6 +39,7 @@ type Server struct {
 	authenticator *auth.Authenticator
 	store         *maildir.Store
 	sieveStore    *sieve.Store
+	featuresStore *features.Store
 	queue         *queue.RedisQueue
 	logger        *logging.Logger
 	auditLogger   *audit.Logger
@@ -168,6 +170,11 @@ func NewServer(cfg *config.Config, db *sql.DB, authenticator *auth.Authenticator
 	return s, nil
 }
 
+// SetFeaturesStore sets the features store for unique feature APIs
+func (s *Server) SetFeaturesStore(store *features.Store) {
+	s.featuresStore = store
+}
+
 // Start starts the admin server
 func (s *Server) Start(listen string) error {
 	mux := http.NewServeMux()
@@ -224,6 +231,21 @@ func (s *Server) Start(listen string) error {
 	// Two-Factor Authentication routes
 	mux.HandleFunc("/admin/2fa/setup", s.withAuth(s.handle2FASetup))
 	mux.HandleFunc("/admin/2fa/verify", s.handle2FAVerify) // No auth - used during login
+
+	// Features API routes (JSON responses)
+	mux.HandleFunc("/admin/api/screener", s.withAuth(s.handleScreenerList))
+	mux.HandleFunc("/admin/api/screener/approve", s.withAuth(s.handleScreenerApprove))
+	mux.HandleFunc("/admin/api/screener/block", s.withAuth(s.handleScreenerBlock))
+	mux.HandleFunc("/admin/api/screener/", s.withAuth(s.handleScreenerDelete))
+	mux.HandleFunc("/admin/api/aliases", s.withAuth(s.handleAliasesRouter))
+	mux.HandleFunc("/admin/api/aliases/", s.withAuth(s.handleAliasRouter))
+	mux.HandleFunc("/admin/api/scheduled", s.withAuth(s.handleScheduledRouter))
+	mux.HandleFunc("/admin/api/scheduled/", s.withAuth(s.handleScheduledCancel))
+	mux.HandleFunc("/admin/api/snoozed", s.withAuth(s.handleSnoozedList))
+	mux.HandleFunc("/admin/api/messages/", s.withAuth(s.handleSnoozeRouter))
+	mux.HandleFunc("/admin/api/vip", s.withAuth(s.handleVIPRouter))
+	mux.HandleFunc("/admin/api/vip/", s.withAuth(s.handleVIPDelete))
+	mux.HandleFunc("/admin/api/preferences", s.withAuth(s.handlePreferencesRouter))
 
 	// Build middleware chain (order matters: innermost first, then wrapping outward)
 	// The execution order will be: logging -> security headers -> panic recovery -> CSRF -> routes
