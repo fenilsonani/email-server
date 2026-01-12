@@ -17,6 +17,7 @@ import (
 	"github.com/fenilsonani/email-server/internal/admin"
 	"github.com/fenilsonani/email-server/internal/api"
 	"github.com/fenilsonani/email-server/internal/auth"
+	"github.com/fenilsonani/email-server/internal/features"
 	"github.com/fenilsonani/email-server/internal/autodiscover"
 	"github.com/fenilsonani/email-server/internal/config"
 	"github.com/fenilsonani/email-server/internal/dav"
@@ -525,6 +526,10 @@ var serveCmd = &cobra.Command{
 			if err != nil {
 				logger.Warn("Failed to initialize admin server", "error", err.Error())
 			} else {
+				// Initialize features store for unique features (Screener, Aliases, etc.)
+				featuresStore := features.NewStore(db.RawDB())
+				adminSrv.SetFeaturesStore(featuresStore)
+
 				resources.adminSrv = adminSrv
 				adminAddr := fmt.Sprintf("%s:%d", cfg.Admin.Listen, cfg.Admin.Port)
 				go func() {
