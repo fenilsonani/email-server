@@ -40,7 +40,7 @@
             <p>Create disposable addresses like shop_x7k2@domain.com. Disable anytime.</p>
         </a>
 
-        <div class="feature-card">
+        <a href="/admin/features/preferences" class="feature-card">
             <h3>Tracker Blocking</h3>
             <p>Block spy pixels and tracking links in emails.</p>
             {{if .Preferences}}
@@ -48,7 +48,8 @@
                 {{.Preferences.TrackerBlocking}}
             </span>
             {{end}}
-        </div>
+            <small style="color: var(--text-muted);">Click to configure</small>
+        </a>
     </div>
 </div>
 
@@ -57,15 +58,16 @@
     <p style="color: var(--text-muted); margin-bottom: 1rem;">Email that works for you</p>
 
     <div class="feature-grid">
-        <div class="feature-card">
+        <a href="/admin/features/preferences" class="feature-card">
             <h3>Undo Send</h3>
             <p>Delay before sending. Catch mistakes before they happen.</p>
             {{if .Preferences}}
             <span class="badge badge-info">{{.Preferences.UndoSendDelay}}s delay</span>
             {{end}}
-        </div>
+            <small style="color: var(--text-muted);">Click to configure</small>
+        </a>
 
-        <div class="feature-card">
+        <a href="/admin/features/preferences" class="feature-card">
             <h3>Smart Zones</h3>
             <p>Auto-sort emails into Priority, Feed, Paper Trail zones.</p>
             {{if .Preferences}}
@@ -73,7 +75,8 @@
                 {{if .Preferences.ZonesEnabled}}Enabled{{else}}Disabled{{end}}
             </span>
             {{end}}
-        </div>
+            <small style="color: var(--text-muted);">Click to configure</small>
+        </a>
     </div>
 </div>
 
