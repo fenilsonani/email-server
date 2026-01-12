@@ -7,36 +7,43 @@
 </div>
 
 <div class="page-header">
-    <h1>Screener</h1>
+    <h1>screener</h1>
+</div>
+
+<div class="stats-grid">
+    <div class="card stat-card">
+        <div class="stat-value">{{.PendingCount}}</div>
+        <div class="stat-label">pending</div>
+    </div>
+    <div class="card stat-card">
+        <div class="stat-value">{{.ApprovedCount}}</div>
+        <div class="stat-label">approved</div>
+    </div>
+    <div class="card stat-card">
+        <div class="stat-value">{{.BlockedCount}}</div>
+        <div class="stat-label">blocked</div>
+    </div>
 </div>
 
 <div class="card">
-    <h2>Filter by Status</h2>
-    <div class="status-tabs">
-        <a href="/admin/features/screener" class="status-tab {{if eq .FilterStatus ""}}active{{end}}">
-            All
-        </a>
-        <a href="/admin/features/screener?status=pending" class="status-tab {{if eq .FilterStatus "pending"}}active{{end}}">
-            Pending <span class="badge">{{.PendingCount}}</span>
-        </a>
-        <a href="/admin/features/screener?status=approved" class="status-tab {{if eq .FilterStatus "approved"}}active{{end}}">
-            Approved <span class="badge badge-success">{{.ApprovedCount}}</span>
-        </a>
-        <a href="/admin/features/screener?status=blocked" class="status-tab {{if eq .FilterStatus "blocked"}}active{{end}}">
-            Blocked <span class="badge badge-danger">{{.BlockedCount}}</span>
-        </a>
+    <h2>filter</h2>
+    <div class="filter-form">
+        <a href="/admin/features/screener" class="btn {{if eq .FilterStatus ""}}btn-primary{{else}}btn-secondary{{end}}">all</a>
+        <a href="/admin/features/screener?status=pending" class="btn {{if eq .FilterStatus "pending"}}btn-primary{{else}}btn-secondary{{end}}">pending</a>
+        <a href="/admin/features/screener?status=approved" class="btn {{if eq .FilterStatus "approved"}}btn-primary{{else}}btn-secondary{{end}}">approved</a>
+        <a href="/admin/features/screener?status=blocked" class="btn {{if eq .FilterStatus "blocked"}}btn-primary{{else}}btn-secondary{{end}}">blocked</a>
     </div>
 </div>
 
 <div class="card">
     {{if .Contacts}}
-    <table role="table" aria-label="Screener contacts">
+    <table>
         <thead>
             <tr>
-                <th>Sender</th>
-                <th>Status</th>
-                <th>Last Updated</th>
-                <th>Actions</th>
+                <th>sender</th>
+                <th>status</th>
+                <th>updated</th>
+                <th>actions</th>
             </tr>
         </thead>
         <tbody>
@@ -44,39 +51,35 @@
             <tr>
                 <td>
                     {{if .Email}}
-                    <strong>{{.Email}}</strong>
+                    <code>{{.Email}}</code>
                     {{else}}
-                    <strong>*@{{.Domain}}</strong>
-                    <span class="badge badge-secondary">domain</span>
+                    <code>*@{{.Domain}}</code> <span class="badge badge-secondary">domain</span>
                     {{end}}
                 </td>
                 <td>
                     {{if eq .Status "pending"}}
-                    <span class="badge badge-warning">Pending</span>
+                    <span class="badge badge-warning">pending</span>
                     {{else if eq .Status "approved"}}
-                    <span class="badge badge-success">Approved</span>
+                    <span class="badge badge-success">approved</span>
                     {{else if eq .Status "blocked"}}
-                    <span class="badge badge-danger">Blocked</span>
+                    <span class="badge badge-danger">blocked</span>
                     {{end}}
                 </td>
-                <td>{{.UpdatedAt.Format "Jan 02, 2006 15:04"}}</td>
-                <td class="actions">
+                <td>{{.UpdatedAt.Format "Jan 02 15:04"}}</td>
+                <td>
                     {{if ne .Status "approved"}}
                     <form method="POST" action="/admin/features/screener/approve/{{.ID}}" style="display: inline;">
-                        <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
-                        <button type="submit" class="btn btn-sm btn-success">Approve</button>
+                        <button type="submit" class="btn btn-sm btn-success">approve</button>
                     </form>
                     {{end}}
                     {{if ne .Status "blocked"}}
                     <form method="POST" action="/admin/features/screener/block/{{.ID}}" style="display: inline;">
-                        <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
-                        <button type="submit" class="btn btn-sm btn-warning">Block</button>
+                        <button type="submit" class="btn btn-sm">block</button>
                     </form>
                     {{end}}
                     <form method="POST" action="/admin/features/screener/delete/{{.ID}}" style="display: inline;"
-                          onsubmit="return confirm('Remove this contact from the screener?');">
-                        <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
-                        <button type="submit" class="btn btn-sm btn-danger">Delete</button>
+                          onsubmit="return confirm('Remove this contact?');">
+                        <button type="submit" class="btn btn-sm btn-danger">delete</button>
                     </form>
                 </td>
             </tr>
@@ -85,41 +88,8 @@
     </table>
     {{else}}
     <div class="empty-state">
-        <p>No contacts in the screener yet.</p>
-        <p style="color: var(--text-muted);">When new senders email you, they'll appear here for approval.</p>
+        <p>no contacts in the screener yet</p>
+        <p>when new senders email you, they'll appear here for approval</p>
     </div>
     {{end}}
 </div>
-
-<style>
-.status-tabs {
-    display: flex;
-    gap: 0.5rem;
-    flex-wrap: wrap;
-}
-
-.status-tab {
-    padding: 0.5rem 1rem;
-    text-decoration: none;
-    color: var(--text-muted);
-    border: 1px solid var(--border-color);
-    border-radius: 4px;
-    background: transparent;
-    transition: all 0.2s;
-}
-
-.status-tab:hover {
-    border-color: var(--primary);
-    color: var(--primary);
-}
-
-.status-tab.active {
-    background: var(--primary);
-    border-color: var(--primary);
-    color: white;
-}
-
-.status-tab .badge {
-    margin-left: 0.5rem;
-}
-</style>

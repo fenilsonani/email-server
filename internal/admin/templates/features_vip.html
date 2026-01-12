@@ -7,39 +7,38 @@
 </div>
 
 <div class="page-header">
-    <h1>VIP Contacts</h1>
-    <a href="/admin/features/vip/add" class="btn btn-primary">Add VIP</a>
+    <h1>vip contacts</h1>
+    <a href="/admin/features/vip/add" class="btn btn-primary">add vip</a>
 </div>
 
-<div class="card">
-    <p style="color: var(--text-muted);">
-        VIP contacts are your priority senders. Emails from VIPs always go to your Priority inbox zone
-        and can trigger special notifications.
-    </p>
+<div class="stats-grid">
+    <div class="card stat-card">
+        <div class="stat-value">{{.Count}}</div>
+        <div class="stat-label">vip contacts</div>
+    </div>
 </div>
 
 <div class="card">
     {{if .VIPs}}
-    <table role="table" aria-label="VIP contacts">
+    <table>
         <thead>
             <tr>
-                <th>Email</th>
-                <th>Name</th>
-                <th>Added</th>
-                <th>Actions</th>
+                <th>email</th>
+                <th>name</th>
+                <th>added</th>
+                <th>actions</th>
             </tr>
         </thead>
         <tbody>
             {{range .VIPs}}
             <tr>
-                <td><strong>{{.Email}}</strong></td>
-                <td>{{.Name}}</td>
+                <td><code>{{.Email}}</code></td>
+                <td>{{if .Name}}{{.Name}}{{else}}--{{end}}</td>
                 <td>{{.CreatedAt.Format "Jan 02, 2006"}}</td>
-                <td class="actions">
+                <td>
                     <form method="POST" action="/admin/features/vip/delete/{{.ID}}" style="display: inline;"
-                          onsubmit="return confirm('Remove this VIP contact?');">
-                        <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
-                        <button type="submit" class="btn btn-sm btn-danger">Remove</button>
+                          onsubmit="return confirm('Remove this VIP?');">
+                        <button type="submit" class="btn btn-sm btn-danger">remove</button>
                     </form>
                 </td>
             </tr>
@@ -48,8 +47,9 @@
     </table>
     {{else}}
     <div class="empty-state">
-        <p>No VIP contacts yet.</p>
-        <a href="/admin/features/vip/add" class="btn btn-primary">Add your first VIP</a>
+        <p>no vip contacts yet</p>
+        <p>emails from vips always go to your priority inbox zone</p>
+        <a href="/admin/features/vip/add" class="btn btn-primary">add your first vip</a>
     </div>
     {{end}}
 </div>
