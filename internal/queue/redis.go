@@ -8,12 +8,21 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/redis/go-redis/v9"
 )
+
+// Buffer pool for message ID generation to reduce allocations
+var idBufferPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, 12)
+		return &b
+	},
+}
 
 // Common errors
 var (
@@ -52,59 +61,110 @@ const (
 
 // Config configures the Redis queue.
 type Config struct {
-	// RedisURL is the Redis connection URL.
+	// RedisURL is the Redis connection URL (for standalone mode).
 	RedisURL string
+	// Mode is the connection mode: standalone, sentinel, cluster
+	Mode string
+	// SentinelMaster is the master name for Sentinel mode.
+	SentinelMaster string
+	// SentinelAddrs are the Sentinel addresses.
+	SentinelAddrs []string
+	// ClusterAddrs are the cluster node addresses.
+	ClusterAddrs []string
+	// Password is the Redis password (optional).
+	Password string
+	// DB is the database number (not used in cluster mode).
+	DB int
 	// Prefix is the key prefix for all queue keys.
 	Prefix string
 	// MaxRetries is the maximum delivery attempts.
 	MaxRetries int
 	// RetryMaxAge is the maximum time to retry before permanent failure.
 	RetryMaxAge time.Duration
+	// PoolSize is the connection pool size.
+	PoolSize int
+	// MinIdleConns is the minimum number of idle connections.
+	MinIdleConns int
+	// DialTimeout is the connection dial timeout.
+	DialTimeout time.Duration
+	// ReadTimeout is the read timeout.
+	ReadTimeout time.Duration
+	// WriteTimeout is the write timeout.
+	WriteTimeout time.Duration
 }
 
 // DefaultConfig returns default queue configuration.
 func DefaultConfig() Config {
 	return Config{
-		RedisURL:    "redis://localhost:6379/0",
-		Prefix:      "mail",
-		MaxRetries:  15,
-		RetryMaxAge: 7 * 24 * time.Hour, // 7 days
+		RedisURL:     "redis://localhost:6379/0",
+		Mode:         "standalone",
+		Prefix:       "mail",
+		MaxRetries:   15,
+		RetryMaxAge:  7 * 24 * time.Hour, // 7 days
+		PoolSize:     10,
+		MinIdleConns: 5,
+		DialTimeout:  5 * time.Second,
+		ReadTimeout:  3 * time.Second,
+		WriteTimeout: 3 * time.Second,
 	}
 }
 
 // RedisQueue implements a message queue using Redis.
 type RedisQueue struct {
-	client *redis.Client
+	client redis.UniversalClient // Supports standalone, sentinel, and cluster modes
 	config Config
 	closed int32 // atomic: 1 if closed, 0 if open
 
 	// Graceful shutdown
 	wg sync.WaitGroup
 	mu sync.RWMutex
+
+	// Cached keys to avoid repeated string concatenation
+	cachedPendingKey    string
+	cachedProcessingKey string
+	cachedFailedKey     string
+	cachedSentKey       string
+	cachedStatsKey      string
+	cachedMessagePrefix string
 }
 
 // NewRedisQueue creates a new Redis-backed message queue.
+// Supports standalone, sentinel, and cluster modes based on cfg.Mode.
 func NewRedisQueue(cfg Config) (*RedisQueue, error) {
-	opts, err := redis.ParseURL(cfg.RedisURL)
-	if err != nil {
-		return nil, fmt.Errorf("invalid Redis URL: %w", err)
+	var client redis.UniversalClient
+
+	// Apply defaults
+	if cfg.PoolSize == 0 {
+		cfg.PoolSize = 10
+	}
+	if cfg.MinIdleConns == 0 {
+		cfg.MinIdleConns = 5
+	}
+	if cfg.DialTimeout == 0 {
+		cfg.DialTimeout = 5 * time.Second
+	}
+	if cfg.ReadTimeout == 0 {
+		cfg.ReadTimeout = 3 * time.Second
+	}
+	if cfg.WriteTimeout == 0 {
+		cfg.WriteTimeout = 3 * time.Second
 	}
 
-	// Configure connection pool for reliability
-	opts.MaxRetries = 3
-	opts.MinRetryBackoff = 100 * time.Millisecond
-	opts.MaxRetryBackoff = 1 * time.Second
-	opts.DialTimeout = 5 * time.Second
-	opts.ReadTimeout = 3 * time.Second
-	opts.WriteTimeout = 3 * time.Second
-	opts.PoolSize = 10
-	opts.MinIdleConns = 5
-	opts.MaxIdleConns = 10
-	opts.ConnMaxIdleTime = 5 * time.Minute
-	opts.ConnMaxLifetime = 30 * time.Minute
-	opts.PoolTimeout = 4 * time.Second
+	mode := cfg.Mode
+	if mode == "" {
+		mode = "standalone"
+	}
 
-	client := redis.NewClient(opts)
+	switch mode {
+	case "standalone":
+		client = createStandaloneClient(cfg)
+	case "sentinel":
+		client = createSentinelClient(cfg)
+	case "cluster":
+		client = createClusterClient(cfg)
+	default:
+		return nil, fmt.Errorf("unsupported Redis mode: %s (supported: standalone, sentinel, cluster)", mode)
+	}
 
 	// Test connection with retry
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -123,13 +183,20 @@ func NewRedisQueue(cfg Config) (*RedisQueue, error) {
 	}
 	if lastErr != nil {
 		client.Close()
-		return nil, fmt.Errorf("failed to connect to Redis after retries: %w", lastErr)
+		return nil, fmt.Errorf("failed to connect to Redis (%s mode) after retries: %w", mode, lastErr)
 	}
 
 	q := &RedisQueue{
 		client: client,
 		config: cfg,
 		closed: 0,
+		// Pre-compute cached keys to avoid repeated string concatenation
+		cachedPendingKey:    cfg.Prefix + ":queue:pending",
+		cachedProcessingKey: cfg.Prefix + ":queue:processing",
+		cachedFailedKey:     cfg.Prefix + ":queue:failed",
+		cachedSentKey:       cfg.Prefix + ":queue:sent",
+		cachedStatsKey:      cfg.Prefix + ":stats",
+		cachedMessagePrefix: cfg.Prefix + ":message:",
 	}
 
 	// Start connection health monitor
@@ -138,15 +205,138 @@ func NewRedisQueue(cfg Config) (*RedisQueue, error) {
 	return q, nil
 }
 
-// Key helpers
-func (q *RedisQueue) pendingKey() string    { return q.config.Prefix + ":queue:pending" }
-func (q *RedisQueue) processingKey() string { return q.config.Prefix + ":queue:processing" }
-func (q *RedisQueue) failedKey() string     { return q.config.Prefix + ":queue:failed" }
-func (q *RedisQueue) sentKey() string       { return q.config.Prefix + ":queue:sent" }
+// createStandaloneClient creates a single-instance Redis client.
+func createStandaloneClient(cfg Config) *redis.Client {
+	opts, err := redis.ParseURL(cfg.RedisURL)
+	if err != nil {
+		// Fallback to manual configuration
+		opts = &redis.Options{
+			Addr: "localhost:6379",
+			DB:   cfg.DB,
+		}
+	}
+
+	// Override with explicit config values
+	if cfg.Password != "" {
+		opts.Password = cfg.Password
+	}
+
+	// Configure connection pool for reliability
+	opts.MaxRetries = 3
+	opts.MinRetryBackoff = 100 * time.Millisecond
+	opts.MaxRetryBackoff = 1 * time.Second
+	opts.DialTimeout = cfg.DialTimeout
+	opts.ReadTimeout = cfg.ReadTimeout
+	opts.WriteTimeout = cfg.WriteTimeout
+	opts.PoolSize = cfg.PoolSize
+	opts.MinIdleConns = cfg.MinIdleConns
+	opts.MaxIdleConns = cfg.PoolSize
+	opts.ConnMaxIdleTime = 5 * time.Minute
+	opts.ConnMaxLifetime = 30 * time.Minute
+	opts.PoolTimeout = cfg.DialTimeout
+
+	return redis.NewClient(opts)
+}
+
+// createSentinelClient creates a Redis Sentinel client for high availability.
+func createSentinelClient(cfg Config) *redis.Client {
+	if len(cfg.SentinelAddrs) == 0 {
+		// Fallback to default sentinel address
+		cfg.SentinelAddrs = []string{"localhost:26379"}
+	}
+	if cfg.SentinelMaster == "" {
+		cfg.SentinelMaster = "mymaster"
+	}
+
+	opts := &redis.FailoverOptions{
+		MasterName:       cfg.SentinelMaster,
+		SentinelAddrs:    cfg.SentinelAddrs,
+		Password:         cfg.Password,
+		DB:               cfg.DB,
+		MaxRetries:       3,
+		MinRetryBackoff:  100 * time.Millisecond,
+		MaxRetryBackoff:  1 * time.Second,
+		DialTimeout:      cfg.DialTimeout,
+		ReadTimeout:      cfg.ReadTimeout,
+		WriteTimeout:     cfg.WriteTimeout,
+		PoolSize:         cfg.PoolSize,
+		MinIdleConns:     cfg.MinIdleConns,
+		MaxIdleConns:     cfg.PoolSize,
+		ConnMaxIdleTime:  5 * time.Minute,
+		ConnMaxLifetime:  30 * time.Minute,
+		PoolTimeout:      cfg.DialTimeout,
+	}
+
+	return redis.NewFailoverClient(opts)
+}
+
+// createClusterClient creates a Redis Cluster client for horizontal scaling.
+func createClusterClient(cfg Config) *redis.ClusterClient {
+	if len(cfg.ClusterAddrs) == 0 {
+		// Fallback to default cluster addresses
+		cfg.ClusterAddrs = []string{"localhost:7000", "localhost:7001", "localhost:7002"}
+	}
+
+	opts := &redis.ClusterOptions{
+		Addrs:           cfg.ClusterAddrs,
+		Password:        cfg.Password,
+		MaxRetries:      3,
+		MinRetryBackoff: 100 * time.Millisecond,
+		MaxRetryBackoff: 1 * time.Second,
+		DialTimeout:     cfg.DialTimeout,
+		ReadTimeout:     cfg.ReadTimeout,
+		WriteTimeout:    cfg.WriteTimeout,
+		PoolSize:        cfg.PoolSize,
+		MinIdleConns:    cfg.MinIdleConns,
+		MaxIdleConns:    cfg.PoolSize,
+		ConnMaxIdleTime: 5 * time.Minute,
+		ConnMaxLifetime: 30 * time.Minute,
+		PoolTimeout:     cfg.DialTimeout,
+		// Cluster-specific options
+		RouteByLatency: true,  // Route to lowest latency node
+		RouteRandomly:  false, // Use RouteByLatency instead
+	}
+
+	return redis.NewClusterClient(opts)
+}
+
+// Key helpers - use cached keys to avoid allocations, with fallback for tests
+func (q *RedisQueue) pendingKey() string {
+	if q.cachedPendingKey != "" {
+		return q.cachedPendingKey
+	}
+	return q.config.Prefix + ":queue:pending"
+}
+func (q *RedisQueue) processingKey() string {
+	if q.cachedProcessingKey != "" {
+		return q.cachedProcessingKey
+	}
+	return q.config.Prefix + ":queue:processing"
+}
+func (q *RedisQueue) failedKey() string {
+	if q.cachedFailedKey != "" {
+		return q.cachedFailedKey
+	}
+	return q.config.Prefix + ":queue:failed"
+}
+func (q *RedisQueue) sentKey() string {
+	if q.cachedSentKey != "" {
+		return q.cachedSentKey
+	}
+	return q.config.Prefix + ":queue:sent"
+}
 func (q *RedisQueue) messageKey(id string) string {
+	if q.cachedMessagePrefix != "" {
+		return q.cachedMessagePrefix + id
+	}
 	return q.config.Prefix + ":message:" + id
 }
-func (q *RedisQueue) statsKey() string { return q.config.Prefix + ":stats" }
+func (q *RedisQueue) statsKey() string {
+	if q.cachedStatsKey != "" {
+		return q.cachedStatsKey
+	}
+	return q.config.Prefix + ":stats"
+}
 
 // healthMonitor periodically checks Redis connection health.
 func (q *RedisQueue) healthMonitor() {
@@ -641,6 +831,11 @@ func (q *RedisQueue) Cleanup(ctx context.Context, olderThan time.Duration) error
 	return nil
 }
 
+// Client returns the underlying Redis client for health checks.
+func (q *RedisQueue) Client() redis.UniversalClient {
+	return q.client
+}
+
 // Close closes the Redis connection gracefully.
 func (q *RedisQueue) Close() error {
 	// Set closed flag atomically
@@ -683,17 +878,10 @@ func isTransientRedisError(err error) bool {
 		contains(errStr, "EOF")
 }
 
-// contains checks if a string contains a substring (case-insensitive helper).
+// contains checks if a string contains a substring.
+// Uses optimized strings.Contains from standard library.
 func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
-		func() bool {
-			for i := 0; i <= len(s)-len(substr); i++ {
-				if s[i:i+len(substr)] == substr {
-					return true
-				}
-			}
-			return false
-		}())
+	return strings.Contains(s, substr)
 }
 
 // Helper functions
@@ -734,8 +922,12 @@ func calculateNextRetry(attempts int) time.Time {
 }
 
 // generateMessageID generates a unique message ID.
+// Uses buffer pool to reduce allocations.
 func generateMessageID() string {
-	b := make([]byte, 12)
+	bufPtr := idBufferPool.Get().(*[]byte)
+	b := *bufPtr
+	defer idBufferPool.Put(bufPtr)
+
 	if _, err := rand.Read(b); err != nil {
 		// Fallback to timestamp if crypto fails
 		return fmt.Sprintf("%d", time.Now().UnixNano())

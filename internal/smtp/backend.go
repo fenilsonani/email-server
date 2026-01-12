@@ -28,6 +28,31 @@ import (
 	"github.com/fenilsonani/email-server/internal/storage/maildir"
 )
 
+// Buffer pools for reducing allocations in hot paths
+var (
+	// idBufferPool for generateID - 16 bytes for random ID
+	idBufferPool = sync.Pool{
+		New: func() any {
+			b := make([]byte, 16)
+			return &b
+		},
+	}
+
+	// bufioReaderPool for parseMessageForSieve
+	bufioReaderPool = sync.Pool{
+		New: func() any {
+			return bufio.NewReader(nil)
+		},
+	}
+
+	// bytesBufferPool for vacation messages
+	bytesBufferPool = sync.Pool{
+		New: func() any {
+			return new(bytes.Buffer)
+		},
+	}
+)
+
 // LocalDeliveryNotifier is called when a message is delivered locally
 type LocalDeliveryNotifier func(username, mailbox string)
 
@@ -850,22 +875,47 @@ func (s *Session) Logout() error {
 	return nil
 }
 
-// parseAddress extracts local part and domain from an email address
+// parseAddress extracts local part and domain from an email address.
+// Optimized to avoid allocations when possible.
 func parseAddress(addr string) (local, domain string) {
-	// Handle <addr> format
-	addr = strings.TrimPrefix(addr, "<")
-	addr = strings.TrimSuffix(addr, ">")
+	// Handle <addr> format without allocation
+	if len(addr) > 0 && addr[0] == '<' {
+		addr = addr[1:]
+	}
+	if len(addr) > 0 && addr[len(addr)-1] == '>' {
+		addr = addr[:len(addr)-1]
+	}
 
-	parts := strings.SplitN(addr, "@", 2)
-	if len(parts) == 2 {
-		return strings.ToLower(parts[0]), strings.ToLower(parts[1])
+	// Find @ without SplitN allocation
+	atIdx := strings.IndexByte(addr, '@')
+	if atIdx >= 0 {
+		localPart := addr[:atIdx]
+		domainPart := addr[atIdx+1:]
+		// Only allocate if not already lowercase
+		return toLowerIfNeeded(localPart), toLowerIfNeeded(domainPart)
 	}
 	return addr, ""
 }
 
-// generateID generates a cryptographically secure unique ID
+// toLowerIfNeeded returns lowercase string, avoiding allocation if already lowercase.
+func toLowerIfNeeded(s string) string {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c >= 'A' && c <= 'Z' {
+			// Found uppercase, need to allocate
+			return strings.ToLower(s)
+		}
+	}
+	return s // Already lowercase, no allocation
+}
+
+// generateID generates a cryptographically secure unique ID.
+// Uses buffer pool to reduce allocations.
 func generateID() string {
-	b := make([]byte, 16)
+	bufPtr := idBufferPool.Get().(*[]byte)
+	b := *bufPtr
+	defer idBufferPool.Put(bufPtr)
+
 	if _, err := rand.Read(b); err != nil {
 		// Fallback to timestamp if crypto/rand fails (should never happen)
 		return fmt.Sprintf("%d-%x", time.Now().UnixNano(), time.Now().UnixNano()%0xFFFFFF)
@@ -873,15 +923,20 @@ func generateID() string {
 	return hex.EncodeToString(b)
 }
 
-// parseMessageForSieve parses raw email data into a Sieve message structure
+// parseMessageForSieve parses raw email data into a Sieve message structure.
+// Uses pooled bufio.Reader to reduce allocations.
 func (s *Session) parseMessageForSieve(data []byte) *sieve.Message {
 	msg := &sieve.Message{
 		Headers: make(map[string][]string),
 		Size:    int64(len(data)),
 	}
 
+	// Get pooled bufio.Reader
+	reader := bufioReaderPool.Get().(*bufio.Reader)
+	reader.Reset(bytes.NewReader(data))
+	defer bufioReaderPool.Put(reader)
+
 	// Parse headers using textproto
-	reader := bufio.NewReader(bytes.NewReader(data))
 	tp := textproto.NewReader(reader)
 	headers, err := tp.ReadMIMEHeader()
 	if err != nil && len(headers) == 0 {
@@ -916,7 +971,8 @@ func (s *Session) parseMessageForSieve(data []byte) *sieve.Message {
 	return msg
 }
 
-// sendVacationResponse sends an automatic vacation reply
+// sendVacationResponse sends an automatic vacation reply.
+// Uses pooled bytes.Buffer to reduce allocations.
 func (s *Session) sendVacationResponse(ctx context.Context, result *sieve.Result, user *auth.User) {
 	// Defensive nil checks
 	if s == nil || s.backend == nil {
@@ -938,7 +994,11 @@ func (s *Session) sendVacationResponse(ctx context.Context, result *sieve.Result
 		senderDomain = s.backend.config.Server.Domain // fallback
 	}
 
-	var msg bytes.Buffer
+	// Get pooled buffer
+	msg := bytesBufferPool.Get().(*bytes.Buffer)
+	msg.Reset()
+	defer bytesBufferPool.Put(msg)
+
 	msg.WriteString(fmt.Sprintf("From: %s\r\n", user.Email))
 	msg.WriteString(fmt.Sprintf("To: %s\r\n", result.VacationTo))
 	msg.WriteString(fmt.Sprintf("Subject: %s\r\n", result.VacationSubject))
@@ -951,8 +1011,10 @@ func (s *Session) sendVacationResponse(ctx context.Context, result *sieve.Result
 	msg.WriteString("\r\n")
 	msg.WriteString(result.VacationBody)
 
-	// Save and enqueue
-	messagePath, err := s.saveMessageToQueue(msg.Bytes())
+	// Save and enqueue - copy bytes since buffer will be reused
+	msgData := make([]byte, msg.Len())
+	copy(msgData, msg.Bytes())
+	messagePath, err := s.saveMessageToQueue(msgData)
 	if err != nil {
 		s.backend.logger.ErrorContext(ctx, "Failed to save vacation response", err)
 		return

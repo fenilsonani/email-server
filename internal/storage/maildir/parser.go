@@ -8,6 +8,27 @@ import (
 	"mime"
 	"net/mail"
 	"strings"
+	"sync"
+)
+
+// Buffer pools to reduce allocations in hot paths
+var (
+	// bufferPool pools bytes.Buffer for header parsing
+	bufferPool = sync.Pool{
+		New: func() any {
+			return new(bytes.Buffer)
+		},
+	}
+
+	// readerPool pools bufio.Reader for efficient I/O
+	readerPool = sync.Pool{
+		New: func() any {
+			return bufio.NewReader(nil)
+		},
+	}
+
+	// wordDecoder is reused for MIME decoding (thread-safe)
+	wordDecoder = new(mime.WordDecoder)
 )
 
 // MessageMetadata holds parsed message headers
@@ -24,11 +45,19 @@ type MessageMetadata struct {
 
 // ParseMessageHeaders extracts metadata from message headers
 // It reads only the headers (up to the first blank line) to minimize memory usage
+// Uses sync.Pool for buffers to reduce allocations
 func ParseMessageHeaders(r io.Reader) (*MessageMetadata, error) {
-	br := bufio.NewReader(r)
+	// Get pooled bufio.Reader and reset it
+	br := readerPool.Get().(*bufio.Reader)
+	br.Reset(r)
+	defer readerPool.Put(br)
+
+	// Get pooled buffer for headers
+	headerBuf := bufferPool.Get().(*bytes.Buffer)
+	headerBuf.Reset()
+	defer bufferPool.Put(headerBuf)
 
 	// Read headers until blank line
-	var headerBuf bytes.Buffer
 	for {
 		line, err := br.ReadBytes('\n')
 		if err != nil && err != io.EOF {
@@ -55,7 +84,8 @@ func ParseMessageHeaders(r io.Reader) (*MessageMetadata, error) {
 
 	// Parse headers using net/mail
 	// We need to add a blank line to make it a valid message for parsing
-	fullMsg := bytes.NewReader(append(headerBuf.Bytes(), '\r', '\n', '\r', '\n'))
+	headerBytes := headerBuf.Bytes()
+	fullMsg := bytes.NewReader(append(headerBytes, '\r', '\n', '\r', '\n'))
 	msg, err := mail.ReadMessage(fullMsg)
 	if err != nil {
 		// Return empty metadata on parse failure - don't fail the whole operation
@@ -116,13 +146,13 @@ func extractEmailAddress(from string) string {
 }
 
 // decodeHeader decodes RFC 2047 encoded headers (e.g., =?UTF-8?B?...?=)
+// Uses shared wordDecoder to avoid allocations
 func decodeHeader(s string) string {
 	if !strings.Contains(s, "=?") {
 		return s
 	}
 
-	dec := new(mime.WordDecoder)
-	decoded, err := dec.DecodeHeader(s)
+	decoded, err := wordDecoder.DecodeHeader(s)
 	if err != nil {
 		return s // Return original on decode failure
 	}

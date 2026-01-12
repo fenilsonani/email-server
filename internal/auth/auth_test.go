@@ -299,9 +299,17 @@ func TestAuthenticator_DisabledUser(t *testing.T) {
 	}
 
 	// Test authentication of disabled user
+	// Note: Returns ErrInvalidCredentials (not ErrUserDisabled) to prevent user enumeration attacks.
+	// This is a security feature - attackers cannot determine if an account exists but is disabled.
 	_, err = auth.Authenticate(ctx, "disabled@example.com", password)
-	if err != ErrUserDisabled {
-		t.Errorf("Expected ErrUserDisabled, got %v", err)
+	if err != ErrInvalidCredentials {
+		t.Errorf("Expected ErrInvalidCredentials for disabled user (security: prevents enumeration), got %v", err)
+	}
+
+	// Verify that the user cannot authenticate (regardless of error type)
+	user, _ := auth.Authenticate(ctx, "disabled@example.com", password)
+	if user != nil {
+		t.Error("Disabled user should not be able to authenticate")
 	}
 }
 

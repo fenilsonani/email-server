@@ -587,36 +587,27 @@ func (s *Store) ListMessages(ctx context.Context, mailboxID int64, start, end ui
 	return messages, rows.Err()
 }
 
-// UpdateFlags adds or removes flags from a message
+// UpdateFlags adds or removes flags from a message.
+// Optimized to use direct slice operations instead of map allocations.
 func (s *Store) UpdateFlags(ctx context.Context, mailboxID int64, uid uint32, flags []storage.Flag, add bool) error {
 	msg, err := s.GetMessage(ctx, mailboxID, uid)
 	if err != nil {
 		return err
 	}
 
-	var newFlags []storage.Flag
+	// Pre-allocate with reasonable capacity
+	newFlags := make([]storage.Flag, 0, len(msg.Flags)+len(flags))
+	newFlags = append(newFlags, msg.Flags...)
+
 	if add {
-		// Add flags (avoiding duplicates)
-		flagSet := make(map[storage.Flag]bool)
-		for _, f := range msg.Flags {
-			flagSet[f] = true
-		}
+		// Add flags using helper (avoids duplicates)
 		for _, f := range flags {
-			flagSet[f] = true
-		}
-		for f := range flagSet {
-			newFlags = append(newFlags, f)
+			newFlags = storage.AddFlag(newFlags, f)
 		}
 	} else {
-		// Remove flags
-		removeSet := make(map[storage.Flag]bool)
+		// Remove flags using helper
 		for _, f := range flags {
-			removeSet[f] = true
-		}
-		for _, f := range msg.Flags {
-			if !removeSet[f] {
-				newFlags = append(newFlags, f)
-			}
+			newFlags = storage.RemoveFlag(newFlags, f)
 		}
 	}
 
@@ -970,22 +961,51 @@ func buildMaildirFlags(flags []storage.Flag) string {
 	return result.String()
 }
 
+// flagsToString converts flags to comma-separated string.
+// Optimized to use strings.Builder directly without intermediate slice.
 func flagsToString(flags []storage.Flag) string {
-	strs := make([]string, len(flags))
-	for i, f := range flags {
-		strs[i] = string(f)
+	if len(flags) == 0 {
+		return ""
 	}
-	return strings.Join(strs, ",")
+	if len(flags) == 1 {
+		return string(flags[0])
+	}
+
+	var b strings.Builder
+	b.Grow(len(flags) * 10) // ~10 chars per flag average
+	for i, f := range flags {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(string(f))
+	}
+	return b.String()
 }
 
+// stringToFlags parses comma-separated string to flags.
+// Optimized to count commas first for pre-allocation and avoid strings.Split.
 func stringToFlags(s string) []storage.Flag {
 	if s == "" {
 		return nil
 	}
-	parts := strings.Split(s, ",")
-	flags := make([]storage.Flag, len(parts))
-	for i, p := range parts {
-		flags[i] = storage.Flag(p)
+
+	// Count commas to pre-allocate
+	n := 1
+	for i := 0; i < len(s); i++ {
+		if s[i] == ',' {
+			n++
+		}
+	}
+
+	flags := make([]storage.Flag, 0, n)
+	start := 0
+	for i := 0; i <= len(s); i++ {
+		if i == len(s) || s[i] == ',' {
+			if i > start {
+				flags = append(flags, storage.Flag(s[start:i]))
+			}
+			start = i + 1
+		}
 	}
 	return flags
 }

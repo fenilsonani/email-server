@@ -11,55 +11,52 @@ import (
 	"strings"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
+	_ "github.com/lib/pq"
 )
 
-//go:embed migrations/*.sql
-var migrationsFS embed.FS
+//go:embed migrations/postgres/*.sql
+var postgresMigrationsFS embed.FS
 
-// SQLiteDB wraps the SQLite database connection and implements Store interface
-type SQLiteDB struct {
+// PostgresDB wraps the PostgreSQL database connection and implements Store interface
+type PostgresDB struct {
 	*sql.DB
-	path string
+	dsn string
 }
 
-// SQLiteConfig holds SQLite-specific configuration
-type SQLiteConfig struct {
-	Path            string
+// PostgresConfig holds PostgreSQL-specific configuration
+type PostgresConfig struct {
+	DSN             string
 	MaxOpenConns    int
 	MaxIdleConns    int
 	ConnMaxLifetime time.Duration
 	ConnMaxIdleTime time.Duration
 }
 
-// DefaultSQLiteConfig returns sensible defaults for SQLite
-func DefaultSQLiteConfig() SQLiteConfig {
-	return SQLiteConfig{
-		MaxOpenConns:    25,
-		MaxIdleConns:    5,
-		ConnMaxLifetime: 0,
+// DefaultPostgresConfig returns sensible defaults for PostgreSQL
+func DefaultPostgresDBConfig() PostgresConfig {
+	return PostgresConfig{
+		MaxOpenConns:    100,
+		MaxIdleConns:    25,
+		ConnMaxLifetime: 30 * time.Minute,
 		ConnMaxIdleTime: 5 * time.Minute,
 	}
 }
 
-// OpenSQLite opens or creates a SQLite database at the given path with configuration
-func OpenSQLite(cfg SQLiteConfig) (*SQLiteDB, error) {
-	if cfg.Path == "" {
-		return nil, fmt.Errorf("database path is required")
+// OpenPostgres opens a PostgreSQL database connection with configuration
+func OpenPostgres(cfg PostgresConfig) (*PostgresDB, error) {
+	if cfg.DSN == "" {
+		return nil, fmt.Errorf("database DSN is required")
 	}
 
 	// Apply defaults if not set
 	if cfg.MaxOpenConns == 0 {
-		cfg.MaxOpenConns = 25
+		cfg.MaxOpenConns = 100
 	}
 	if cfg.MaxIdleConns == 0 {
-		cfg.MaxIdleConns = 5
+		cfg.MaxIdleConns = 25
 	}
 
-	// Enable foreign keys and WAL mode for better concurrency
-	dsn := fmt.Sprintf("%s?_foreign_keys=on&_journal_mode=WAL&_busy_timeout=5000", cfg.Path)
-
-	db, err := sql.Open("sqlite3", dsn)
+	db, err := sql.Open("postgres", cfg.DSN)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
@@ -75,36 +72,29 @@ func OpenSQLite(cfg SQLiteConfig) (*SQLiteDB, error) {
 	}
 
 	// Test connection
-	if err := db.Ping(); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := db.PingContext(ctx); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
 
-	return &SQLiteDB{DB: db, path: cfg.Path}, nil
+	return &PostgresDB{DB: db, dsn: cfg.DSN}, nil
 }
-
-// Open opens or creates a SQLite database with default configuration (legacy compatibility)
-func Open(path string) (*SQLiteDB, error) {
-	cfg := DefaultSQLiteConfig()
-	cfg.Path = path
-	return OpenSQLite(cfg)
-}
-
-// DB is an alias for SQLiteDB for backward compatibility
-type DB = SQLiteDB
 
 // Driver returns the database driver name
-func (db *SQLiteDB) Driver() string {
-	return "sqlite3"
+func (db *PostgresDB) Driver() string {
+	return "postgres"
 }
 
 // Ping checks database connectivity
-func (db *SQLiteDB) Ping(ctx context.Context) error {
+func (db *PostgresDB) Ping(ctx context.Context) error {
 	return db.DB.PingContext(ctx)
 }
 
 // Stats returns database statistics
-func (db *SQLiteDB) Stats() DBStats {
+func (db *PostgresDB) Stats() DBStats {
 	stats := db.DB.Stats()
 	return DBStats{
 		MaxOpenConnections: stats.MaxOpenConnections,
@@ -119,8 +109,19 @@ func (db *SQLiteDB) Stats() DBStats {
 	}
 }
 
-// Migrate runs all pending database migrations
-func (db *SQLiteDB) Migrate(ctx context.Context) error {
+// Migrate runs all pending database migrations for PostgreSQL
+func (db *PostgresDB) Migrate(ctx context.Context) error {
+	// Create schema_migrations table if not exists
+	_, err := db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS schema_migrations (
+			version INTEGER PRIMARY KEY,
+			applied_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+		)
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to create schema_migrations table: %w", err)
+	}
+
 	// Get current schema version
 	currentVersion, err := db.getSchemaVersion(ctx)
 	if err != nil {
@@ -145,48 +146,29 @@ func (db *SQLiteDB) Migrate(ctx context.Context) error {
 		}
 
 		if err := db.applyMigration(ctx, m); err != nil {
-			return fmt.Errorf("failed to apply migration %d: %w", m.version, err)
+			return fmt.Errorf("failed to apply migration %d (%s): %w", m.version, m.name, err)
 		}
 	}
 
 	return nil
 }
 
-type migration struct {
-	version int
-	name    string
-	sql     string
-}
-
-func (db *SQLiteDB) getSchemaVersion(ctx context.Context) (int, error) {
-	// Check if schema_migrations table exists
-	var exists int
-	err := db.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='schema_migrations'",
-	).Scan(&exists)
-	if err != nil {
-		return 0, err
-	}
-
-	if exists == 0 {
-		return 0, nil
-	}
-
+func (db *PostgresDB) getSchemaVersion(ctx context.Context) (int, error) {
 	var version int
-	err = db.QueryRowContext(ctx,
+	err := db.QueryRowContext(ctx,
 		"SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
 	).Scan(&version)
 	if err != nil {
 		return 0, err
 	}
-
 	return version, nil
 }
 
-func (db *SQLiteDB) loadMigrations() ([]migration, error) {
-	entries, err := fs.ReadDir(migrationsFS, "migrations")
+func (db *PostgresDB) loadMigrations() ([]migration, error) {
+	entries, err := fs.ReadDir(postgresMigrationsFS, "migrations/postgres")
 	if err != nil {
-		return nil, err
+		// If postgres migrations don't exist yet, return empty
+		return nil, nil
 	}
 
 	var migrations []migration
@@ -206,7 +188,7 @@ func (db *SQLiteDB) loadMigrations() ([]migration, error) {
 			continue
 		}
 
-		content, err := fs.ReadFile(migrationsFS, "migrations/"+entry.Name())
+		content, err := fs.ReadFile(postgresMigrationsFS, "migrations/postgres/"+entry.Name())
 		if err != nil {
 			return nil, err
 		}
@@ -221,7 +203,7 @@ func (db *SQLiteDB) loadMigrations() ([]migration, error) {
 	return migrations, nil
 }
 
-func (db *SQLiteDB) applyMigration(ctx context.Context, m migration) error {
+func (db *PostgresDB) applyMigration(ctx context.Context, m migration) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -233,15 +215,24 @@ func (db *SQLiteDB) applyMigration(ctx context.Context, m migration) error {
 		return fmt.Errorf("migration SQL error: %w", err)
 	}
 
+	// Record migration
+	_, err = tx.ExecContext(ctx,
+		"INSERT INTO schema_migrations (version) VALUES ($1)",
+		m.version,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to record migration: %w", err)
+	}
+
 	return tx.Commit()
 }
 
 // Close closes the database connection
-func (db *SQLiteDB) Close() error {
+func (db *PostgresDB) Close() error {
 	return db.DB.Close()
 }
 
 // RawDB returns the underlying *sql.DB for backward compatibility
-func (db *SQLiteDB) RawDB() *sql.DB {
+func (db *PostgresDB) RawDB() *sql.DB {
 	return db.DB
 }

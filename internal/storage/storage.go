@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"io"
+	"strings"
 	"time"
 )
 
@@ -17,6 +18,79 @@ const (
 	FlagDraft    Flag = `\Draft`
 	FlagRecent   Flag = `\Recent`
 )
+
+// Common flag slices pre-allocated to avoid repeated allocations
+var (
+	// CommonFlags contains the standard IMAP flags
+	CommonFlags = []Flag{FlagSeen, FlagAnswered, FlagFlagged, FlagDeleted, FlagDraft}
+
+	// EmptyFlags is an empty flag slice that can be reused
+	EmptyFlags = []Flag{}
+)
+
+// FlagsContain checks if a flag slice contains a specific flag.
+// More efficient than creating a map for small flag sets.
+func FlagsContain(flags []Flag, target Flag) bool {
+	for _, f := range flags {
+		if f == target {
+			return true
+		}
+	}
+	return false
+}
+
+// CopyFlags creates a copy of a flag slice with pre-allocated capacity.
+func CopyFlags(flags []Flag) []Flag {
+	if len(flags) == 0 {
+		return EmptyFlags
+	}
+	result := make([]Flag, len(flags))
+	copy(result, flags)
+	return result
+}
+
+// AddFlag adds a flag to a slice if not already present.
+// Returns the modified slice (may be a new allocation).
+func AddFlag(flags []Flag, flag Flag) []Flag {
+	if FlagsContain(flags, flag) {
+		return flags
+	}
+	return append(flags, flag)
+}
+
+// RemoveFlag removes a flag from a slice.
+// Returns the modified slice.
+func RemoveFlag(flags []Flag, flag Flag) []Flag {
+	for i, f := range flags {
+		if f == flag {
+			// Remove by swapping with last and truncating
+			flags[i] = flags[len(flags)-1]
+			return flags[:len(flags)-1]
+		}
+	}
+	return flags
+}
+
+// FlagsToString converts flags to a space-separated string.
+// Uses strings.Builder for efficient concatenation.
+func FlagsToString(flags []Flag) string {
+	if len(flags) == 0 {
+		return ""
+	}
+	if len(flags) == 1 {
+		return string(flags[0])
+	}
+
+	var b strings.Builder
+	b.Grow(len(flags) * 10) // Estimate ~10 chars per flag
+	for i, f := range flags {
+		if i > 0 {
+			b.WriteByte(' ')
+		}
+		b.WriteString(string(f))
+	}
+	return b.String()
+}
 
 // SpecialUse represents IMAP special-use mailbox attributes
 type SpecialUse string

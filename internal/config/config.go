@@ -16,6 +16,7 @@ type Config struct {
 	Server       ServerConfig       `koanf:"server"`
 	TLS          TLSConfig          `koanf:"tls"`
 	Storage      StorageConfig      `koanf:"storage"`
+	Database     DatabaseConfig     `koanf:"database"`
 	Domains      []DomainConfig     `koanf:"domains"`
 	Security     SecurityConfig     `koanf:"security"`
 	Logging      LoggingConfig      `koanf:"logging"`
@@ -53,8 +54,19 @@ type TLSConfig struct {
 // StorageConfig holds storage paths configuration
 type StorageConfig struct {
 	DataDir      string `koanf:"data_dir"`      // Base data directory
-	DatabasePath string `koanf:"database_path"` // SQLite database path
+	DatabasePath string `koanf:"database_path"` // SQLite database path (legacy, use database.path)
 	MaildirPath  string `koanf:"maildir_path"`  // Maildir storage path
+}
+
+// DatabaseConfig holds database configuration
+type DatabaseConfig struct {
+	Driver          string `koanf:"driver"`            // Database driver: sqlite3, postgres
+	Path            string `koanf:"path"`              // SQLite database file path
+	DSN             string `koanf:"dsn"`               // PostgreSQL connection string
+	MaxOpenConns    int    `koanf:"max_open_conns"`    // Maximum open connections
+	MaxIdleConns    int    `koanf:"max_idle_conns"`    // Maximum idle connections
+	ConnMaxLifetime string `koanf:"conn_max_lifetime"` // Maximum connection lifetime
+	ConnMaxIdleTime string `koanf:"conn_max_idle_time"` // Maximum idle time before closing
 }
 
 // DomainConfig holds per-domain configuration
@@ -83,10 +95,21 @@ type LoggingConfig struct {
 
 // QueueConfig holds Redis queue configuration
 type QueueConfig struct {
-	RedisURL    string `koanf:"redis_url"`     // Redis connection URL
-	Prefix      string `koanf:"prefix"`        // Key prefix for queue entries
-	MaxRetries  int    `koanf:"max_retries"`   // Maximum delivery attempts
-	RetryMaxAge string `koanf:"retry_max_age"` // Max time to retry (e.g., "168h")
+	RedisURL       string   `koanf:"redis_url"`       // Redis connection URL (for standalone mode)
+	Mode           string   `koanf:"mode"`            // Connection mode: standalone, sentinel, cluster
+	SentinelMaster string   `koanf:"sentinel_master"` // Master name for Sentinel mode
+	SentinelAddrs  []string `koanf:"sentinel_addrs"`  // Sentinel addresses
+	ClusterAddrs   []string `koanf:"cluster_addrs"`   // Cluster node addresses
+	Password       string   `koanf:"password"`        // Redis password (optional)
+	DB             int      `koanf:"db"`              // Database number (not used in cluster mode)
+	Prefix         string   `koanf:"prefix"`          // Key prefix for queue entries
+	MaxRetries     int      `koanf:"max_retries"`     // Maximum delivery attempts
+	RetryMaxAge    string   `koanf:"retry_max_age"`   // Max time to retry (e.g., "168h")
+	PoolSize       int      `koanf:"pool_size"`       // Connection pool size
+	MinIdleConns   int      `koanf:"min_idle_conns"`  // Minimum idle connections
+	DialTimeout    string   `koanf:"dial_timeout"`    // Connection dial timeout
+	ReadTimeout    string   `koanf:"read_timeout"`    // Read timeout
+	WriteTimeout   string   `koanf:"write_timeout"`   // Write timeout
 }
 
 // DeliveryConfig holds outbound delivery configuration
@@ -155,6 +178,14 @@ func DefaultConfig() *Config {
 			DatabasePath: "/var/lib/mailserver/mail.db",
 			MaildirPath:  "/var/lib/mailserver/maildir",
 		},
+		Database: DatabaseConfig{
+			Driver:          "sqlite3",
+			Path:            "/var/lib/mailserver/mail.db",
+			MaxOpenConns:    25,
+			MaxIdleConns:    5,
+			ConnMaxLifetime: "0",
+			ConnMaxIdleTime: "5m",
+		},
 		Security: SecurityConfig{
 			RequireTLS:     true,
 			VerifySPF:      true,
@@ -169,10 +200,16 @@ func DefaultConfig() *Config {
 			Output: "stdout",
 		},
 		Queue: QueueConfig{
-			RedisURL:    "redis://localhost:6379/0",
-			Prefix:      "mail",
-			MaxRetries:  15,
-			RetryMaxAge: "168h", // 7 days
+			RedisURL:     "redis://localhost:6379/0",
+			Mode:         "standalone",
+			Prefix:       "mail",
+			MaxRetries:   15,
+			RetryMaxAge:  "168h", // 7 days
+			PoolSize:     10,
+			MinIdleConns: 5,
+			DialTimeout:  "5s",
+			ReadTimeout:  "3s",
+			WriteTimeout: "3s",
 		},
 		Delivery: DeliveryConfig{
 			Workers:        4,
@@ -322,8 +359,13 @@ func (c *Config) Validate() error {
 	if c.Delivery.Workers < 1 {
 		return fmt.Errorf("delivery.workers must be at least 1")
 	}
-	if c.Delivery.Workers > 100 {
-		return fmt.Errorf("delivery.workers cannot exceed 100")
+	if c.Delivery.Workers > 500 {
+		return fmt.Errorf("delivery.workers cannot exceed 500")
+	}
+
+	// Database validation
+	if err := c.validateDatabase(); err != nil {
+		return err
 	}
 
 	// Logging validation
@@ -479,6 +521,61 @@ func (c *Config) validateTimeouts() error {
 			if duration > 30*24*time.Hour {
 				return fmt.Errorf("%s is too long, maximum is 30d (got: %s)", name, timeout)
 			}
+		}
+	}
+
+	return nil
+}
+
+// validateDatabase validates database configuration
+func (c *Config) validateDatabase() error {
+	validDrivers := map[string]bool{"sqlite3": true, "postgres": true}
+	if c.Database.Driver != "" && !validDrivers[c.Database.Driver] {
+		return fmt.Errorf("database.driver must be one of: sqlite3, postgres (got: %s)", c.Database.Driver)
+	}
+
+	// Use legacy storage.database_path if database.path is not set
+	if c.Database.Path == "" && c.Storage.DatabasePath != "" {
+		c.Database.Path = c.Storage.DatabasePath
+	}
+
+	switch c.Database.Driver {
+	case "sqlite3", "":
+		if c.Database.Path == "" {
+			return fmt.Errorf("database.path is required for SQLite")
+		}
+		if !filepath.IsAbs(c.Database.Path) {
+			return fmt.Errorf("database.path must be an absolute path (got: %s)", c.Database.Path)
+		}
+	case "postgres":
+		if c.Database.DSN == "" {
+			return fmt.Errorf("database.dsn is required for PostgreSQL")
+		}
+	}
+
+	// Connection pool validation
+	if c.Database.MaxOpenConns < 1 {
+		return fmt.Errorf("database.max_open_conns must be at least 1")
+	}
+	if c.Database.MaxOpenConns > 1000 {
+		return fmt.Errorf("database.max_open_conns cannot exceed 1000")
+	}
+	if c.Database.MaxIdleConns < 0 {
+		return fmt.Errorf("database.max_idle_conns cannot be negative")
+	}
+	if c.Database.MaxIdleConns > c.Database.MaxOpenConns {
+		return fmt.Errorf("database.max_idle_conns cannot exceed max_open_conns")
+	}
+
+	// Validate lifetime durations
+	if c.Database.ConnMaxLifetime != "" && c.Database.ConnMaxLifetime != "0" {
+		if _, err := time.ParseDuration(c.Database.ConnMaxLifetime); err != nil {
+			return fmt.Errorf("database.conn_max_lifetime is invalid: %w", err)
+		}
+	}
+	if c.Database.ConnMaxIdleTime != "" {
+		if _, err := time.ParseDuration(c.Database.ConnMaxIdleTime); err != nil {
+			return fmt.Errorf("database.conn_max_idle_time is invalid: %w", err)
 		}
 	}
 

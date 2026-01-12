@@ -174,8 +174,8 @@ func (a *Authenticator) clearLockout(email string) {
 // Authenticate validates credentials and returns user info
 // Implements account lockout after too many failed attempts (10 attempts/hour, 30 min lockout)
 func (a *Authenticator) Authenticate(ctx context.Context, email, password string) (*User, error) {
-	// Normalize email for lockout tracking
-	normalizedEmail := strings.ToLower(strings.TrimSpace(email))
+	// Normalize email for lockout tracking (optimized to avoid allocation if already lowercase)
+	normalizedEmail := normalizeEmail(email)
 
 	// Check if account is locked FIRST (before any other processing)
 	// Return generic error to prevent username enumeration via timing
@@ -293,7 +293,7 @@ func (a *Authenticator) LookupUserByID(ctx context.Context, id int64) (*User, er
 	}
 
 	user.DisplayName = displayName.String
-	user.Email = fmt.Sprintf("%s@%s", user.Username, user.Domain)
+	user.Email = user.Username + "@" + user.Domain
 	return &user, nil
 }
 
@@ -462,7 +462,7 @@ func (a *Authenticator) CreateUser(ctx context.Context, username, password strin
 		DomainID: domainID,
 		Username: username,
 		Domain:   domainName,
-		Email:    fmt.Sprintf("%s@%s", username, domainName),
+		Email:    username + "@" + domainName,
 		IsActive: true,
 	}, nil
 }
@@ -524,20 +524,25 @@ func (a *Authenticator) lookupUserWithPassword(ctx context.Context, username, do
 	}
 
 	user.DisplayName = displayName.String
-	user.Email = fmt.Sprintf("%s@%s", user.Username, user.Domain)
+	user.Email = user.Username + "@" + user.Domain
 	return &user, passwordHash, nil
 }
 
-// parseEmail splits an email address into local part and domain
+// parseEmail splits an email address into local part and domain.
+// Optimized to minimize allocations.
 func parseEmail(email string) (username, domain string, err error) {
-	email = strings.TrimSpace(strings.ToLower(email))
-	parts := strings.SplitN(email, "@", 2)
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+	// Trim space first (usually a no-op, avoids allocation)
+	email = strings.TrimSpace(email)
+
+	// Find @ without SplitN allocation
+	atIdx := strings.IndexByte(email, '@')
+	if atIdx <= 0 || atIdx >= len(email)-1 {
 		return "", "", fmt.Errorf("invalid email address: %s", email)
 	}
 
-	username = parts[0]
-	domain = parts[1]
+	// Extract parts and lowercase only if needed
+	username = toLowerASCII(email[:atIdx])
+	domain = toLowerASCII(email[atIdx+1:])
 
 	// Validate components
 	if err := ValidateUsername(username); err != nil {
@@ -548,6 +553,32 @@ func parseEmail(email string) (username, domain string, err error) {
 	}
 
 	return username, domain, nil
+}
+
+// toLowerASCII converts ASCII letters to lowercase, avoiding allocation if already lowercase.
+func toLowerASCII(s string) string {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c >= 'A' && c <= 'Z' {
+			// Found uppercase, need to allocate
+			return strings.ToLower(s)
+		}
+	}
+	return s // Already lowercase
+}
+
+// normalizeEmail returns a normalized (lowercase, trimmed) email for comparison.
+// Optimized to avoid allocation when email is already normalized.
+func normalizeEmail(email string) string {
+	email = strings.TrimSpace(email)
+	// Check if already lowercase
+	for i := 0; i < len(email); i++ {
+		c := email[i]
+		if c >= 'A' && c <= 'Z' {
+			return strings.ToLower(email)
+		}
+	}
+	return email
 }
 
 // validateUsername is an internal helper for validation
@@ -596,6 +627,7 @@ func validateDomain(domain string) error {
 }
 
 // ValidateDomain checks if a domain name is valid according to RFC 1035
+// Optimized to avoid strings.Split allocation by iterating through labels.
 func ValidateDomain(domain string) error {
 	domain = strings.TrimSpace(strings.ToLower(domain))
 
@@ -608,10 +640,15 @@ func ValidateDomain(domain string) error {
 	}
 
 	// Additional validation: check each label length (max 63 chars per RFC 1035)
-	labels := strings.Split(domain, ".")
-	for _, label := range labels {
-		if len(label) == 0 || len(label) > 63 {
-			return ErrInvalidDomain
+	// Iterate through domain without allocating a slice
+	labelStart := 0
+	for i := 0; i <= len(domain); i++ {
+		if i == len(domain) || domain[i] == '.' {
+			labelLen := i - labelStart
+			if labelLen == 0 || labelLen > 63 {
+				return ErrInvalidDomain
+			}
+			labelStart = i + 1
 		}
 	}
 
