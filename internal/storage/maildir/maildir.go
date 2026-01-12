@@ -983,6 +983,14 @@ func flagsToString(flags []storage.Flag) string {
 	return b.String()
 }
 
+// UpdateMessageZone updates the zone for a message
+func (s *Store) UpdateMessageZone(ctx context.Context, messageID int64, zone string) error {
+	_, err := s.db.ExecContext(ctx,
+		"UPDATE messages SET zone = ? WHERE id = ?",
+		zone, messageID)
+	return err
+}
+
 // stringToFlags parses comma-separated string to flags.
 // Optimized to count commas first for pre-allocation and avoid strings.Split.
 func stringToFlags(s string) []storage.Flag {

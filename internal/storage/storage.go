@@ -157,6 +157,9 @@ type MessageStore interface {
 	MoveMessage(ctx context.Context, srcMailboxID int64, uid uint32, destMailboxID int64) (*Message, error)
 	ExpungeMailbox(ctx context.Context, mailboxID int64) ([]uint32, error)
 
+	// Zone operations
+	UpdateMessageZone(ctx context.Context, messageID int64, zone string) error
+
 	// Search operations
 	SearchMessages(ctx context.Context, mailboxID int64, criteria *SearchCriteria) ([]uint32, error)
 

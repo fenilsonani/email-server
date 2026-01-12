@@ -617,9 +617,14 @@ func (s *Session) deliverToLocalRecipient(rcpt string, data []byte) error {
 		}
 	}
 
+	// Parse message for Sieve and zone detection
+	var msg *sieve.Message
+	if s.backend.sieveExecutor != nil || s.backend.featuresStore != nil {
+		msg = s.parseMessageForSieve(data)
+	}
+
 	// Execute Sieve filtering if available (skip if Screener already handled routing)
-	if s.backend.sieveExecutor != nil {
-		msg := s.parseMessageForSieve(data)
+	if s.backend.sieveExecutor != nil && msg != nil {
 		result, err := s.backend.sieveExecutor.Execute(ctx, user.ID, msg)
 		if err != nil {
 			s.backend.logger.WarnContext(ctx, "Sieve execution failed, delivering to INBOX",
@@ -745,11 +750,43 @@ func (s *Session) deliverToLocalRecipient(rcpt string, data []byte) error {
 		}
 	}
 
+	// Parse message for zone detection (reuse Sieve parsed message if available)
+	var msgHeaders map[string][]string
+	var msgSubject string
+	if msg != nil {
+		msgHeaders = msg.Headers
+		msgSubject = msg.Subject
+	} else {
+		// Parse headers if we didn't go through Sieve
+		parsedMsg := s.parseMessageForSieve(data)
+		msgHeaders = parsedMsg.Headers
+		msgSubject = parsedMsg.Subject
+	}
+
+	// Detect zone for the message
+	zone := s.detectMessageZone(ctx, user.ID, s.from, msgHeaders, msgSubject)
+
 	// Deliver message (use bytes.NewReader to avoid string allocation)
-	_, err = s.backend.store.AppendMessage(ctx, mailbox.ID, nil, time.Now(),
+	deliveredMsg, err := s.backend.store.AppendMessage(ctx, mailbox.ID, nil, time.Now(),
 		bytes.NewReader(data))
 	if err != nil {
 		return fmt.Errorf("failed to append message: %w", err)
+	}
+
+	// Update message zone if not default
+	if zone != "inbox" && deliveredMsg != nil {
+		if err := s.backend.store.UpdateMessageZone(ctx, deliveredMsg.ID, zone); err != nil {
+			s.backend.logger.WarnContext(ctx, "Failed to update message zone",
+				"message_id", deliveredMsg.ID,
+				"zone", zone,
+				"error", err.Error(),
+			)
+		} else {
+			s.backend.logger.DebugContext(ctx, "Message zone set",
+				"message_id", deliveredMsg.ID,
+				"zone", zone,
+			)
+		}
 	}
 
 	// Update used bytes after successful delivery
@@ -1004,6 +1041,66 @@ func generateID() string {
 		return fmt.Sprintf("%d-%x", time.Now().UnixNano(), time.Now().UnixNano()%0xFFFFFF)
 	}
 	return hex.EncodeToString(b)
+}
+
+// detectMessageZone determines the zone for a message based on headers and sender
+// Returns: "priority", "feed", "paper_trail", or "inbox"
+func (s *Session) detectMessageZone(ctx context.Context, userID int64, senderEmail string, headers map[string][]string, subject string) string {
+	// Check if zones are enabled in preferences
+	if s.backend.featuresStore == nil {
+		return "inbox"
+	}
+	prefs, err := s.backend.featuresStore.GetPreferences(ctx, userID)
+	if err != nil || !prefs.ZonesEnabled {
+		return "inbox"
+	}
+
+	// 1. Check if sender is VIP -> priority
+	isVIP, _ := s.backend.featuresStore.IsVIP(ctx, userID, senderEmail)
+	if isVIP {
+		return "priority"
+	}
+
+	// 2. Check for newsletter indicators -> feed
+	// Check List-Unsubscribe header
+	if _, hasListUnsub := headers["List-Unsubscribe"]; hasListUnsub {
+		return "feed"
+	}
+	// Check Precedence header (bulk or list)
+	if prec, hasPrecedence := headers["Precedence"]; hasPrecedence {
+		for _, p := range prec {
+			p = strings.ToLower(p)
+			if p == "bulk" || p == "list" {
+				return "feed"
+			}
+		}
+	}
+	// Check for common newsletter From patterns
+	fromLower := strings.ToLower(senderEmail)
+	newsletterPatterns := []string{"newsletter", "updates@", "digest@", "noreply@", "no-reply@", "marketing@"}
+	for _, pattern := range newsletterPatterns {
+		if strings.Contains(fromLower, pattern) {
+			return "feed"
+		}
+	}
+
+	// 3. Check for receipt/transactional indicators -> paper_trail
+	subjectLower := strings.ToLower(subject)
+	receiptKeywords := []string{"receipt", "order confirmation", "shipping", "invoice", "payment", "subscription", "your order", "order #"}
+	for _, kw := range receiptKeywords {
+		if strings.Contains(subjectLower, kw) {
+			return "paper_trail"
+		}
+	}
+	// Check From patterns for receipts
+	receiptFromPatterns := []string{"orders@", "receipts@", "shipping@", "billing@", "payments@"}
+	for _, pattern := range receiptFromPatterns {
+		if strings.Contains(fromLower, pattern) {
+			return "paper_trail"
+		}
+	}
+
+	return "inbox"
 }
 
 // parseMessageForSieve parses raw email data into a Sieve message structure.
