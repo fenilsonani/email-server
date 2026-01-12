@@ -18,11 +18,15 @@
 
 <div class="card">
     <form method="POST" action="/admin/features/scheduled/add">
+        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
 
         <div class="form-group">
             <label for="from_address">from</label>
-            <input type="email" id="from_address" name="from_address" class="form-control" style="max-width: 400px;"
-                   value="{{.FromEmail}}" required>
+            <select id="from_address" name="from_address" class="form-control" style="max-width: 400px;" required>
+                {{range .FromAddresses}}
+                <option value="{{.Email}}">{{.Email}} ({{.Description}})</option>
+                {{end}}
+            </select>
         </div>
 
         <div class="form-group">

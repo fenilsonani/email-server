@@ -50,6 +50,7 @@
                 <td>
                     <form method="POST" action="/admin/features/snoozed/cancel/{{.ID}}" style="display: inline;"
                           onsubmit="return confirm('Wake this email now?');">
+                        <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
                         <button type="submit" class="btn btn-sm">wake now</button>
                     </form>
                 </td>

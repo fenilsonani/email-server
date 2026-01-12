@@ -68,6 +68,7 @@
                     {{if eq .Status "pending"}}
                     <form method="POST" action="/admin/features/scheduled/cancel/{{.ID}}" style="display: inline;"
                           onsubmit="return confirm('Cancel this scheduled email?');">
+                        <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
                         <button type="submit" class="btn btn-sm btn-danger">cancel</button>
                     </form>
                     {{else}}

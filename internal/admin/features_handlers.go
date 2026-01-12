@@ -578,14 +578,33 @@ func (s *Server) handleScheduledAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get user's email for default from address
+	// Get user's primary email
 	var userEmail string
 	s.db.QueryRowContext(r.Context(), "SELECT username FROM users WHERE id = ?", userID).Scan(&userEmail)
 
+	// Get user's aliases for the from dropdown
+	type fromAddress struct {
+		Email       string
+		Description string
+	}
+	fromAddresses := []fromAddress{{Email: userEmail, Description: "Primary"}}
+
+	// Add aliases
+	aliases, _ := s.featuresStore.ListAliases(r.Context(), userID)
+	for _, alias := range aliases {
+		if alias.IsActive {
+			desc := alias.Description
+			if desc == "" {
+				desc = "Alias"
+			}
+			fromAddresses = append(fromAddresses, fromAddress{Email: alias.AliasAddress, Description: desc})
+		}
+	}
+
 	if r.Method == http.MethodGet {
 		data := map[string]interface{}{
-			"Title":     "Schedule Email",
-			"FromEmail": userEmail,
+			"Title":         "Schedule Email",
+			"FromAddresses": fromAddresses,
 		}
 		s.renderTemplate(w, "features_scheduled_form.html", data)
 		return
@@ -602,9 +621,9 @@ func (s *Server) handleScheduledAdd(w http.ResponseWriter, r *http.Request) {
 	sendAt, err := time.Parse("2006-01-02T15:04", sendAtStr)
 	if err != nil {
 		data := map[string]interface{}{
-			"Title":     "Schedule Email",
-			"FromEmail": userEmail,
-			"Error":     "Invalid date/time format",
+			"Title":         "Schedule Email",
+			"FromAddresses": fromAddresses,
+			"Error":         "Invalid date/time format",
 		}
 		s.renderTemplate(w, "features_scheduled_form.html", data)
 		return
@@ -628,9 +647,9 @@ func (s *Server) handleScheduledAdd(w http.ResponseWriter, r *http.Request) {
 
 	if err := s.featuresStore.CreateScheduledEmail(r.Context(), email); err != nil {
 		data := map[string]interface{}{
-			"Title":     "Schedule Email",
-			"FromEmail": userEmail,
-			"Error":     "Failed to schedule email: " + err.Error(),
+			"Title":         "Schedule Email",
+			"FromAddresses": fromAddresses,
+			"Error":         "Failed to schedule email: " + err.Error(),
 		}
 		s.renderTemplate(w, "features_scheduled_form.html", data)
 		return
