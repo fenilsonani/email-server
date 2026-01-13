@@ -229,13 +229,14 @@ func (s *Server) handleMicrosoftAutodiscover(w http.ResponseWriter, r *http.Requ
 		slog.String("remote_addr", r.RemoteAddr))
 }
 
-// Apple mobileconfig template
+// Apple mobileconfig template - includes Mail, Contacts (CardDAV), and Calendar (CalDAV)
 const appleMobileconfigTemplate = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>PayloadContent</key>
     <array>
+        <!-- Email (IMAP/SMTP) Configuration -->
         <dict>
             <key>EmailAccountDescription</key>
             <string>{{.DisplayName}}</string>
@@ -268,15 +269,15 @@ const appleMobileconfigTemplate = `<?xml version="1.0" encoding="UTF-8"?>
             <key>OutgoingPasswordSameAsIncomingPassword</key>
             <true/>
             <key>PayloadDescription</key>
-            <string>Email account configuration for {{.Domain}}</string>
+            <string>Email account for {{.Domain}}</string>
             <key>PayloadDisplayName</key>
-            <string>{{.DisplayName}}</string>
+            <string>{{.DisplayName}} - Mail</string>
             <key>PayloadIdentifier</key>
             <string>com.{{.Domain}}.email</string>
             <key>PayloadType</key>
             <string>com.apple.mail.managed</string>
             <key>PayloadUUID</key>
-            <string>{{.UUID}}</string>
+            <string>{{.EmailUUID}}</string>
             <key>PayloadVersion</key>
             <integer>1</integer>
             <key>PreventAppSheet</key>
@@ -286,9 +287,63 @@ const appleMobileconfigTemplate = `<?xml version="1.0" encoding="UTF-8"?>
             <key>SMIMEEnabled</key>
             <false/>
         </dict>
+        <!-- CardDAV (Contacts) Configuration -->
+        <dict>
+            <key>CardDAVAccountDescription</key>
+            <string>{{.DisplayName}} - Contacts</string>
+            <key>CardDAVHostName</key>
+            <string>{{.Hostname}}</string>
+            <key>CardDAVPort</key>
+            <integer>443</integer>
+            <key>CardDAVPrincipalURL</key>
+            <string>https://{{.Hostname}}/carddav/{{.Email}}/</string>
+            <key>CardDAVUseSSL</key>
+            <true/>
+            <key>CardDAVUsername</key>
+            <string>{{.Email}}</string>
+            <key>PayloadDescription</key>
+            <string>Contacts sync for {{.Domain}}</string>
+            <key>PayloadDisplayName</key>
+            <string>{{.DisplayName}} - Contacts</string>
+            <key>PayloadIdentifier</key>
+            <string>com.{{.Domain}}.carddav</string>
+            <key>PayloadType</key>
+            <string>com.apple.carddav.account</string>
+            <key>PayloadUUID</key>
+            <string>{{.CardDAVUUID}}</string>
+            <key>PayloadVersion</key>
+            <integer>1</integer>
+        </dict>
+        <!-- CalDAV (Calendar) Configuration -->
+        <dict>
+            <key>CalDAVAccountDescription</key>
+            <string>{{.DisplayName}} - Calendar</string>
+            <key>CalDAVHostName</key>
+            <string>{{.Hostname}}</string>
+            <key>CalDAVPort</key>
+            <integer>443</integer>
+            <key>CalDAVPrincipalURL</key>
+            <string>https://{{.Hostname}}/caldav/{{.Email}}/</string>
+            <key>CalDAVUseSSL</key>
+            <true/>
+            <key>CalDAVUsername</key>
+            <string>{{.Email}}</string>
+            <key>PayloadDescription</key>
+            <string>Calendar sync for {{.Domain}}</string>
+            <key>PayloadDisplayName</key>
+            <string>{{.DisplayName}} - Calendar</string>
+            <key>PayloadIdentifier</key>
+            <string>com.{{.Domain}}.caldav</string>
+            <key>PayloadType</key>
+            <string>com.apple.caldav.account</string>
+            <key>PayloadUUID</key>
+            <string>{{.CalDAVUUID}}</string>
+            <key>PayloadVersion</key>
+            <integer>1</integer>
+        </dict>
     </array>
     <key>PayloadDescription</key>
-    <string>Email configuration profile for {{.Domain}}</string>
+    <string>Configure Mail, Contacts, and Calendar for {{.Domain}}</string>
     <key>PayloadDisplayName</key>
     <string>{{.DisplayName}}</string>
     <key>PayloadIdentifier</key>
@@ -326,13 +381,13 @@ func (s *Server) handleAppleMobileconfig(w http.ResponseWriter, r *http.Request)
     </style>
 </head>
 <body>
-    <h1>%s Email Setup</h1>
-    <p>Enter your email address to download the configuration profile for Apple Mail.</p>
+    <h1>%s Account Setup</h1>
+    <p>Enter your email address to download the configuration profile.</p>
     <form method="get">
         <input type="email" name="email" placeholder="your.email@%s" required>
         <button type="submit">Download Profile</button>
     </form>
-    <p>After downloading, open the profile on your iPhone, iPad, or Mac to automatically configure your email.</p>
+    <p>This profile configures <strong>Mail</strong>, <strong>Contacts</strong>, and <strong>Calendar</strong> on your iPhone, iPad, or Mac.</p>
 </body>
 </html>`, s.config.DisplayName, s.config.DisplayName, s.config.Domain)
 		return
@@ -349,8 +404,10 @@ func (s *Server) handleAppleMobileconfig(w http.ResponseWriter, r *http.Request)
 	emailDomain := parts[1]
 	displayName := emailDomain + " Mail"
 
-	// Generate deterministic UUIDs based on email
-	uuid := generateUUID(email)
+	// Generate deterministic UUIDs based on email for each service
+	emailUUID := generateUUID(email + "-email")
+	cardDAVUUID := generateUUID(email + "-carddav")
+	calDAVUUID := generateUUID(email + "-caldav")
 	profileUUID := generateUUID(email + "-profile")
 
 	data := struct {
@@ -360,7 +417,9 @@ func (s *Server) handleAppleMobileconfig(w http.ResponseWriter, r *http.Request)
 		Email       string
 		IMAPPort    int
 		SMTPPort    int
-		UUID        string
+		EmailUUID   string
+		CardDAVUUID string
+		CalDAVUUID  string
 		ProfileUUID string
 	}{
 		DisplayName: displayName,
@@ -369,7 +428,9 @@ func (s *Server) handleAppleMobileconfig(w http.ResponseWriter, r *http.Request)
 		Email:       email,
 		IMAPPort:    s.config.IMAPPort,
 		SMTPPort:    s.config.SMTPPort,
-		UUID:        uuid,
+		EmailUUID:   emailUUID,
+		CardDAVUUID: cardDAVUUID,
+		CalDAVUUID:  calDAVUUID,
 		ProfileUUID: profileUUID,
 	}
 
