@@ -59,7 +59,9 @@ func getPaginationParams(r *http.Request) PaginationParams {
 
 // handleDashboard shows the main dashboard
 func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
+	s.logger.Info("handleDashboard called", "path", r.URL.Path, "method", r.Method)
 	if r.URL.Path != "/admin/" {
+		s.logger.Info("handleDashboard redirecting", "from", r.URL.Path, "to", "/admin/")
 		http.Redirect(w, r, "/admin/", http.StatusSeeOther)
 		return
 	}

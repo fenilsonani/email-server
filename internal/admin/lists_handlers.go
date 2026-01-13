@@ -21,7 +21,10 @@ type listDomain struct {
 
 // handleLists shows all mailing lists
 func (s *Server) handleLists(w http.ResponseWriter, r *http.Request) {
+	s.logger.Info("handleLists called", "path", r.URL.Path, "method", r.Method)
+
 	if s.listsStore == nil {
+		s.logger.Error("listsStore is nil")
 		http.Error(w, "Mailing lists not enabled", http.StatusServiceUnavailable)
 		return
 	}
