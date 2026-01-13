@@ -276,6 +276,10 @@ func (s *Server) Start(listen string) error {
 	mux.HandleFunc("/admin/features/snoozed/cancel/", s.withAuth(s.handleSnoozeCancel))
 
 	// Mailing lists management routes
+	mux.HandleFunc("/admin/lists-test", func(w http.ResponseWriter, r *http.Request) {
+		s.logger.Info("TEST: lists-test route hit", "path", r.URL.Path)
+		w.Write([]byte("Lists test route OK - routing works!"))
+	})
 	mux.HandleFunc("/admin/lists", s.withAuth(s.handleLists))
 	mux.HandleFunc("/admin/lists/add", s.withAuth(s.handleListAdd))
 	mux.HandleFunc("/admin/lists/edit/", s.withAuth(s.handleListEdit))
