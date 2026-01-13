@@ -466,7 +466,10 @@ func (q *RedisQueue) Dequeue(ctx context.Context) (*Message, error) {
 		return nil, nil
 	}
 
-	msgID := results[0].Member.(string)
+	msgID, ok := results[0].Member.(string)
+	if !ok {
+		return nil, fmt.Errorf("unexpected member type in pending queue: %T", results[0].Member)
+	}
 
 	// Atomically move to processing queue
 	pipe := q.client.TxPipeline()
@@ -721,7 +724,11 @@ func (q *RedisQueue) ListPending(ctx context.Context, limit int64) ([]*Message, 
 
 	messages := make([]*Message, 0, len(results))
 	for _, r := range results {
-		msgID := r.Member.(string)
+		msgID, ok := r.Member.(string)
+		if !ok {
+			// Skip entries with unexpected type
+			continue
+		}
 		msg, err := q.GetMessage(ctx, msgID)
 		if err != nil {
 			continue
@@ -745,7 +752,11 @@ func (q *RedisQueue) ListFailed(ctx context.Context, limit int64) ([]*Message, e
 
 	messages := make([]*Message, 0, len(results))
 	for _, r := range results {
-		msgID := r.Member.(string)
+		msgID, ok := r.Member.(string)
+		if !ok {
+			// Skip entries with unexpected type
+			continue
+		}
 		msg, err := q.GetMessage(ctx, msgID)
 		if err != nil {
 			continue
@@ -769,7 +780,11 @@ func (q *RedisQueue) ListSent(ctx context.Context, limit int64) ([]*Message, err
 
 	messages := make([]*Message, 0, len(results))
 	for _, r := range results {
-		msgID := r.Member.(string)
+		msgID, ok := r.Member.(string)
+		if !ok {
+			// Skip entries with unexpected type
+			continue
+		}
 		msg, err := q.GetMessage(ctx, msgID)
 		if err != nil {
 			continue

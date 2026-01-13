@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -51,6 +52,13 @@ type Config struct {
 	QueuePath string
 	// RelayHost is an optional smarthost for all outbound mail (host:port).
 	RelayHost string
+
+	// MTA-STS configuration
+	MTASTSEnabled bool // Enable MTA-STS policy checking
+
+	// DANE configuration
+	DANEEnabled   bool   // Enable DANE/TLSA checking
+	DANEDNSServer string // DNS server for TLSA lookups
 }
 
 // DefaultConfig returns sensible default configuration.
@@ -77,6 +85,10 @@ type Engine struct {
 	bounceGen      *BounceGenerator
 	db             *sql.DB
 
+	// Security resolvers
+	stsResolver  *STSResolver  // MTA-STS policy resolver
+	daneResolver *DANEResolver // DANE/TLSA resolver
+
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -93,7 +105,7 @@ type Engine struct {
 func NewEngine(cfg Config, q *queue.RedisQueue, dkim *security.DKIMSignerPool, logger *logging.Logger, db *sql.DB) *Engine {
 	ctx, cancel := context.WithCancel(context.Background())
 
-	return &Engine{
+	e := &Engine{
 		config:     cfg,
 		queue:      q,
 		mxResolver: NewMXResolver(DefaultMXResolverConfig()),
@@ -114,6 +126,22 @@ func NewEngine(cfg Config, q *queue.RedisQueue, dkim *security.DKIMSignerPool, l
 		ctx:       ctx,
 		cancel:    cancel,
 	}
+
+	// Initialize MTA-STS resolver if enabled
+	if cfg.MTASTSEnabled {
+		e.stsResolver = NewSTSResolver(DefaultSTSResolverConfig())
+	}
+
+	// Initialize DANE resolver if enabled
+	if cfg.DANEEnabled {
+		daneCfg := DefaultDANEResolverConfig()
+		if cfg.DANEDNSServer != "" {
+			daneCfg.DNSServer = cfg.DANEDNSServer
+		}
+		e.daneResolver = NewDANEResolver(daneCfg)
+	}
+
+	return e
 }
 
 // Start starts the delivery workers.
@@ -563,6 +591,45 @@ func (e *Engine) deliverToHost(ctx context.Context, addr, hostname string, msg *
 
 // deliverToHostWithTLS delivers to a specific SMTP server with optional TLS.
 func (e *Engine) deliverToHostWithTLS(ctx context.Context, addr, hostname string, msg *queue.Message, data []byte, tryTLS bool) error {
+	// Check MTA-STS policy for target domain
+	var stsPolicy *STSPolicy
+	if e.stsResolver != nil && tryTLS {
+		var err error
+		stsPolicy, err = e.stsResolver.GetPolicy(ctx, msg.Domain)
+		if err != nil {
+			e.logger.WarnContext(ctx, "MTA-STS policy fetch failed",
+				"domain", msg.Domain,
+				"error", err.Error(),
+			)
+			// Continue without MTA-STS - policy fetch failure shouldn't block delivery
+		} else if stsPolicy != nil {
+			e.logger.DebugContext(ctx, "MTA-STS policy found",
+				"domain", msg.Domain,
+				"mode", stsPolicy.Mode,
+			)
+		}
+	}
+
+	// Lookup DANE/TLSA records for this host
+	var tlsaRecords []TLSARecord
+	var tlsaDNSSECValid bool
+	if e.daneResolver != nil && tryTLS {
+		var err error
+		tlsaRecords, tlsaDNSSECValid, err = e.daneResolver.LookupTLSA(ctx, hostname, 25)
+		if err != nil {
+			e.logger.WarnContext(ctx, "DANE TLSA lookup failed",
+				"host", hostname,
+				"error", err.Error(),
+			)
+		} else if len(tlsaRecords) > 0 {
+			e.logger.DebugContext(ctx, "DANE TLSA records found",
+				"host", hostname,
+				"count", len(tlsaRecords),
+				"dnssec_valid", tlsaDNSSECValid,
+			)
+		}
+	}
+
 	// Connect with timeout
 	dialer := &net.Dialer{
 		Timeout: e.config.ConnectTimeout,
@@ -600,18 +667,58 @@ func (e *Engine) deliverToHostWithTLS(ctx context.Context, addr, hostname string
 	if tryTLS {
 		if ok, _ := client.Extension("STARTTLS"); ok {
 			tlsConfig := &tls.Config{
-				ServerName:         hostname,
-				InsecureSkipVerify: !e.config.VerifyTLS,
-				MinVersion:         tls.VersionTLS12,
+				ServerName: hostname,
+				MinVersion: tls.VersionTLS12,
 			}
+
+			// If we have DANE/TLSA records, use custom certificate verification
+			if len(tlsaRecords) > 0 {
+				tlsConfig.InsecureSkipVerify = true // We'll verify manually with DANE
+				tlsConfig.VerifyPeerCertificate = func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
+					if len(rawCerts) == 0 {
+						return fmt.Errorf("no certificates presented")
+					}
+
+					// Parse the certificate chain
+					var chain []*x509.Certificate
+					for _, rawCert := range rawCerts {
+						cert, err := x509.ParseCertificate(rawCert)
+						if err != nil {
+							continue
+						}
+						chain = append(chain, cert)
+					}
+
+					if len(chain) == 0 {
+						return fmt.Errorf("failed to parse any certificates")
+					}
+
+					// Validate with DANE
+					result := ValidateCertificate(chain[0], chain[1:], tlsaRecords)
+					if !result.Valid {
+						return fmt.Errorf("DANE validation failed: %w", result.Error)
+					}
+
+					e.logger.DebugContext(ctx, "DANE validation passed",
+						"host", hostname,
+						"usage", result.UsedRecord.Usage.String(),
+					)
+					return nil
+				}
+			} else {
+				// No DANE, use standard verification
+				tlsConfig.InsecureSkipVerify = !e.config.VerifyTLS
+			}
+
 			if err := client.StartTLS(tlsConfig); err != nil {
+				// Check MTA-STS policy - if enforcing, TLS failure is fatal
+				if stsPolicy != nil && stsPolicy.ShouldEnforceTLS() {
+					return fmt.Errorf("MTA-STS enforced TLS but STARTTLS failed: %w", err)
+				}
 				if e.config.RequireTLS {
 					return fmt.Errorf("STARTTLS required but failed: %w", err)
 				}
 				// SECURITY WARNING: TLS downgrade attack possible here
-				// This allows delivery to servers with invalid/self-signed certificates
-				// but also makes the connection vulnerable to MITM attacks.
-				// Consider setting RequireTLS=true in production for sensitive mail.
 				e.logger.WarnContext(ctx, "SECURITY: STARTTLS failed, falling back to plaintext - potential downgrade attack",
 					"host", hostname,
 					"error", err.Error(),
@@ -623,8 +730,21 @@ func (e *Engine) deliverToHostWithTLS(ctx context.Context, addr, hostname string
 				conn.Close()
 				return e.deliverToHostWithTLS(ctx, addr, hostname, msg, data, false)
 			}
-		} else if e.config.RequireTLS {
-			return fmt.Errorf("STARTTLS required but not supported by server")
+
+			// MTA-STS: Validate that the MX hostname is in the policy's allowed list
+			if stsPolicy != nil && stsPolicy.ShouldEnforceTLS() {
+				if !stsPolicy.ValidateMX(hostname) {
+					return fmt.Errorf("MTA-STS policy violation: MX host %s not in allowed list", hostname)
+				}
+			}
+		} else {
+			// No STARTTLS support
+			if stsPolicy != nil && stsPolicy.ShouldEnforceTLS() {
+				return fmt.Errorf("MTA-STS enforces TLS but server doesn't support STARTTLS")
+			}
+			if e.config.RequireTLS {
+				return fmt.Errorf("STARTTLS required but not supported by server")
+			}
 		}
 	}
 

@@ -45,7 +45,10 @@ func (s *Server) triggerWebhook(ctx context.Context, domainID int64, eventType s
 		}
 
 		// Parse events
-		json.Unmarshal([]byte(eventsJSON), &webhook.Events)
+		if err := json.Unmarshal([]byte(eventsJSON), &webhook.Events); err != nil {
+			s.logger.Warn("Failed to parse webhook events", "webhook_id", webhook.ID, "error", err.Error())
+			continue
+		}
 
 		// Check if this webhook subscribes to this event
 		if !containsEvent(webhook.Events, eventType) {
@@ -54,6 +57,10 @@ func (s *Server) triggerWebhook(ctx context.Context, domainID int64, eventType s
 
 		// Send webhook in goroutine
 		go s.deliverWebhook(ctx, &webhook, event)
+	}
+
+	if err := rows.Err(); err != nil {
+		s.logger.Error("Error iterating webhooks", "error", err.Error())
 	}
 }
 
@@ -124,7 +131,10 @@ func (s *Server) sendWebhookRequest(url string, payload []byte, signature string
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1024))
+	if err != nil {
+		return resp.StatusCode, "", err
+	}
 	return resp.StatusCode, string(body), nil
 }
 
@@ -140,17 +150,21 @@ func (s *Server) recordWebhookSuccess(webhookID int64, eventType string, payload
 	now := time.Now()
 
 	// Update webhook stats
-	_, _ = s.db.Exec(`
+	if _, err := s.db.Exec(`
 		UPDATE webhooks
 		SET last_triggered_at = ?, last_success_at = ?, failure_count = 0
 		WHERE id = ?
-	`, now, now, webhookID)
+	`, now, now, webhookID); err != nil {
+		s.logger.Warn("Failed to update webhook stats", "webhook_id", webhookID, "error", err.Error())
+	}
 
 	// Log delivery
-	_, _ = s.db.Exec(`
+	if _, err := s.db.Exec(`
 		INSERT INTO webhook_deliveries (webhook_id, event_type, payload, response_code, response_body, success, created_at)
 		VALUES (?, ?, ?, ?, ?, TRUE, ?)
-	`, webhookID, eventType, string(payload), responseCode, truncateString(responseBody, 1000), now)
+	`, webhookID, eventType, string(payload), responseCode, truncateString(responseBody, 1000), now); err != nil {
+		s.logger.Warn("Failed to record webhook delivery", "webhook_id", webhookID, "error", err.Error())
+	}
 }
 
 // recordWebhookFailure records a failed webhook delivery
@@ -166,17 +180,21 @@ func (s *Server) recordWebhookFailure(webhookID int64, eventType string, payload
 	}
 
 	// Update webhook stats
-	_, _ = s.db.Exec(`
+	if _, dbErr := s.db.Exec(`
 		UPDATE webhooks
 		SET last_triggered_at = ?, last_failure_at = ?, last_failure_reason = ?, failure_count = failure_count + 1
 		WHERE id = ?
-	`, now, now, truncateString(errMsg, 500), webhookID)
+	`, now, now, truncateString(errMsg, 500), webhookID); dbErr != nil {
+		s.logger.Warn("Failed to update webhook failure stats", "webhook_id", webhookID, "error", dbErr.Error())
+	}
 
 	// Log delivery
-	_, _ = s.db.Exec(`
+	if _, dbErr := s.db.Exec(`
 		INSERT INTO webhook_deliveries (webhook_id, event_type, payload, response_code, response_body, success, attempt_count, created_at)
 		VALUES (?, ?, ?, ?, ?, FALSE, ?, ?)
-	`, webhookID, eventType, string(payload), responseCode, truncateString(responseBody, 1000), maxWebhookRetries, now)
+	`, webhookID, eventType, string(payload), responseCode, truncateString(responseBody, 1000), maxWebhookRetries, now); dbErr != nil {
+		s.logger.Warn("Failed to record webhook failure delivery", "webhook_id", webhookID, "error", dbErr.Error())
+	}
 
 	s.logger.Warn("Webhook delivery failed",
 		"webhook_id", webhookID,
@@ -237,7 +255,10 @@ func (s *Server) listWebhooks(w http.ResponseWriter, r *http.Request, domainID i
 			continue
 		}
 
-		json.Unmarshal([]byte(eventsJSON), &wh.Events)
+		if err := json.Unmarshal([]byte(eventsJSON), &wh.Events); err != nil {
+			s.logger.Warn("Failed to parse webhook events", "webhook_id", wh.ID, "error", err.Error())
+			continue
+		}
 
 		if lastTriggered.Valid {
 			wh.LastTriggeredAt = &lastTriggered.Time
@@ -334,6 +355,9 @@ func (s *Server) createWebhook(w http.ResponseWriter, r *http.Request, domainID 
 // generateWebhookSecret generates a random webhook secret
 func generateWebhookSecret() string {
 	b := make([]byte, 32)
-	rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		// Fallback to timestamp if entropy unavailable
+		return "whsec_" + fmt.Sprintf("%d", time.Now().UnixNano())
+	}
 	return "whsec_" + hex.EncodeToString(b)
 }

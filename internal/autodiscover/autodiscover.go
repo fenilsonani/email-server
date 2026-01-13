@@ -296,7 +296,7 @@ const appleMobileconfigTemplate = `<?xml version="1.0" encoding="UTF-8"?>
             <key>CardDAVPort</key>
             <integer>443</integer>
             <key>CardDAVPrincipalURL</key>
-            <string>https://{{.Hostname}}/carddav/{{.Email}}/</string>
+            <string>https://{{.Hostname}}/principals/{{.Email}}/</string>
             <key>CardDAVUseSSL</key>
             <true/>
             <key>CardDAVUsername</key>
@@ -323,7 +323,7 @@ const appleMobileconfigTemplate = `<?xml version="1.0" encoding="UTF-8"?>
             <key>CalDAVPort</key>
             <integer>443</integer>
             <key>CalDAVPrincipalURL</key>
-            <string>https://{{.Hostname}}/caldav/{{.Email}}/</string>
+            <string>https://{{.Hostname}}/principals/{{.Email}}/</string>
             <key>CalDAVUseSSL</key>
             <true/>
             <key>CalDAVUsername</key>

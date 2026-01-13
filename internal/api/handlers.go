@@ -68,9 +68,17 @@ func (s *Server) handleSendEmail(w http.ResponseWriter, r *http.Request) {
 	// Get domain ID
 	domainID, _ := s.getDomainID(r.Context())
 	apiKey := getAPIKeyFromContext(r.Context())
+	if apiKey == nil {
+		jsonError(w, "Authentication required", "UNAUTHORIZED", http.StatusUnauthorized)
+		return
+	}
 
 	// Store sent email record
-	tagsJSON, _ := json.Marshal(req.Tags)
+	tagsJSON, err := json.Marshal(req.Tags)
+	if err != nil {
+		s.logger.Error("Failed to marshal tags", "error", err.Error())
+		tagsJSON = []byte("[]")
+	}
 	_, err = s.db.ExecContext(r.Context(), `
 		INSERT INTO sent_emails (domain_id, api_key_id, message_id, tracking_id, from_email, to_email, subject, tags, status)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -172,7 +180,16 @@ func (s *Server) handleSendTemplate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	apiKey := getAPIKeyFromContext(r.Context())
-	tagsJSON, _ := json.Marshal(req.Tags)
+	if apiKey == nil {
+		jsonError(w, "Authentication required", "UNAUTHORIZED", http.StatusUnauthorized)
+		return
+	}
+
+	tagsJSON, err := json.Marshal(req.Tags)
+	if err != nil {
+		s.logger.Error("Failed to marshal tags", "error", err.Error())
+		tagsJSON = []byte("[]")
+	}
 
 	// Store record
 	_, err = s.db.ExecContext(r.Context(), `
@@ -244,6 +261,10 @@ func (s *Server) handleSendBatch(w http.ResponseWriter, r *http.Request) {
 
 	domainID, _ := s.getDomainID(r.Context())
 	apiKey := getAPIKeyFromContext(r.Context())
+	if apiKey == nil {
+		jsonError(w, "Authentication required", "UNAUTHORIZED", http.StatusUnauthorized)
+		return
+	}
 
 	// Extract sender domain for Message-ID (multi-domain support)
 	senderDomain := s.config.Server.Hostname // fallback
@@ -263,8 +284,12 @@ func (s *Server) handleSendBatch(w http.ResponseWriter, r *http.Request) {
 		messageID := generateMessageID(senderDomain)
 		trackingID := generateTrackingID()
 
-		tagsJSON, _ := json.Marshal(msg.Tags)
-		_, err := s.db.ExecContext(r.Context(), `
+		tagsJSON, err := json.Marshal(msg.Tags)
+		if err != nil {
+			s.logger.Error("Failed to marshal batch tags", "error", err.Error())
+			tagsJSON = []byte("[]")
+		}
+		_, err = s.db.ExecContext(r.Context(), `
 			INSERT INTO sent_emails (domain_id, api_key_id, message_id, tracking_id, from_email, to_email, subject, tags, status)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`, domainID, apiKey.ID, messageID, trackingID, req.From, msg.To, msg.Subject, string(tagsJSON), StatusQueued)
@@ -340,19 +365,26 @@ func (s *Server) handleListEmails(w http.ResponseWriter, r *http.Request) {
 	domainID, _ := s.getDomainID(r.Context())
 
 	// Parse pagination
-	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
-	if page < 1 {
-		page = 1
+	page := 1
+	if pageStr := r.URL.Query().Get("page"); pageStr != "" {
+		if p, err := strconv.Atoi(pageStr); err == nil && p > 0 {
+			page = p
+		}
 	}
-	perPage, _ := strconv.Atoi(r.URL.Query().Get("per_page"))
-	if perPage < 1 || perPage > 100 {
-		perPage = 20
+	perPage := 20
+	if perPageStr := r.URL.Query().Get("per_page"); perPageStr != "" {
+		if pp, err := strconv.Atoi(perPageStr); err == nil && pp > 0 && pp <= 100 {
+			perPage = pp
+		}
 	}
 	offset := (page - 1) * perPage
 
 	// Count total
 	var total int64
-	s.db.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM sent_emails WHERE domain_id = ?`, domainID).Scan(&total)
+	if err := s.db.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM sent_emails WHERE domain_id = ?`, domainID).Scan(&total); err != nil {
+		s.logger.Error("Failed to count sent emails", "error", err.Error())
+		total = 0
+	}
 
 	// Fetch emails
 	rows, err := s.db.QueryContext(r.Context(), `
@@ -395,6 +427,12 @@ func (s *Server) handleListEmails(w http.ResponseWriter, r *http.Request) {
 		}
 
 		emails = append(emails, e)
+	}
+
+	if err := rows.Err(); err != nil {
+		s.logger.Error("Error iterating sent emails", "error", err.Error())
+		jsonError(w, "Internal server error", "INTERNAL_ERROR", http.StatusInternalServerError)
+		return
 	}
 
 	totalPages := int((total + int64(perPage) - 1) / int64(perPage))
@@ -514,12 +552,24 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	stats.EndDate = endDate
 
 	// Count by status
-	s.db.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM sent_emails WHERE domain_id = ? AND created_at >= ? AND status IN ('queued', 'sent')`, domainID, startDate).Scan(&stats.Sent)
-	s.db.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM sent_emails WHERE domain_id = ? AND created_at >= ? AND status = 'delivered'`, domainID, startDate).Scan(&stats.Delivered)
-	s.db.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM sent_emails WHERE domain_id = ? AND created_at >= ? AND opened_count > 0`, domainID, startDate).Scan(&stats.Opened)
-	s.db.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM sent_emails WHERE domain_id = ? AND created_at >= ? AND clicked_count > 0`, domainID, startDate).Scan(&stats.Clicked)
-	s.db.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM sent_emails WHERE domain_id = ? AND created_at >= ? AND status = 'bounced'`, domainID, startDate).Scan(&stats.Bounced)
-	s.db.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM sent_emails WHERE domain_id = ? AND created_at >= ? AND status = 'failed'`, domainID, startDate).Scan(&stats.Failed)
+	if err := s.db.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM sent_emails WHERE domain_id = ? AND created_at >= ? AND status IN ('queued', 'sent')`, domainID, startDate).Scan(&stats.Sent); err != nil {
+		s.logger.Warn("Failed to count sent emails", "error", err.Error())
+	}
+	if err := s.db.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM sent_emails WHERE domain_id = ? AND created_at >= ? AND status = 'delivered'`, domainID, startDate).Scan(&stats.Delivered); err != nil {
+		s.logger.Warn("Failed to count delivered emails", "error", err.Error())
+	}
+	if err := s.db.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM sent_emails WHERE domain_id = ? AND created_at >= ? AND opened_count > 0`, domainID, startDate).Scan(&stats.Opened); err != nil {
+		s.logger.Warn("Failed to count opened emails", "error", err.Error())
+	}
+	if err := s.db.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM sent_emails WHERE domain_id = ? AND created_at >= ? AND clicked_count > 0`, domainID, startDate).Scan(&stats.Clicked); err != nil {
+		s.logger.Warn("Failed to count clicked emails", "error", err.Error())
+	}
+	if err := s.db.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM sent_emails WHERE domain_id = ? AND created_at >= ? AND status = 'bounced'`, domainID, startDate).Scan(&stats.Bounced); err != nil {
+		s.logger.Warn("Failed to count bounced emails", "error", err.Error())
+	}
+	if err := s.db.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM sent_emails WHERE domain_id = ? AND created_at >= ? AND status = 'failed'`, domainID, startDate).Scan(&stats.Failed); err != nil {
+		s.logger.Warn("Failed to count failed emails", "error", err.Error())
+	}
 
 	jsonResponse(w, stats, http.StatusOK)
 }
@@ -552,13 +602,19 @@ func validateSendRequest(req *SendEmailRequest) error {
 
 func generateMessageID(hostname string) string {
 	b := make([]byte, 16)
-	rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		// Fallback to timestamp if entropy unavailable
+		return fmt.Sprintf("<%d@%s>", time.Now().UnixNano(), hostname)
+	}
 	return fmt.Sprintf("<%s@%s>", hex.EncodeToString(b), hostname)
 }
 
 func generateTrackingID() string {
 	b := make([]byte, 16)
-	rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		// Fallback to timestamp if entropy unavailable
+		return fmt.Sprintf("%d", time.Now().UnixNano())
+	}
 	return hex.EncodeToString(b)
 }
 
@@ -665,6 +721,9 @@ func buildEmailMessage(messageID, from, to, subject, html, text, replyTo string,
 
 func generateBoundary() string {
 	b := make([]byte, 16)
-	rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		// Fallback to timestamp if entropy unavailable
+		return fmt.Sprintf("=_%d", time.Now().UnixNano())
+	}
 	return fmt.Sprintf("=_%s", hex.EncodeToString(b))
 }

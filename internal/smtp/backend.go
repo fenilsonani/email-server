@@ -1051,7 +1051,7 @@ func (s *Session) detectMessageZone(ctx context.Context, userID int64, senderEma
 		return "inbox"
 	}
 	prefs, err := s.backend.featuresStore.GetPreferences(ctx, userID)
-	if err != nil || !prefs.ZonesEnabled {
+	if err != nil || prefs == nil || !prefs.ZonesEnabled {
 		return "inbox"
 	}
 

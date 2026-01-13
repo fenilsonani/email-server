@@ -14,6 +14,7 @@ require (
 	github.com/lib/pq v1.10.9
 	github.com/mattn/go-sqlite3 v1.14.32
 	github.com/microcosm-cc/bluemonday v1.0.27
+	github.com/miekg/dns v1.1.70
 	github.com/pquerna/otp v1.5.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/redis/go-redis/v9 v9.7.0
@@ -44,8 +45,11 @@ require (
 	github.com/spf13/pflag v1.0.9 // indirect
 	go.yaml.in/yaml/v2 v2.4.2 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
-	golang.org/x/net v0.47.0 // indirect
+	golang.org/x/mod v0.31.0 // indirect
+	golang.org/x/net v0.48.0 // indirect
+	golang.org/x/sync v0.19.0 // indirect
 	golang.org/x/sys v0.39.0 // indirect
 	golang.org/x/text v0.32.0 // indirect
+	golang.org/x/tools v0.40.0 // indirect
 	google.golang.org/protobuf v1.36.8 // indirect
 )

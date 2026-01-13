@@ -84,6 +84,11 @@ type SecurityConfig struct {
 	VerifyDMARC    bool `koanf:"verify_dmarc"`     // Verify DMARC on inbound
 	SignOutbound   bool `koanf:"sign_outbound"`    // DKIM sign outbound
 	MaxMessageSize int  `koanf:"max_message_size"` // Max message size in bytes
+
+	// ARC configuration (RFC 8617)
+	ARCEnabled    bool   `koanf:"arc_enabled"`     // Enable ARC signing for forwarded messages
+	ARCSelector   string `koanf:"arc_selector"`    // ARC key selector (default: arc)
+	ARCAuthServID string `koanf:"arc_authserv_id"` // Auth service identifier for A-R headers
 }
 
 // LoggingConfig holds logging configuration
@@ -120,6 +125,16 @@ type DeliveryConfig struct {
 	RequireTLS     bool   `koanf:"require_tls"`     // Require TLS for outbound
 	VerifyTLS      bool   `koanf:"verify_tls"`      // Verify TLS certificates
 	RelayHost      string `koanf:"relay_host"`      // Optional smarthost (host:port)
+
+	// MTA-STS configuration (RFC 8461)
+	MTASTSEnabled   bool   `koanf:"mta_sts_enabled"`    // Enable MTA-STS policy checking
+	MTASTSCacheTime string `koanf:"mta_sts_cache_time"` // Override cache TTL (e.g., "24h")
+
+	// DANE/TLSA configuration (RFC 6698, RFC 7672)
+	DANEEnabled       bool   `koanf:"dane_enabled"`         // Enable DANE/TLSA checking
+	DANERequireDNSSEC bool   `koanf:"dane_require_dnssec"`  // Require DNSSEC validation
+	DANECacheTTL      string `koanf:"dane_cache_ttl"`       // TLSA cache TTL (e.g., "5m")
+	DANEDNSServer     string `koanf:"dane_dns_server"`      // DNS server for TLSA lookups
 }
 
 // AdminConfig holds admin web panel configuration
@@ -193,6 +208,9 @@ func DefaultConfig() *Config {
 			VerifyDMARC:    true,
 			SignOutbound:   true,
 			MaxMessageSize: 26214400, // 25MB
+			ARCEnabled:     false,    // Opt-in for ARC
+			ARCSelector:    "arc",
+			ARCAuthServID:  "",       // Defaults to hostname
 		},
 		Logging: LoggingConfig{
 			Level:  "info",
@@ -212,11 +230,16 @@ func DefaultConfig() *Config {
 			WriteTimeout: "3s",
 		},
 		Delivery: DeliveryConfig{
-			Workers:        4,
-			ConnectTimeout: "30s",
-			CommandTimeout: "5m",
-			RequireTLS:     false,
-			VerifyTLS:      true,
+			Workers:          4,
+			ConnectTimeout:   "30s",
+			CommandTimeout:   "5m",
+			RequireTLS:       false,
+			VerifyTLS:        true,
+			MTASTSEnabled:    true,       // Enable MTA-STS by default
+			MTASTSCacheTime:  "24h",
+			DANEEnabled:      true,       // Enable DANE by default
+			DANERequireDNSSEC: false,     // Don't require DNSSEC (needs special resolver)
+			DANECacheTTL:     "5m",
 		},
 		Admin: AdminConfig{
 			Enabled: true,

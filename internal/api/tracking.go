@@ -48,9 +48,13 @@ func (s *Server) handleTrackOpen(w http.ResponseWriter, r *http.Request) {
 			// Get domain_id for webhook
 			var domainID int64
 			var messageID, recipient string
-			s.db.QueryRowContext(r.Context(), `
+			if err := s.db.QueryRowContext(r.Context(), `
 				SELECT domain_id, message_id, to_email FROM sent_emails WHERE tracking_id = ?
-			`, trackingID).Scan(&domainID, &messageID, &recipient)
+			`, trackingID).Scan(&domainID, &messageID, &recipient); err != nil {
+				s.logger.Error("Failed to fetch email metadata for open tracking", "error", err.Error(), "tracking_id", trackingID)
+				s.serveTrackingPixel(w)
+				return
+			}
 
 			// Trigger webhook
 			go s.triggerWebhook(r.Context(), domainID, EventOpened, &WebhookEvent{
@@ -113,9 +117,13 @@ func (s *Server) handleTrackClick(w http.ResponseWriter, r *http.Request) {
 		if rows > 0 {
 			var domainID int64
 			var messageID, recipient string
-			s.db.QueryRowContext(r.Context(), `
+			if err := s.db.QueryRowContext(r.Context(), `
 				SELECT domain_id, message_id, to_email FROM sent_emails WHERE tracking_id = ?
-			`, trackingID).Scan(&domainID, &messageID, &recipient)
+			`, trackingID).Scan(&domainID, &messageID, &recipient); err != nil {
+				s.logger.Error("Failed to fetch email metadata for click tracking", "error", err.Error(), "tracking_id", trackingID)
+				s.serveTrackingPixel(w)
+				return
+			}
 
 			go s.triggerWebhook(r.Context(), domainID, EventClicked, &WebhookEvent{
 				Event:     EventClicked,
