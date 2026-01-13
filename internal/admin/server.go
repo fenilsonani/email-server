@@ -65,8 +65,9 @@ func NewServer(cfg *config.Config, db *sql.DB, authenticator *auth.Authenticator
 
 	// Create template function map
 	funcMap := template.FuncMap{
-		"sub": func(a, b int) int { return a - b },
-		"add": func(a, b int) int { return a + b },
+		"sub":      func(a, b int) int { return a - b },
+		"subtract": func(a, b int) int { return a - b },
+		"add":      func(a, b int) int { return a + b },
 		"untilStep": func(start, stop, step int) []int {
 			result := []int{}
 			for i := start; i < stop; i += step {
