@@ -35,6 +35,7 @@
 <div class="card">
     <h3>add member</h3>
     <form method="POST" action="/admin/lists/members/add/{{.List.ID}}" class="inline-form">
+        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
         <input type="email" name="email" placeholder="member@example.com" required>
         <input type="text" name="name" placeholder="Name (optional)">
         <select name="role">
@@ -88,6 +89,7 @@
                 <td>
                     <form method="POST" action="/admin/lists/members/remove/{{$.List.ID}}/{{.Email}}" style="display: inline;"
                           onsubmit="return confirm('Remove this member?');">
+                        <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
                         <button type="submit" class="btn btn-sm btn-danger">remove</button>
                     </form>
                 </td>

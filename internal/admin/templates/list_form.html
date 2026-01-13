@@ -12,6 +12,7 @@
 
 <div class="card">
     <form method="POST">
+        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
         {{if .IsNew}}
         <div class="form-group">
             <label for="domain_id">domain</label>

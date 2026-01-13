@@ -59,6 +59,7 @@
                     <a href="/admin/lists/edit/{{.ID}}" class="btn btn-sm">edit</a>
                     <form method="POST" action="/admin/lists/delete/{{.ID}}" style="display: inline;"
                           onsubmit="return confirm('Delete this list and all members?');">
+                        <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
                         <button type="submit" class="btn btn-sm btn-danger">delete</button>
                     </form>
                 </td>

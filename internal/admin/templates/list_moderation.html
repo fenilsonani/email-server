@@ -36,10 +36,12 @@
                 <td>{{.ExpiresAt.Format "2006-01-02"}}</td>
                 <td>
                     <form method="POST" action="/admin/lists/moderation/approve/{{.ID}}" style="display: inline;">
+                        <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
                         <button type="submit" class="btn btn-sm btn-success">approve</button>
                     </form>
                     <form method="POST" action="/admin/lists/moderation/reject/{{.ID}}" style="display: inline;"
                           onsubmit="var reason = prompt('Rejection reason (optional):'); if (reason !== null) { this.querySelector('input[name=reason]').value = reason; return true; } return false;">
+                        <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
                         <input type="hidden" name="reason" value="">
                         <button type="submit" class="btn btn-sm btn-danger">reject</button>
                     </form>
