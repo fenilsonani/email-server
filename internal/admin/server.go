@@ -278,7 +278,11 @@ func (s *Server) Start(listen string) error {
 	// Mailing lists management routes
 	mux.HandleFunc("/admin/lists-test", func(w http.ResponseWriter, r *http.Request) {
 		s.logger.Info("TEST: lists-test route hit", "path", r.URL.Path)
-		w.Write([]byte("Lists test route OK - routing works!"))
+		if s.listsStore == nil {
+			w.Write([]byte("ERROR: listsStore is NIL!"))
+			return
+		}
+		w.Write([]byte("Lists test route OK - listsStore is set!"))
 	})
 	mux.HandleFunc("/admin/lists", s.withAuth(s.handleLists))
 	mux.HandleFunc("/admin/lists/add", s.withAuth(s.handleListAdd))
