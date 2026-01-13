@@ -284,7 +284,10 @@ func (s *Server) Start(listen string) error {
 		}
 		w.Write([]byte("Lists test route OK - listsStore is set!"))
 	})
-	mux.HandleFunc("/admin/lists", s.withAuth(s.handleLists))
+	mux.HandleFunc("/admin/lists", func(w http.ResponseWriter, r *http.Request) {
+		s.logger.Info("ROUTE: /admin/lists matched", "path", r.URL.Path)
+		s.withAuth(s.handleLists)(w, r)
+	})
 	mux.HandleFunc("/admin/lists/add", s.withAuth(s.handleListAdd))
 	mux.HandleFunc("/admin/lists/edit/", s.withAuth(s.handleListEdit))
 	mux.HandleFunc("/admin/lists/delete/", s.withAuth(s.handleListDelete))
