@@ -386,13 +386,16 @@ func (s *Server) Shutdown(ctx context.Context) error {
 
 // Stats holds dashboard statistics
 type Stats struct {
-	TotalUsers     int
-	TotalDomains   int
-	TotalMessages  int
-	QueuePending   int
-	QueueFailed    int
-	ServerUptime   string
-	RecentActivity []ActivityItem
+	TotalUsers        int
+	TotalDomains      int
+	TotalMessages     int
+	QueuePending      int
+	QueueFailed       int
+	TotalLists        int
+	TotalListMembers  int
+	PendingModeration int
+	ServerUptime      string
+	RecentActivity    []ActivityItem
 }
 
 // ActivityItem represents a recent activity entry
@@ -427,6 +430,11 @@ func (s *Server) getStats(ctx context.Context) (*Stats, error) {
 			stats.QueueFailed = int(queueStats.Failed)
 		}
 	}
+
+	// Get mailing list stats
+	_ = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_lists WHERE is_active = 1").Scan(&stats.TotalLists)
+	_ = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM list_members").Scan(&stats.TotalListMembers)
+	_ = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM list_moderation_queue WHERE status = 'pending'").Scan(&stats.PendingModeration)
 
 	// Get recent auth activity
 	rows, err := s.db.QueryContext(ctx, `

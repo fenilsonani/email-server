@@ -31,6 +31,20 @@
         <div class="stat-value" id="stat-uptime" aria-label="Server uptime">calculating...</div>
         <div class="stat-label">uptime</div>
     </div>
+    <div class="card stat-card">
+        <div class="stat-value" id="stat-lists" aria-label="Mailing lists">{{.Stats.TotalLists}}</div>
+        <div class="stat-label">mailing lists</div>
+    </div>
+    <div class="card stat-card">
+        <div class="stat-value" id="stat-list-members" aria-label="List members">{{.Stats.TotalListMembers}}</div>
+        <div class="stat-label">list members</div>
+    </div>
+    {{if gt .Stats.PendingModeration 0}}
+    <div class="card stat-card" style="border-left: 3px solid var(--warning);">
+        <div class="stat-value" id="stat-moderation" aria-label="Pending moderation">{{.Stats.PendingModeration}}</div>
+        <div class="stat-label">pending moderation</div>
+    </div>
+    {{end}}
 </div>
 
 <div class="card">
@@ -74,8 +88,12 @@
     <div style="display: flex; gap: 1rem; flex-wrap: wrap;">
         <a href="/admin/users/add" class="btn btn-primary">Add User</a>
         <a href="/admin/domains/add" class="btn btn-primary">Add Domain</a>
+        <a href="/admin/lists/add" class="btn btn-primary">Create List</a>
         <a href="/admin/logs/auth" class="btn btn-secondary">View Auth Logs</a>
         <a href="/admin/logs/delivery" class="btn btn-secondary">View Delivery Logs</a>
+        {{if gt .Stats.PendingModeration 0}}
+        <a href="/admin/lists/moderation" class="btn btn-warning">Review Moderation ({{.Stats.PendingModeration}})</a>
+        {{end}}
     </div>
 </div>
 

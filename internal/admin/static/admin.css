@@ -170,6 +170,12 @@ tr:hover td {
     border-color: var(--success);
 }
 
+.btn-warning {
+    border-color: var(--warning);
+    background-color: var(--warning);
+    color: var(--card);
+}
+
 .btn-secondary {
     border-color: var(--border);
     color: var(--text-muted);
