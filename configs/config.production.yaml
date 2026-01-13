@@ -1,0 +1,108 @@
+# Production configuration template for the email server
+# Copy this file to /etc/mailserver/config.yaml
+# Replace all PLACEHOLDER values with your actual settings
+
+server:
+  hostname: mail.YOUR_DOMAIN.com      # Your mail server hostname
+  domain: YOUR_DOMAIN.com             # Your primary email domain
+  smtp_port: 25                       # MX receiving
+  submission_port: 587                # Client submission (STARTTLS)
+  smtps_port: 465                     # Client submission (implicit TLS)
+  imap_port: 143                      # IMAP (STARTTLS)
+  imaps_port: 993                     # IMAP (implicit TLS)
+  dav_port: 8443                      # CalDAV/CardDAV (internal, nginx proxies 443)
+
+tls:
+  auto_tls: false                     # Set to true for Let's Encrypt, or use manual certs below
+  # email: admin@YOUR_DOMAIN.com      # Required if auto_tls is true
+  cert_file: /etc/letsencrypt/live/mail.YOUR_DOMAIN.com/fullchain.pem
+  key_file: /etc/letsencrypt/live/mail.YOUR_DOMAIN.com/privkey.pem
+
+storage:
+  data_dir: /var/lib/mailserver
+  database_path: /var/lib/mailserver/mail.db
+  maildir_path: /var/lib/mailserver/maildir
+
+database:
+  driver: sqlite3
+  path: /var/lib/mailserver/mail.db
+  max_open_conns: 25
+  max_idle_conns: 5
+  conn_max_lifetime: "0"
+  conn_max_idle_time: "5m"
+
+domains:
+  - name: YOUR_DOMAIN.com
+    dkim_selector: mail
+    dkim_key_file: /etc/mailserver/dkim/YOUR_DOMAIN.com.key
+
+security:
+  require_tls: true
+  verify_spf: true
+  verify_dkim: true
+  verify_dmarc: true
+  sign_outbound: true
+  max_message_size: 26214400          # 25MB
+
+  # ARC configuration (for forwarding)
+  arc_enabled: false
+  arc_selector: arc
+  arc_authserv_id: ""                 # Defaults to hostname
+
+logging:
+  level: info                         # debug, info, warn, error
+  format: json                        # json or text
+  output: stdout
+
+queue:
+  redis_url: redis://localhost:6379/0
+  prefix: mail
+  max_retries: 15
+  retry_max_age: 168h                 # 7 days
+  pool_size: 10
+  min_idle_conns: 5
+  dial_timeout: "5s"
+  read_timeout: "3s"
+  write_timeout: "3s"
+
+delivery:
+  workers: 4
+  connect_timeout: 30s
+  command_timeout: 5m
+  require_tls: false
+  verify_tls: true
+
+  # MTA-STS (enforce TLS for domains that require it)
+  mta_sts_enabled: true
+  mta_sts_cache_time: "24h"
+
+  # DANE/TLSA (DNS-based certificate authentication)
+  dane_enabled: true
+  dane_require_dnssec: false
+  dane_cache_ttl: "5m"
+
+autodiscover:
+  enabled: true
+  port: 8081
+  listen: "0.0.0.0"
+  display_name: ""                    # Defaults to "DOMAIN Mail"
+
+admin:
+  enabled: true
+  port: 8080
+  listen: "0.0.0.0"                   # Use 127.0.0.1 if behind nginx
+  # session_secret: ""                # Generate with: openssl rand -base64 32
+  # log_retention_days: 90
+
+api:
+  enabled: true
+  port: 8082
+  listen: "0.0.0.0"
+  tracking_domain: "mail.YOUR_DOMAIN.com"
+  rate_limit_default: 1000
+  enable_tracking: true
+
+sieve:
+  enabled: true
+  max_script_size: 32768              # 32KB
+  max_scripts_per_user: 5
