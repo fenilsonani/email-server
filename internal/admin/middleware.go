@@ -157,18 +157,14 @@ func (s *Server) deleteSession(token string) {
 // withAuth wraps a handler with authentication check
 func (s *Server) withAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		s.logger.Info("withAuth: checking", "path", r.URL.Path)
-
 		cookie, err := r.Cookie("admin_session")
 		if err != nil {
-			s.logger.Info("withAuth: no session cookie", "path", r.URL.Path)
 			http.Redirect(w, r, "/admin/login", http.StatusSeeOther)
 			return
 		}
 
 		userID, valid := s.validateSession(cookie.Value)
 		if !valid {
-			s.logger.Info("withAuth: invalid session", "path", r.URL.Path)
 			http.Redirect(w, r, "/admin/login", http.StatusSeeOther)
 			return
 		}
@@ -177,12 +173,10 @@ func (s *Server) withAuth(next http.HandlerFunc) http.HandlerFunc {
 		var isAdmin bool
 		err = s.db.QueryRowContext(r.Context(), "SELECT is_admin FROM users WHERE id = ?", userID).Scan(&isAdmin)
 		if err != nil || !isAdmin {
-			s.logger.Info("withAuth: not admin", "path", r.URL.Path, "userID", userID)
 			http.Redirect(w, r, "/admin/login", http.StatusSeeOther)
 			return
 		}
 
-		s.logger.Info("withAuth: authenticated, calling next", "path", r.URL.Path, "userID", userID)
 		next(w, r)
 	}
 }
