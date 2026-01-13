@@ -229,14 +229,14 @@ func (s *Server) handleMicrosoftAutodiscover(w http.ResponseWriter, r *http.Requ
 		slog.String("remote_addr", r.RemoteAddr))
 }
 
-// Apple mobileconfig template - Email only (CardDAV/CalDAV added manually to avoid validation issues)
+// Apple mobileconfig template - Mail, Contacts (CardDAV), Calendar (CalDAV)
 const appleMobileconfigTemplate = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>PayloadContent</key>
     <array>
-        <!-- Email (IMAP/SMTP) Configuration -->
+        <!-- Email (IMAP/SMTP) -->
         <dict>
             <key>EmailAccountDescription</key>
             <string>{{.DisplayName}}</string>
@@ -269,7 +269,7 @@ const appleMobileconfigTemplate = `<?xml version="1.0" encoding="UTF-8"?>
             <key>OutgoingPasswordSameAsIncomingPassword</key>
             <true/>
             <key>PayloadDescription</key>
-            <string>Email account for {{.Domain}}</string>
+            <string>Email account</string>
             <key>PayloadDisplayName</key>
             <string>{{.DisplayName}}</string>
             <key>PayloadIdentifier</key>
@@ -287,9 +287,59 @@ const appleMobileconfigTemplate = `<?xml version="1.0" encoding="UTF-8"?>
             <key>SMIMEEnabled</key>
             <false/>
         </dict>
+        <!-- CardDAV (Contacts) -->
+        <dict>
+            <key>CardDAVAccountDescription</key>
+            <string>{{.DisplayName}} Contacts</string>
+            <key>CardDAVHostName</key>
+            <string>{{.Hostname}}</string>
+            <key>CardDAVPort</key>
+            <integer>443</integer>
+            <key>CardDAVUseSSL</key>
+            <true/>
+            <key>CardDAVUsername</key>
+            <string>{{.Email}}</string>
+            <key>PayloadDescription</key>
+            <string>Contacts</string>
+            <key>PayloadDisplayName</key>
+            <string>{{.DisplayName}} Contacts</string>
+            <key>PayloadIdentifier</key>
+            <string>com.{{.Domain}}.carddav</string>
+            <key>PayloadType</key>
+            <string>com.apple.carddav.account</string>
+            <key>PayloadUUID</key>
+            <string>{{.CardDAVUUID}}</string>
+            <key>PayloadVersion</key>
+            <integer>1</integer>
+        </dict>
+        <!-- CalDAV (Calendar) -->
+        <dict>
+            <key>CalDAVAccountDescription</key>
+            <string>{{.DisplayName}} Calendar</string>
+            <key>CalDAVHostName</key>
+            <string>{{.Hostname}}</string>
+            <key>CalDAVPort</key>
+            <integer>443</integer>
+            <key>CalDAVUseSSL</key>
+            <true/>
+            <key>CalDAVUsername</key>
+            <string>{{.Email}}</string>
+            <key>PayloadDescription</key>
+            <string>Calendar</string>
+            <key>PayloadDisplayName</key>
+            <string>{{.DisplayName}} Calendar</string>
+            <key>PayloadIdentifier</key>
+            <string>com.{{.Domain}}.caldav</string>
+            <key>PayloadType</key>
+            <string>com.apple.caldav.account</string>
+            <key>PayloadUUID</key>
+            <string>{{.CalDAVUUID}}</string>
+            <key>PayloadVersion</key>
+            <integer>1</integer>
+        </dict>
     </array>
     <key>PayloadDescription</key>
-    <string>Email configuration for {{.Domain}}</string>
+    <string>Mail, Contacts, and Calendar for {{.Domain}}</string>
     <key>PayloadDisplayName</key>
     <string>{{.DisplayName}}</string>
     <key>PayloadIdentifier</key>
@@ -333,8 +383,7 @@ func (s *Server) handleAppleMobileconfig(w http.ResponseWriter, r *http.Request)
         <input type="email" name="email" placeholder="your.email@%s" required>
         <button type="submit">Download Profile</button>
     </form>
-    <p>This profile configures <strong>Mail</strong> on your iPhone, iPad, or Mac.</p>
-    <p style="margin-top:15px;font-size:12px;color:#888;">For Contacts and Calendar, add them manually in System Settings → Internet Accounts → Add Other Account.</p>
+    <p>This profile configures <strong>Mail</strong>, <strong>Contacts</strong>, and <strong>Calendar</strong> on your iPhone, iPad, or Mac.</p>
 </body>
 </html>`, s.config.DisplayName, s.config.DisplayName, s.config.Domain)
 		return
@@ -353,6 +402,8 @@ func (s *Server) handleAppleMobileconfig(w http.ResponseWriter, r *http.Request)
 
 	// Generate deterministic UUIDs based on email
 	emailUUID := generateUUID(email + "-email")
+	cardDAVUUID := generateUUID(email + "-carddav")
+	calDAVUUID := generateUUID(email + "-caldav")
 	profileUUID := generateUUID(email + "-profile")
 
 	data := struct {
@@ -363,6 +414,8 @@ func (s *Server) handleAppleMobileconfig(w http.ResponseWriter, r *http.Request)
 		IMAPPort    int
 		SMTPPort    int
 		EmailUUID   string
+		CardDAVUUID string
+		CalDAVUUID  string
 		ProfileUUID string
 	}{
 		DisplayName: displayName,
@@ -372,6 +425,8 @@ func (s *Server) handleAppleMobileconfig(w http.ResponseWriter, r *http.Request)
 		IMAPPort:    s.config.IMAPPort,
 		SMTPPort:    s.config.SMTPPort,
 		EmailUUID:   emailUUID,
+		CardDAVUUID: cardDAVUUID,
+		CalDAVUUID:  calDAVUUID,
 		ProfileUUID: profileUUID,
 	}
 
