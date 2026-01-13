@@ -1,0 +1,125 @@
+<div class="breadcrumbs">
+    <a href="/admin/">home</a>
+    <span>&gt;</span>
+    <a href="/admin/lists">mailing lists</a>
+    <span>&gt;</span>
+    <span>{{if .IsNew}}create{{else}}edit{{end}}</span>
+</div>
+
+<div class="page-header">
+    <h1>{{if .IsNew}}create mailing list{{else}}edit mailing list{{end}}</h1>
+</div>
+
+<div class="card">
+    <form method="POST">
+        {{if .IsNew}}
+        <div class="form-group">
+            <label for="domain_id">domain</label>
+            <select id="domain_id" name="domain_id" required>
+                {{range .Domains}}
+                <option value="{{.ID}}">{{.Name}}</option>
+                {{end}}
+            </select>
+        </div>
+
+        <div class="form-group">
+            <label for="local_part">list address (local part)</label>
+            <input type="text" id="local_part" name="local_part" placeholder="developers" required
+                   pattern="[a-zA-Z0-9._-]+" title="Letters, numbers, dots, underscores, and hyphens only">
+            <small>The part before @ - e.g., "developers" for developers@domain.com</small>
+        </div>
+        {{else}}
+        <div class="form-group">
+            <label>list address</label>
+            <input type="text" value="{{.List.ListAddress}}" disabled>
+        </div>
+        {{end}}
+
+        <div class="form-group">
+            <label for="name">display name</label>
+            <input type="text" id="name" name="name" value="{{if .List}}{{.List.Name}}{{end}}" required
+                   placeholder="Developer Discussion List">
+        </div>
+
+        <div class="form-group">
+            <label for="description">description</label>
+            <textarea id="description" name="description" rows="3"
+                      placeholder="A list for developers to discuss technical topics">{{if .List}}{{.List.Description}}{{end}}</textarea>
+        </div>
+
+        <div class="form-group">
+            <label for="list_type">list type</label>
+            <select id="list_type" name="list_type">
+                <option value="discussion" {{if and .List (eq .List.ListType "discussion")}}selected{{end}}>Discussion (members can reply)</option>
+                <option value="announcement" {{if and .List (eq .List.ListType "announcement")}}selected{{end}}>Announcement (one-way)</option>
+            </select>
+        </div>
+
+        <div class="form-group">
+            <label for="posting_policy">posting policy</label>
+            <select id="posting_policy" name="posting_policy">
+                <option value="members_only" {{if and .List (eq .List.PostingPolicy "members_only")}}selected{{end}}>Members only</option>
+                <option value="owners_only" {{if and .List (eq .List.PostingPolicy "owners_only")}}selected{{end}}>Owners only</option>
+                <option value="anyone" {{if and .List (eq .List.PostingPolicy "anyone")}}selected{{end}}>Anyone can post</option>
+            </select>
+        </div>
+
+        <div class="form-group">
+            <label for="subject_prefix">subject prefix (optional)</label>
+            <input type="text" id="subject_prefix" name="subject_prefix"
+                   value="{{if .List}}{{.List.SubjectPrefix}}{{end}}" placeholder="[dev-list]">
+            <small>Added to subject lines, e.g., [dev-list] Your subject</small>
+        </div>
+
+        <h3>settings</h3>
+
+        <div class="form-group">
+            <label class="checkbox">
+                <input type="checkbox" name="moderation_enabled" {{if and .List .List.ModerationEnabled}}checked{{end}}>
+                enable moderation (messages require approval)
+            </label>
+        </div>
+
+        <div class="form-group">
+            <label class="checkbox">
+                <input type="checkbox" name="reply_to_list" {{if or .IsNew (and .List .List.ReplyToList)}}checked{{end}}>
+                set Reply-To to list address
+            </label>
+        </div>
+
+        <div class="form-group">
+            <label class="checkbox">
+                <input type="checkbox" name="archive_enabled" {{if or .IsNew (and .List .List.ArchiveEnabled)}}checked{{end}}>
+                archive messages
+            </label>
+        </div>
+
+        <div class="form-group">
+            <label class="checkbox">
+                <input type="checkbox" name="allow_subscribe" {{if or .IsNew (and .List .List.AllowSubscribe)}}checked{{end}}>
+                allow email subscriptions (list-subscribe@domain.com)
+            </label>
+        </div>
+
+        <div class="form-group">
+            <label class="checkbox">
+                <input type="checkbox" name="require_confirm" {{if or .IsNew (and .List .List.RequireConfirm)}}checked{{end}}>
+                require double opt-in confirmation
+            </label>
+        </div>
+
+        {{if not .IsNew}}
+        <div class="form-group">
+            <label class="checkbox">
+                <input type="checkbox" name="is_active" {{if .List.IsActive}}checked{{end}}>
+                list is active
+            </label>
+        </div>
+        {{end}}
+
+        <div class="form-actions">
+            <button type="submit" class="btn btn-primary">{{if .IsNew}}create list{{else}}save changes{{end}}</button>
+            <a href="/admin/lists" class="btn">cancel</a>
+        </div>
+    </form>
+</div>

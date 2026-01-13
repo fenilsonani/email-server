@@ -339,10 +339,50 @@ func (a *Authenticator) ValidateAddress(ctx context.Context, email string) (bool
 	if err == nil {
 		return true, nil
 	}
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
+	if !errors.Is(err, sql.ErrNoRows) {
+		return false, fmt.Errorf("failed to query alias %s@%s: %w", username, domain, err)
 	}
-	return false, fmt.Errorf("failed to query alias %s@%s: %w", username, domain, err)
+
+	// Check if it's a mailing list address
+	var listExists int
+	err = a.db.QueryRowContext(ctx,
+		"SELECT 1 FROM mailing_lists WHERE domain_id = ? AND local_part = ? AND is_active = TRUE",
+		domainID, username,
+	).Scan(&listExists)
+	if err == nil {
+		return true, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return false, fmt.Errorf("failed to query mailing list %s@%s: %w", username, domain, err)
+	}
+
+	// Check for mailing list command addresses (list-subscribe, list-unsubscribe, etc.)
+	if strings.Contains(username, "-subscribe") ||
+		strings.Contains(username, "-unsubscribe") ||
+		strings.Contains(username, "-help") ||
+		strings.Contains(username, "-owner") ||
+		strings.Contains(username, "-confirm-") {
+		// Extract base list name
+		baseLocalPart := username
+		baseLocalPart = strings.TrimSuffix(baseLocalPart, "-subscribe")
+		baseLocalPart = strings.TrimSuffix(baseLocalPart, "-unsubscribe")
+		baseLocalPart = strings.TrimSuffix(baseLocalPart, "-help")
+		baseLocalPart = strings.TrimSuffix(baseLocalPart, "-owner")
+		// Handle confirm tokens
+		if idx := strings.Index(baseLocalPart, "-confirm-"); idx >= 0 {
+			baseLocalPart = baseLocalPart[:idx]
+		}
+
+		err = a.db.QueryRowContext(ctx,
+			"SELECT 1 FROM mailing_lists WHERE domain_id = ? AND local_part = ? AND is_active = TRUE",
+			domainID, baseLocalPart,
+		).Scan(&listExists)
+		if err == nil {
+			return true, nil
+		}
+	}
+
+	return false, nil
 }
 
 // ResolveAlias resolves an alias to its destination(s)

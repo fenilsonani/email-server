@@ -21,6 +21,7 @@ import (
 	"github.com/fenilsonani/email-server/internal/config"
 	"github.com/fenilsonani/email-server/internal/features"
 	"github.com/fenilsonani/email-server/internal/greylist"
+	"github.com/fenilsonani/email-server/internal/lists"
 	"github.com/fenilsonani/email-server/internal/logging"
 	"github.com/fenilsonani/email-server/internal/metrics"
 	"github.com/fenilsonani/email-server/internal/sieve"
@@ -178,9 +179,11 @@ type Backend struct {
 	onLocalDelivery LocalDeliveryNotifier
 	sieveExecutor   *sieve.Executor
 	greylister      *greylist.Greylister
-	userRateLimiter *UserRateLimiter // Per-user sending rate limiter
-	vacationSem     chan struct{}    // Semaphore to limit concurrent vacation responses
-	featuresStore   *features.Store  // Store for unique features (Screener, Aliases, etc.)
+	userRateLimiter     *UserRateLimiter        // Per-user sending rate limiter
+	vacationSem         chan struct{}           // Semaphore to limit concurrent vacation responses
+	featuresStore       *features.Store         // Store for unique features (Screener, Aliases, etc.)
+	listsManager        *lists.Manager          // Mailing list manager
+	listsCommandHandler *lists.CommandHandler   // Mailing list command handler
 }
 
 // NewBackend creates a new SMTP backend
@@ -233,6 +236,12 @@ func (b *Backend) SetSieveExecutor(executor *sieve.Executor) {
 // SetFeaturesStore sets the features store for Screener, Aliases, etc.
 func (b *Backend) SetFeaturesStore(store *features.Store) {
 	b.featuresStore = store
+}
+
+// SetListsManager sets the mailing list manager and command handler
+func (b *Backend) SetListsManager(manager *lists.Manager, cmdHandler *lists.CommandHandler) {
+	b.listsManager = manager
+	b.listsCommandHandler = cmdHandler
 }
 
 // NewSession is called when a new SMTP connection is established
@@ -494,6 +503,24 @@ func (s *Session) deliverToLocalRecipient(rcpt string, data []byte) error {
 	// Check for context cancellation
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("operation cancelled: %w", err)
+	}
+
+	// Check for mailing list command address (e.g., list-subscribe@domain.com)
+	if s.backend.listsCommandHandler != nil && s.backend.listsCommandHandler.IsCommandAddress(rcpt) {
+		return s.handleListCommand(rcpt, data)
+	}
+
+	// Check if recipient is a mailing list
+	if s.backend.listsManager != nil {
+		isList, err := s.backend.listsManager.IsListAddress(ctx, rcpt)
+		if err != nil {
+			s.backend.logger.WarnContext(ctx, "Error checking list address",
+				"recipient", rcpt,
+				"error", err.Error(),
+			)
+		} else if isList {
+			return s.deliverToList(rcpt, data)
+		}
 	}
 
 	// Check for alias
@@ -1215,4 +1242,310 @@ func (s *Session) sendVacationResponse(ctx context.Context, result *sieve.Result
 	s.backend.logger.InfoContext(ctx, "Vacation response queued",
 		"to", result.VacationTo,
 	)
+}
+
+// handleListCommand processes a mailing list command (subscribe, unsubscribe, etc.)
+func (s *Session) handleListCommand(rcpt string, data []byte) error {
+	ctx := s.ctx
+
+	result, err := s.backend.listsCommandHandler.HandleCommand(ctx, rcpt, s.from)
+	if err != nil {
+		s.backend.logger.WarnContext(ctx, "List command failed",
+			"recipient", rcpt,
+			"sender", s.from,
+			"error", err.Error(),
+		)
+		return &smtp.SMTPError{
+			Code:         550,
+			EnhancedCode: smtp.EnhancedCode{5, 1, 1},
+			Message:      "List command failed",
+		}
+	}
+
+	// If there's a response email to send, queue it
+	if result.ResponseData != nil && len(result.ResponseData) > 0 && s.backend.deliveryEngine != nil {
+		messagePath, err := s.saveMessageToQueue(result.ResponseData)
+		if err != nil {
+			s.backend.logger.WarnContext(ctx, "Failed to save list command response",
+				"error", err.Error(),
+			)
+		} else {
+			// Send response from the list address
+			parts := strings.SplitN(rcpt, "@", 2)
+			var listAddr string
+			if len(parts) == 2 {
+				// Extract the base list address from command address
+				localPart := parts[0]
+				domain := parts[1]
+				localPart = strings.TrimSuffix(localPart, "-subscribe")
+				localPart = strings.TrimSuffix(localPart, "-unsubscribe")
+				localPart = strings.TrimSuffix(localPart, "-help")
+				// Handle confirm tokens
+				if idx := strings.Index(localPart, "-confirm-"); idx >= 0 {
+					localPart = localPart[:idx]
+				}
+				listAddr = localPart + "@" + domain
+			} else {
+				listAddr = rcpt
+			}
+
+			if err := s.backend.deliveryEngine.Enqueue(ctx, listAddr, []string{s.from}, messagePath); err != nil {
+				s.backend.logger.WarnContext(ctx, "Failed to enqueue list command response",
+					"error", err.Error(),
+				)
+				os.Remove(messagePath)
+			}
+		}
+	}
+
+	s.backend.logger.InfoContext(ctx, "List command processed",
+		"recipient", rcpt,
+		"sender", s.from,
+		"success", result.Success,
+		"message", result.Message,
+	)
+
+	return nil
+}
+
+// deliverToList delivers a message to a mailing list
+func (s *Session) deliverToList(rcpt string, data []byte) error {
+	ctx := s.ctx
+
+	// Get the list
+	list, err := s.backend.listsManager.GetListByAddress(ctx, rcpt)
+	if err != nil {
+		s.backend.logger.WarnContext(ctx, "List not found",
+			"recipient", rcpt,
+			"error", err.Error(),
+		)
+		return &smtp.SMTPError{
+			Code:         550,
+			EnhancedCode: smtp.EnhancedCode{5, 1, 1},
+			Message:      "Mailing list not found",
+		}
+	}
+
+	// Check if list is active
+	if !list.IsActive {
+		return &smtp.SMTPError{
+			Code:         550,
+			EnhancedCode: smtp.EnhancedCode{5, 1, 1},
+			Message:      "Mailing list is not active",
+		}
+	}
+
+	// Check posting permissions
+	canPost, err := s.backend.listsManager.CanPost(ctx, list, s.from)
+	if err != nil {
+		s.backend.logger.WarnContext(ctx, "Error checking posting permissions",
+			"list", rcpt,
+			"sender", s.from,
+			"error", err.Error(),
+		)
+		return &smtp.SMTPError{
+			Code:         451,
+			EnhancedCode: smtp.EnhancedCode{4, 0, 0},
+			Message:      "Temporary error checking permissions",
+		}
+	}
+	if !canPost {
+		s.backend.logger.InfoContext(ctx, "Posting to list rejected",
+			"list", rcpt,
+			"sender", s.from,
+		)
+		return &smtp.SMTPError{
+			Code:         550,
+			EnhancedCode: smtp.EnhancedCode{5, 7, 1},
+			Message:      "You are not authorized to post to this mailing list",
+		}
+	}
+
+	// Check message size
+	if int64(len(data)) > list.MaxMessageSize {
+		return &smtp.SMTPError{
+			Code:         552,
+			EnhancedCode: smtp.EnhancedCode{5, 3, 4},
+			Message:      "Message too large for this mailing list",
+		}
+	}
+
+	// Process through manager (handles moderation check)
+	shouldDeliver, needsModeration, err := s.backend.listsManager.ProcessMessage(ctx, list, s.from, data)
+	if err != nil {
+		s.backend.logger.ErrorContext(ctx, "Error processing list message", err,
+			"list", rcpt,
+			"sender", s.from,
+		)
+		return &smtp.SMTPError{
+			Code:         451,
+			EnhancedCode: smtp.EnhancedCode{4, 0, 0},
+			Message:      "Error processing message",
+		}
+	}
+
+	if needsModeration {
+		s.backend.logger.InfoContext(ctx, "Message held for moderation",
+			"list", rcpt,
+			"sender", s.from,
+		)
+		// Message saved to moderation queue by ProcessMessage
+		return nil
+	}
+
+	if !shouldDeliver {
+		return nil
+	}
+
+	// Prepare message with list headers
+	listData, err := s.backend.listsManager.PrepareListMessage(ctx, list, data)
+	if err != nil {
+		s.backend.logger.ErrorContext(ctx, "Error preparing list message", err,
+			"list", rcpt,
+		)
+		return &smtp.SMTPError{
+			Code:         451,
+			EnhancedCode: smtp.EnhancedCode{4, 0, 0},
+			Message:      "Error preparing message for distribution",
+		}
+	}
+
+	// Get recipients
+	recipients, err := s.backend.listsManager.ExpandRecipients(ctx, list.ID)
+	if err != nil {
+		s.backend.logger.ErrorContext(ctx, "Error expanding recipients", err,
+			"list", rcpt,
+		)
+		return &smtp.SMTPError{
+			Code:         451,
+			EnhancedCode: smtp.EnhancedCode{4, 0, 0},
+			Message:      "Error getting recipient list",
+		}
+	}
+
+	if len(recipients) == 0 {
+		s.backend.logger.InfoContext(ctx, "List has no recipients",
+			"list", rcpt,
+		)
+		return nil
+	}
+
+	// Save to archive if enabled
+	if list.ArchiveEnabled {
+		if err := s.backend.listsManager.SaveToArchive(ctx, list, listData, s.from); err != nil {
+			s.backend.logger.WarnContext(ctx, "Failed to archive list message",
+				"list", rcpt,
+				"error", err.Error(),
+			)
+		}
+	}
+
+	// Separate local and external recipients
+	var localRcpts, externalRcpts []string
+	for _, r := range recipients {
+		parts := strings.SplitN(r, "@", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		domain := parts[1]
+		_, err := s.backend.authenticator.GetDomainID(ctx, domain)
+		if err == nil {
+			localRcpts = append(localRcpts, r)
+		} else {
+			externalRcpts = append(externalRcpts, r)
+		}
+	}
+
+	// Deliver to local recipients directly
+	var localErrors int
+	for _, r := range localRcpts {
+		if err := s.deliverToLocalRecipientDirect(r, listData); err != nil {
+			s.backend.logger.WarnContext(ctx, "List delivery failed to local recipient",
+				"recipient", r,
+				"error", err.Error(),
+			)
+			localErrors++
+		}
+	}
+
+	// Queue external recipients for outbound delivery
+	if len(externalRcpts) > 0 && s.backend.deliveryEngine != nil {
+		messagePath, err := s.saveMessageToQueue(listData)
+		if err != nil {
+			s.backend.logger.ErrorContext(ctx, "Failed to save list message to queue", err)
+		} else {
+			if err := s.backend.deliveryEngine.Enqueue(ctx, list.ListAddress, externalRcpts, messagePath); err != nil {
+				s.backend.logger.ErrorContext(ctx, "Failed to enqueue list message", err)
+				os.Remove(messagePath)
+			}
+		}
+	}
+
+	s.backend.logger.InfoContext(ctx, "List message delivered",
+		"list", rcpt,
+		"sender", s.from,
+		"local_recipients", len(localRcpts),
+		"external_recipients", len(externalRcpts),
+		"local_errors", localErrors,
+	)
+
+	return nil
+}
+
+// deliverToLocalRecipientDirect delivers to a local user without re-checking lists
+func (s *Session) deliverToLocalRecipientDirect(rcpt string, data []byte) error {
+	ctx := s.ctx
+
+	// Check for alias
+	userID, external, err := s.backend.authenticator.ResolveAlias(ctx, rcpt)
+	if err != nil {
+		return fmt.Errorf("failed to resolve alias: %w", err)
+	}
+
+	// Handle external forwarding
+	if external != nil {
+		if s.backend.deliveryEngine != nil {
+			messagePath, err := s.saveMessageToQueue(data)
+			if err != nil {
+				return fmt.Errorf("failed to save message for forwarding: %w", err)
+			}
+			if err := s.backend.deliveryEngine.Enqueue(ctx, s.from, []string{*external}, messagePath); err != nil {
+				os.Remove(messagePath)
+				return err
+			}
+			return nil
+		}
+		return nil
+	}
+
+	// Get user for direct delivery
+	var user *auth.User
+	if userID != nil {
+		user, err = s.backend.authenticator.LookupUserByID(ctx, *userID)
+	} else {
+		user, err = s.backend.authenticator.LookupUser(ctx, rcpt)
+	}
+
+	if err != nil {
+		return fmt.Errorf("user not found: %w", err)
+	}
+
+	// Get INBOX mailbox
+	mailbox, err := s.backend.store.GetMailbox(ctx, user.ID, "INBOX")
+	if err != nil {
+		return fmt.Errorf("INBOX not found: %w", err)
+	}
+
+	// Deliver message
+	_, err = s.backend.store.AppendMessage(ctx, mailbox.ID, nil, time.Now(), bytes.NewReader(data))
+	if err != nil {
+		return fmt.Errorf("failed to deliver message: %w", err)
+	}
+
+	// Notify of local delivery
+	if s.backend.onLocalDelivery != nil {
+		s.backend.onLocalDelivery(user.Username, "INBOX")
+	}
+
+	return nil
 }

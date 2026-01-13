@@ -1,0 +1,60 @@
+<div class="breadcrumbs">
+    <a href="/admin/">home</a>
+    <span>&gt;</span>
+    <a href="/admin/lists">mailing lists</a>
+    <span>&gt;</span>
+    <span>moderation queue</span>
+</div>
+
+<div class="page-header">
+    <h1>moderation queue{{if .List}} - {{.List.Name}}{{end}}</h1>
+</div>
+
+<div class="card">
+    {{if .Messages}}
+    <table>
+        <thead>
+            <tr>
+                <th>list</th>
+                <th>from</th>
+                <th>subject</th>
+                <th>received</th>
+                <th>expires</th>
+                <th>actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {{range .Messages}}
+            <tr>
+                <td>
+                    <code>{{.ListAddress}}</code>
+                    <br><small>{{.ListName}}</small>
+                </td>
+                <td>{{.SenderEmail}}</td>
+                <td>{{if .Subject}}{{.Subject}}{{else}}(no subject){{end}}</td>
+                <td>{{.CreatedAt.Format "2006-01-02 15:04"}}</td>
+                <td>{{.ExpiresAt.Format "2006-01-02"}}</td>
+                <td>
+                    <form method="POST" action="/admin/lists/moderation/approve/{{.ID}}" style="display: inline;">
+                        <button type="submit" class="btn btn-sm btn-success">approve</button>
+                    </form>
+                    <form method="POST" action="/admin/lists/moderation/reject/{{.ID}}" style="display: inline;"
+                          onsubmit="var reason = prompt('Rejection reason (optional):'); if (reason !== null) { this.querySelector('input[name=reason]').value = reason; return true; } return false;">
+                        <input type="hidden" name="reason" value="">
+                        <button type="submit" class="btn btn-sm btn-danger">reject</button>
+                    </form>
+                </td>
+            </tr>
+            {{end}}
+        </tbody>
+    </table>
+    {{else}}
+    <div class="empty-state">
+        <p>no messages pending moderation</p>
+    </div>
+    {{end}}
+</div>
+
+<div class="form-actions">
+    <a href="/admin/lists" class="btn">back to lists</a>
+</div>

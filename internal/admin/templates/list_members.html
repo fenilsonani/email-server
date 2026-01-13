@@ -1,0 +1,109 @@
+<div class="breadcrumbs">
+    <a href="/admin/">home</a>
+    <span>&gt;</span>
+    <a href="/admin/lists">mailing lists</a>
+    <span>&gt;</span>
+    <span>{{.List.Name}} members</span>
+</div>
+
+<div class="page-header">
+    <h1>{{.List.Name}} - members</h1>
+    <code>{{.List.ListAddress}}</code>
+</div>
+
+{{if .Stats}}
+<div class="stats-grid">
+    <div class="card stat-card">
+        <div class="stat-value">{{.Stats.TotalMembers}}</div>
+        <div class="stat-label">total</div>
+    </div>
+    <div class="card stat-card">
+        <div class="stat-value">{{.Stats.ConfirmedMembers}}</div>
+        <div class="stat-label">confirmed</div>
+    </div>
+    <div class="card stat-card">
+        <div class="stat-value">{{.Stats.Owners}}</div>
+        <div class="stat-label">owners</div>
+    </div>
+    <div class="card stat-card">
+        <div class="stat-value">{{.Stats.Moderators}}</div>
+        <div class="stat-label">moderators</div>
+    </div>
+</div>
+{{end}}
+
+<div class="card">
+    <h3>add member</h3>
+    <form method="POST" action="/admin/lists/members/add/{{.List.ID}}" class="inline-form">
+        <input type="email" name="email" placeholder="member@example.com" required>
+        <input type="text" name="name" placeholder="Name (optional)">
+        <select name="role">
+            <option value="member">Member</option>
+            <option value="moderator">Moderator</option>
+            <option value="owner">Owner</option>
+        </select>
+        <button type="submit" class="btn btn-primary">add</button>
+    </form>
+</div>
+
+<div class="card">
+    <h3>members</h3>
+    {{if .Members}}
+    <table>
+        <thead>
+            <tr>
+                <th>email</th>
+                <th>name</th>
+                <th>role</th>
+                <th>status</th>
+                <th>subscribed</th>
+                <th>actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {{range .Members}}
+            <tr>
+                <td>{{.Email}}</td>
+                <td>{{if .Name}}{{.Name}}{{else}}--{{end}}</td>
+                <td>
+                    {{if eq .Role "owner"}}
+                    <span class="badge badge-warning">owner</span>
+                    {{else if eq .Role "moderator"}}
+                    <span class="badge badge-info">moderator</span>
+                    {{else}}
+                    <span class="badge badge-secondary">member</span>
+                    {{end}}
+                </td>
+                <td>
+                    {{if .IsConfirmed}}
+                    <span class="badge badge-success">confirmed</span>
+                    {{else}}
+                    <span class="badge badge-secondary">pending</span>
+                    {{end}}
+                    {{if eq .DeliveryMode "nomail"}}
+                    <span class="badge badge-info">no mail</span>
+                    {{end}}
+                </td>
+                <td>{{.SubscribedAt.Format "2006-01-02"}}</td>
+                <td>
+                    <form method="POST" action="/admin/lists/members/remove/{{$.List.ID}}/{{.Email}}" style="display: inline;"
+                          onsubmit="return confirm('Remove this member?');">
+                        <button type="submit" class="btn btn-sm btn-danger">remove</button>
+                    </form>
+                </td>
+            </tr>
+            {{end}}
+        </tbody>
+    </table>
+    {{else}}
+    <div class="empty-state">
+        <p>no members yet</p>
+    </div>
+    {{end}}
+</div>
+
+<div class="form-actions">
+    <a href="/admin/lists" class="btn">back to lists</a>
+    <a href="/admin/lists/moderation/{{.List.ID}}" class="btn">moderation queue</a>
+    <a href="/admin/lists/archives/{{.List.ID}}" class="btn">archives</a>
+</div>

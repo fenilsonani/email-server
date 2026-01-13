@@ -24,6 +24,7 @@ import (
 	"github.com/fenilsonani/email-server/internal/dns"
 	"github.com/fenilsonani/email-server/internal/health"
 	imapserver "github.com/fenilsonani/email-server/internal/imap"
+	"github.com/fenilsonani/email-server/internal/lists"
 	"github.com/fenilsonani/email-server/internal/logging"
 	"github.com/fenilsonani/email-server/internal/migration"
 	"github.com/fenilsonani/email-server/internal/queue"
@@ -466,6 +467,19 @@ var serveCmd = &cobra.Command{
 			logger.Info("Sieve filtering enabled")
 		}
 
+		// Initialize mailing lists manager
+		listsStore := lists.NewStore(db.RawDB())
+		archivePath := filepath.Join(cfg.Storage.DataDir, "archives")
+		moderationPath := filepath.Join(cfg.Storage.DataDir, "moderation")
+		listsManager := lists.NewManager(listsStore, archivePath, moderationPath, logger)
+		listsCommandHandler := lists.NewCommandHandler(listsStore, listsManager, cfg.Server.Hostname, logger)
+		smtpBackend.SetListsManager(listsManager, listsCommandHandler)
+		logger.Info("Mailing lists enabled")
+
+		// Initialize features store for SMTP backend (Screener, Aliases, etc.)
+		featuresStore := features.NewStore(db.RawDB())
+		smtpBackend.SetFeaturesStore(featuresStore)
+
 		smtpSrv := smtpserver.NewServer(smtpBackend, cfg, tlsManager.TLSConfig())
 		resources.smtpSrv = smtpSrv
 
@@ -535,9 +549,10 @@ var serveCmd = &cobra.Command{
 			if err != nil {
 				logger.Warn("Failed to initialize admin server", "error", err.Error())
 			} else {
-				// Initialize features store for unique features (Screener, Aliases, etc.)
-				featuresStore := features.NewStore(db.RawDB())
+				// Use the already-initialized features store
 				adminSrv.SetFeaturesStore(featuresStore)
+				// Set lists store for mailing list management
+				adminSrv.SetListsStore(listsStore)
 
 				// Start feature scheduler for scheduled sends, snooze wake-ups, undo send
 				featureScheduler := features.NewScheduler(featuresStore, logger)

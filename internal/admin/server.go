@@ -19,6 +19,7 @@ import (
 	"github.com/fenilsonani/email-server/internal/auth"
 	"github.com/fenilsonani/email-server/internal/config"
 	"github.com/fenilsonani/email-server/internal/features"
+	"github.com/fenilsonani/email-server/internal/lists"
 	"github.com/fenilsonani/email-server/internal/logging"
 	"github.com/fenilsonani/email-server/internal/queue"
 	"github.com/fenilsonani/email-server/internal/sieve"
@@ -40,6 +41,7 @@ type Server struct {
 	store         *maildir.Store
 	sieveStore    *sieve.Store
 	featuresStore *features.Store
+	listsStore    *lists.Store
 	queue         *queue.RedisQueue
 	logger        *logging.Logger
 	auditLogger   *audit.Logger
@@ -107,6 +109,11 @@ func NewServer(cfg *config.Config, db *sql.DB, authenticator *auth.Authenticator
 		"features_scheduled.html",
 		"features_scheduled_form.html",
 		"features_snoozed.html",
+		"lists.html",
+		"list_form.html",
+		"list_members.html",
+		"list_moderation.html",
+		"list_archives.html",
 	}
 
 	for _, page := range pages {
@@ -185,6 +192,11 @@ func (s *Server) SetFeaturesStore(store *features.Store) {
 	s.featuresStore = store
 }
 
+// SetListsStore sets the lists store for mailing list management
+func (s *Server) SetListsStore(store *lists.Store) {
+	s.listsStore = store
+}
+
 // Start starts the admin server
 func (s *Server) Start(listen string) error {
 	mux := http.NewServeMux()
@@ -261,6 +273,19 @@ func (s *Server) Start(listen string) error {
 	mux.HandleFunc("/admin/features/scheduled/cancel/", s.withAuth(s.handleScheduledCancel))
 	mux.HandleFunc("/admin/features/snoozed", s.withAuth(s.handleSnoozed))
 	mux.HandleFunc("/admin/features/snoozed/cancel/", s.withAuth(s.handleSnoozeCancel))
+
+	// Mailing lists management routes
+	mux.HandleFunc("/admin/lists", s.withAuth(s.handleLists))
+	mux.HandleFunc("/admin/lists/add", s.withAuth(s.handleListAdd))
+	mux.HandleFunc("/admin/lists/edit/", s.withAuth(s.handleListEdit))
+	mux.HandleFunc("/admin/lists/delete/", s.withAuth(s.handleListDelete))
+	mux.HandleFunc("/admin/lists/members/", s.withAuth(s.handleListMembers))
+	mux.HandleFunc("/admin/lists/members/add/", s.withAuth(s.handleListMemberAdd))
+	mux.HandleFunc("/admin/lists/members/remove/", s.withAuth(s.handleListMemberRemove))
+	mux.HandleFunc("/admin/lists/moderation/", s.withAuth(s.handleListModeration))
+	mux.HandleFunc("/admin/lists/moderation/approve/", s.withAuth(s.handleListModerationAction))
+	mux.HandleFunc("/admin/lists/moderation/reject/", s.withAuth(s.handleListModerationAction))
+	mux.HandleFunc("/admin/lists/archives/", s.withAuth(s.handleListArchives))
 
 	// Build middleware chain (order matters: innermost first, then wrapping outward)
 	// The execution order will be: logging -> security headers -> panic recovery -> CSRF -> routes
