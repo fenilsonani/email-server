@@ -116,22 +116,42 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get forwarding status
+	// Get forwarding details
 	var forwardingActive bool
-	s.db.QueryRowContext(r.Context(), "SELECT is_active FROM user_forwarding WHERE user_id = ?", userID).Scan(&forwardingActive)
+	var forwardTo sql.NullString
+	var keepCopy bool
+	s.db.QueryRowContext(r.Context(),
+		"SELECT is_active, forward_to, keep_copy FROM user_forwarding WHERE user_id = ?",
+		userID).Scan(&forwardingActive, &forwardTo, &keepCopy)
 
-	// Get vacation status
+	// Get vacation details
 	var vacationActive bool
+	var vacationSubject sql.NullString
+	var vacationStartDate, vacationEndDate sql.NullTime
 	s.db.QueryRowContext(r.Context(), `
-		SELECT COUNT(*) > 0 FROM sieve_scripts
-		WHERE user_id = ? AND name = 'vacation' AND is_active = TRUE
-	`, userID).Scan(&vacationActive)
+		SELECT ss.is_active, v.subject, v.start_date, v.end_date
+		FROM sieve_scripts ss
+		LEFT JOIN user_vacation v ON ss.user_id = v.user_id
+		WHERE ss.user_id = ? AND ss.name = 'vacation'
+	`, userID).Scan(&vacationActive, &vacationSubject, &vacationStartDate, &vacationEndDate)
+
+	// Calculate storage percentage
+	var storagePercent int
+	if user.QuotaBytes > 0 {
+		storagePercent = int(float64(user.UsedBytes) / float64(user.QuotaBytes) * 100)
+	}
 
 	s.renderTemplate(w, "dashboard.html", map[string]interface{}{
 		"Title":            "My Account",
 		"User":             user,
 		"ForwardingActive": forwardingActive,
+		"ForwardTo":        forwardTo.String,
+		"KeepCopy":         keepCopy,
 		"VacationActive":   vacationActive,
+		"VacationSubject":  vacationSubject.String,
+		"VacationStart":    formatDate(vacationStartDate),
+		"VacationEnd":      formatDate(vacationEndDate),
+		"StoragePercent":   storagePercent,
 	})
 }
 
