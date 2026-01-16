@@ -538,6 +538,7 @@ func (s *Server) handleDomains(w http.ResponseWriter, r *http.Request) {
 			COALESCE(d.dns_spf_verified, 0),
 			COALESCE(d.dns_dkim_verified, 0),
 			COALESCE(d.dns_dmarc_verified, 0),
+			COALESCE(d.dns_mail_hostname_verified, 0),
 			d.dns_last_checked,
 			COALESCE(d.mail_hostname, 'mail.' || d.name),
 			COALESCE(d.is_primary, 0)
@@ -574,21 +575,22 @@ func (s *Server) handleDomains(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	type Domain struct {
-		ID              int64
-		Name            string
-		UserCount       int
-		CreatedAt       time.Time
-		DKIMSelector    string
-		HasDKIMKey      bool
-		DNSStatus       string
-		DNSMXVerified   bool
-		DNSSPFVerified  bool
-		DNSDKIMVerified bool
-		DNSDMARCVerified bool
-		DNSLastChecked  sql.NullTime
-		DNSVerifiedCount int
-		MailHostname    string
-		IsPrimary       bool
+		ID                      int64
+		Name                    string
+		UserCount               int
+		CreatedAt               time.Time
+		DKIMSelector            string
+		HasDKIMKey              bool
+		DNSStatus               string
+		DNSMXVerified           bool
+		DNSSPFVerified          bool
+		DNSDKIMVerified         bool
+		DNSDMARCVerified        bool
+		DNSMailHostnameVerified bool
+		DNSLastChecked          sql.NullTime
+		DNSVerifiedCount        int
+		MailHostname            string
+		IsPrimary               bool
 	}
 
 	// Get DKIM key directory for file-based check
@@ -600,11 +602,11 @@ func (s *Server) handleDomains(w http.ResponseWriter, r *http.Request) {
 		var selector string
 		var hasDBKey bool
 		var keyFile sql.NullString
-		var mxVerified, spfVerified, dkimVerified, dmarcVerified int
+		var mxVerified, spfVerified, dkimVerified, dmarcVerified, mailHostnameVerified int
 		var isPrimaryInt int
 		if err := rows.Scan(&d.ID, &d.Name, &d.CreatedAt, &selector, &hasDBKey, &keyFile, &d.UserCount,
-			&d.DNSStatus, &mxVerified, &spfVerified, &dkimVerified, &dmarcVerified, &d.DNSLastChecked,
-			&d.MailHostname, &isPrimaryInt); err != nil {
+			&d.DNSStatus, &mxVerified, &spfVerified, &dkimVerified, &dmarcVerified, &mailHostnameVerified,
+			&d.DNSLastChecked, &d.MailHostname, &isPrimaryInt); err != nil {
 			s.logger.ErrorContext(r.Context(), "Failed to scan domain row", err)
 			continue
 		}
@@ -614,6 +616,7 @@ func (s *Server) handleDomains(w http.ResponseWriter, r *http.Request) {
 		d.DNSSPFVerified = spfVerified == 1
 		d.DNSDKIMVerified = dkimVerified == 1
 		d.DNSDMARCVerified = dmarcVerified == 1
+		d.DNSMailHostnameVerified = mailHostnameVerified == 1
 		d.DNSVerifiedCount = mxVerified + spfVerified + dkimVerified + dmarcVerified
 
 		// Check if key exists either in database or as file
@@ -1307,6 +1310,15 @@ func (s *Server) handleDomainDNS(w http.ResponseWriter, r *http.Request) {
 	// Get DKIM record name
 	dkimRecordName := selector + "._domainkey." + domainName
 
+	// Get mail hostname
+	mailHostname := "mail." + domainName
+
+	// Get server IP for A record suggestion
+	var serverIP string
+	if ips, err := net.LookupIP(s.config.Server.Hostname); err == nil && len(ips) > 0 {
+		serverIP = ips[0].String()
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"domain":         domainName,
@@ -1317,6 +1329,8 @@ func (s *Server) handleDomainDNS(w http.ResponseWriter, r *http.Request) {
 		"dkimRecord":     records.DKIM,
 		"dkimRecordName": dkimRecordName,
 		"selector":       selector,
+		"mailHostname":   mailHostname,
+		"serverIP":       serverIP,
 	})
 }
 
@@ -1367,8 +1381,11 @@ func (s *Server) handleDNSVerify(w http.ResponseWriter, r *http.Request) {
 	// Verify DMARC record
 	dmarcResult := s.verifyDMARCRecord(domainName)
 
+	// Verify mail hostname A record
+	mailHostnameResult := s.verifyMailHostnameRecord(domainName)
+
 	// Persist results to database
-	var mxVerified, spfVerified, dkimVerified, dmarcVerified int
+	var mxVerified, spfVerified, dkimVerified, dmarcVerified, mailHostnameVerified int
 	if mxResult["ok"].(bool) {
 		mxVerified = 1
 	}
@@ -1381,8 +1398,11 @@ func (s *Server) handleDNSVerify(w http.ResponseWriter, r *http.Request) {
 	if dmarcResult["ok"].(bool) {
 		dmarcVerified = 1
 	}
+	if mailHostnameResult["ok"].(bool) {
+		mailHostnameVerified = 1
+	}
 
-	// Calculate overall status
+	// Calculate overall status (mail hostname is optional for core email functionality)
 	var dnsStatus string
 	if mxVerified == 1 && spfVerified == 1 && dkimVerified == 1 && dmarcVerified == 1 {
 		dnsStatus = "ready"
@@ -1399,22 +1419,24 @@ func (s *Server) handleDNSVerify(w http.ResponseWriter, r *http.Request) {
 			dns_spf_verified = ?,
 			dns_dkim_verified = ?,
 			dns_dmarc_verified = ?,
+			dns_mail_hostname_verified = ?,
 			dns_status = ?,
 			dns_last_checked = ?
 		WHERE id = ?`,
-		mxVerified, spfVerified, dkimVerified, dmarcVerified, dnsStatus, time.Now(), domainID)
+		mxVerified, spfVerified, dkimVerified, dmarcVerified, mailHostnameVerified, dnsStatus, time.Now(), domainID)
 	if err != nil {
 		s.logger.ErrorContext(r.Context(), "Failed to update DNS status", err)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"mx":        mxResult,
-		"spf":       spfResult,
-		"dkim":      dkimResult,
-		"dmarc":     dmarcResult,
-		"domain":    domainName,
-		"dnsStatus": dnsStatus,
+		"mx":           mxResult,
+		"spf":          spfResult,
+		"dkim":         dkimResult,
+		"dmarc":        dmarcResult,
+		"mailHostname": mailHostnameResult,
+		"domain":       domainName,
+		"dnsStatus":    dnsStatus,
 	})
 }
 
@@ -1559,6 +1581,30 @@ func (s *Server) verifyDMARCRecord(domain string) map[string]interface{} {
 			return result
 		}
 	}
+
+	return result
+}
+
+// verifyMailHostnameRecord checks if mail.{domain} A record resolves to an IP
+func (s *Server) verifyMailHostnameRecord(domain string) map[string]interface{} {
+	result := map[string]interface{}{
+		"ok":    false,
+		"found": "",
+	}
+
+	mailHostname := "mail." + domain
+	ips, err := net.LookupIP(mailHostname)
+	if err != nil || len(ips) == 0 {
+		return result
+	}
+
+	// Format IPs found
+	var ipStrings []string
+	for _, ip := range ips {
+		ipStrings = append(ipStrings, ip.String())
+	}
+	result["found"] = strings.Join(ipStrings, ", ")
+	result["ok"] = true
 
 	return result
 }
