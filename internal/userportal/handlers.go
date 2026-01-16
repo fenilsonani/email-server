@@ -473,19 +473,30 @@ func (s *Server) handleVacation(w http.ResponseWriter, r *http.Request) {
 func (s *Server) getUserInfo(ctx context.Context, userID int64) (*UserInfo, error) {
 	var user UserInfo
 	var domainName string
+	var displayName sql.NullString
+	var quotaBytes, usedBytes sql.NullInt64
 
 	err := s.db.QueryRowContext(ctx, `
 		SELECT u.id, u.username, d.name, u.display_name, u.quota_bytes, u.used_bytes, u.is_active
 		FROM users u
 		JOIN domains d ON u.domain_id = d.id
 		WHERE u.id = ?
-	`, userID).Scan(&user.ID, &user.Email, &domainName, &user.DisplayName, &user.QuotaBytes, &user.UsedBytes, &user.IsActive)
+	`, userID).Scan(&user.ID, &user.Email, &domainName, &displayName, &quotaBytes, &usedBytes, &user.IsActive)
 
 	if err != nil {
 		return nil, err
 	}
 
 	user.Email = user.Email + "@" + domainName
+	user.DisplayName = displayName.String
+	user.QuotaBytes = quotaBytes.Int64
+	user.UsedBytes = usedBytes.Int64
+
+	// Default quota if not set (1GB)
+	if user.QuotaBytes == 0 {
+		user.QuotaBytes = 1073741824
+	}
+
 	return &user, nil
 }
 
