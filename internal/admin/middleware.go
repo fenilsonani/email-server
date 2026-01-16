@@ -92,6 +92,100 @@ func (s *Server) invalidateUserSessions(userID int64) {
 	}
 }
 
+// DomainInfo holds information about the current request's domain
+type DomainInfo struct {
+	ID           int64
+	Name         string
+	MailHostname string
+	IsPrimary    bool
+}
+
+type domainContextKeyType string
+
+const domainContextKey domainContextKeyType = "domain"
+
+// detectDomain detects the domain based on the Host header
+func (s *Server) detectDomain(r *http.Request) *DomainInfo {
+	host := r.Host
+
+	// Strip port if present
+	if idx := strings.Index(host, ":"); idx != -1 {
+		host = host[:idx]
+	}
+
+	// Look up domain by mail_hostname
+	var domain DomainInfo
+	var isPrimaryInt int
+	err := s.db.QueryRowContext(r.Context(),
+		`SELECT id, name, COALESCE(mail_hostname, 'mail.' || name), COALESCE(is_primary, 0)
+		 FROM domains WHERE mail_hostname = ? OR 'mail.' || name = ?`,
+		host, host,
+	).Scan(&domain.ID, &domain.Name, &domain.MailHostname, &isPrimaryInt)
+
+	if err != nil {
+		// Check if this is the primary hostname from config
+		if host == s.config.Server.Hostname {
+			// Return primary domain
+			s.db.QueryRowContext(r.Context(),
+				`SELECT id, name, COALESCE(mail_hostname, 'mail.' || name), 1
+				 FROM domains WHERE is_primary = 1 OR name = ? LIMIT 1`,
+				s.config.Server.Domain,
+			).Scan(&domain.ID, &domain.Name, &domain.MailHostname, &isPrimaryInt)
+			domain.IsPrimary = true
+			return &domain
+		}
+		return nil
+	}
+
+	domain.IsPrimary = isPrimaryInt == 1
+	return &domain
+}
+
+// GetDomainFromContext retrieves the domain from the request context
+func GetDomainFromContext(r *http.Request) *DomainInfo {
+	if domain, ok := r.Context().Value(domainContextKey).(*DomainInfo); ok {
+		return domain
+	}
+	return nil
+}
+
+// withDomainDetection adds domain info to the request context
+func (s *Server) withDomainDetection(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		domain := s.detectDomain(r)
+		if domain != nil {
+			ctx := context.WithValue(r.Context(), domainContextKey, domain)
+			r = r.WithContext(ctx)
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// withPrimaryDomainOnly restricts access to primary domain only
+func (s *Server) withPrimaryDomainOnly(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		domain := s.detectDomain(r)
+
+		// Allow if domain is primary OR if accessing via the configured hostname
+		if domain != nil && domain.IsPrimary {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Also allow if Host matches the configured server hostname
+		host := r.Host
+		if idx := strings.Index(host, ":"); idx != -1 {
+			host = host[:idx]
+		}
+		if host == s.config.Server.Hostname {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		http.Error(w, "Admin access only available on primary domain", http.StatusForbidden)
+	})
+}
+
 // validateSession checks if a session token is valid
 func (s *Server) validateSession(token string) (int64, bool) {
 	// Validate token format: must be valid hex and minimum length
@@ -158,6 +252,25 @@ func (s *Server) deleteSession(token string) {
 // withAuth wraps a handler with authentication check
 func (s *Server) withAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Check primary domain access for admin routes
+		host := r.Host
+		if idx := strings.Index(host, ":"); idx != -1 {
+			host = host[:idx]
+		}
+
+		// Allow if Host matches the configured server hostname
+		isPrimary := host == s.config.Server.Hostname
+		if !isPrimary {
+			// Check if this is a primary domain via database
+			domain := s.detectDomain(r)
+			isPrimary = domain != nil && domain.IsPrimary
+		}
+
+		if !isPrimary {
+			http.Error(w, "Admin access only available on primary domain", http.StatusForbidden)
+			return
+		}
+
 		cookie, err := r.Cookie("admin_session")
 		if err != nil {
 			http.Redirect(w, r, "/admin/login", http.StatusSeeOther)

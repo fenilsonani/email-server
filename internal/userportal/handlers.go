@@ -22,9 +22,13 @@ type UserInfo struct {
 
 // handleLogin handles user login
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	// Detect domain for branding
+	domain := s.detectDomain(r)
+
 	if r.Method == http.MethodGet {
 		s.renderTemplate(w, "login.html", map[string]interface{}{
-			"Title": "Account Login",
+			"Title":  "Account Login",
+			"Domain": domain,
 		})
 		return
 	}
@@ -42,8 +46,9 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	// Check rate limiting
 	if s.rateLimiter.IsBlocked(clientIP) {
 		s.renderTemplate(w, "login.html", map[string]interface{}{
-			"Title": "Account Login",
-			"Error": "Too many failed attempts. Please try again later.",
+			"Title":  "Account Login",
+			"Error":  "Too many failed attempts. Please try again later.",
+			"Domain": domain,
 		})
 		return
 	}
@@ -54,7 +59,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		blocked := s.rateLimiter.RecordFailure(clientIP)
 		remaining := s.rateLimiter.RemainingAttempts(clientIP)
 
-		s.auditLogger.Log(r.Context(), email, audit.EventLoginFailure, email, map[string]interface{}{
+		s.auditLogger.Log(r.Context(), email, audit.EventUserPortalLoginFailure, email, map[string]interface{}{
 			"portal":             "user",
 			"remaining_attempts": remaining,
 		}, clientIP)
@@ -67,11 +72,27 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		}
 
 		s.renderTemplate(w, "login.html", map[string]interface{}{
-			"Title": "Account Login",
-			"Error": errorMsg,
-			"Email": email,
+			"Title":  "Account Login",
+			"Error":  errorMsg,
+			"Email":  email,
+			"Domain": domain,
 		})
 		return
+	}
+
+	// If we detected a domain, verify user belongs to it
+	if domain != nil {
+		var userDomainID int64
+		s.db.QueryRowContext(r.Context(), "SELECT domain_id FROM users WHERE id = ?", user.ID).Scan(&userDomainID)
+		if userDomainID != domain.ID {
+			s.renderTemplate(w, "login.html", map[string]interface{}{
+				"Title":  "Account Login",
+				"Error":  "This account does not belong to this domain",
+				"Email":  email,
+				"Domain": domain,
+			})
+			return
+		}
 	}
 
 	// Create session
@@ -85,7 +106,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	s.rateLimiter.RecordSuccess(clientIP)
 	setSessionCookie(w, token)
 
-	s.auditLogger.Log(r.Context(), email, audit.EventLoginSuccess, email, map[string]interface{}{
+	s.auditLogger.Log(r.Context(), email, audit.EventUserPortalLogin, email, map[string]interface{}{
 		"portal": "user",
 	}, clientIP)
 
@@ -144,6 +165,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	s.renderTemplate(w, "dashboard.html", map[string]interface{}{
 		"Title":            "My Account",
 		"User":             user,
+		"Domain":           getDomain(r),
 		"ForwardingActive": forwardingActive,
 		"ForwardTo":        forwardTo.String,
 		"KeepCopy":         keepCopy,

@@ -3,6 +3,7 @@ package userportal
 import (
 	"context"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -10,10 +11,56 @@ import (
 type contextKey string
 
 const userIDContextKey contextKey = "userID"
+const domainContextKey contextKey = "domain"
+
+// DomainInfo holds information about the current request's domain
+type DomainInfo struct {
+	ID           int64
+	Name         string
+	MailHostname string
+	IsPrimary    bool
+}
+
+// detectDomain detects the domain based on the Host header
+func (s *Server) detectDomain(r *http.Request) *DomainInfo {
+	host := r.Host
+
+	// Strip port if present
+	if idx := strings.Index(host, ":"); idx != -1 {
+		host = host[:idx]
+	}
+
+	// Look up domain by mail_hostname
+	var domain DomainInfo
+	var isPrimaryInt int
+	err := s.db.QueryRowContext(r.Context(),
+		`SELECT id, name, COALESCE(mail_hostname, 'mail.' || name), COALESCE(is_primary, 0)
+		 FROM domains WHERE mail_hostname = ? OR 'mail.' || name = ?`,
+		host, host,
+	).Scan(&domain.ID, &domain.Name, &domain.MailHostname, &isPrimaryInt)
+
+	if err != nil {
+		return nil
+	}
+
+	domain.IsPrimary = isPrimaryInt == 1
+	return &domain
+}
+
+// getDomain retrieves the domain from the request context
+func getDomain(r *http.Request) *DomainInfo {
+	if domain, ok := r.Context().Value(domainContextKey).(*DomainInfo); ok {
+		return domain
+	}
+	return nil
+}
 
 // withUserAuth wraps handlers requiring user authentication
 func (s *Server) withUserAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Detect domain from host
+		domain := s.detectDomain(r)
+
 		cookie, err := r.Cookie(sessionCookieName)
 		if err != nil {
 			http.Redirect(w, r, "/account/login", http.StatusSeeOther)
@@ -27,16 +74,29 @@ func (s *Server) withUserAuth(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		// Check user is still active
+		// Check user is still active and belongs to the current domain
 		var isActive bool
-		err = s.db.QueryRowContext(r.Context(), "SELECT is_active FROM users WHERE id = ?", userID).Scan(&isActive)
+		var userDomainID int64
+		err = s.db.QueryRowContext(r.Context(),
+			"SELECT is_active, domain_id FROM users WHERE id = ?",
+			userID).Scan(&isActive, &userDomainID)
 		if err != nil || !isActive {
 			clearSessionCookie(w)
 			http.Redirect(w, r, "/account/login", http.StatusSeeOther)
 			return
 		}
 
+		// If we detected a domain, verify user belongs to it
+		if domain != nil && userDomainID != domain.ID {
+			clearSessionCookie(w)
+			http.Redirect(w, r, "/account/login", http.StatusSeeOther)
+			return
+		}
+
 		ctx := context.WithValue(r.Context(), userIDContextKey, userID)
+		if domain != nil {
+			ctx = context.WithValue(ctx, domainContextKey, domain)
+		}
 		next(w, r.WithContext(ctx))
 	}
 }

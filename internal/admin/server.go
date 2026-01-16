@@ -299,8 +299,9 @@ func (s *Server) Start(listen string) error {
 	}
 
 	// Build middleware chain (order matters: innermost first, then wrapping outward)
-	// The execution order will be: logging -> security headers -> panic recovery -> CSRF -> routes
+	// The execution order will be: logging -> security headers -> panic recovery -> domain detection -> CSRF -> routes
 	handler := s.withCSRF(mux)
+	handler = s.withDomainDetection(handler)
 	handler = s.withPanicRecovery(handler)
 	handler = s.withSecurityHeaders(handler)
 	handler = s.withRequestLogging(handler)

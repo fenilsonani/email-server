@@ -538,7 +538,9 @@ func (s *Server) handleDomains(w http.ResponseWriter, r *http.Request) {
 			COALESCE(d.dns_spf_verified, 0),
 			COALESCE(d.dns_dkim_verified, 0),
 			COALESCE(d.dns_dmarc_verified, 0),
-			d.dns_last_checked
+			d.dns_last_checked,
+			COALESCE(d.mail_hostname, 'mail.' || d.name),
+			COALESCE(d.is_primary, 0)
 		FROM domains d WHERE 1=1`
 	countQuery := `SELECT COUNT(*) FROM domains WHERE 1=1`
 	args := []interface{}{}
@@ -585,6 +587,8 @@ func (s *Server) handleDomains(w http.ResponseWriter, r *http.Request) {
 		DNSDMARCVerified bool
 		DNSLastChecked  sql.NullTime
 		DNSVerifiedCount int
+		MailHostname    string
+		IsPrimary       bool
 	}
 
 	// Get DKIM key directory for file-based check
@@ -597,11 +601,14 @@ func (s *Server) handleDomains(w http.ResponseWriter, r *http.Request) {
 		var hasDBKey bool
 		var keyFile sql.NullString
 		var mxVerified, spfVerified, dkimVerified, dmarcVerified int
+		var isPrimaryInt int
 		if err := rows.Scan(&d.ID, &d.Name, &d.CreatedAt, &selector, &hasDBKey, &keyFile, &d.UserCount,
-			&d.DNSStatus, &mxVerified, &spfVerified, &dkimVerified, &dmarcVerified, &d.DNSLastChecked); err != nil {
+			&d.DNSStatus, &mxVerified, &spfVerified, &dkimVerified, &dmarcVerified, &d.DNSLastChecked,
+			&d.MailHostname, &isPrimaryInt); err != nil {
 			s.logger.ErrorContext(r.Context(), "Failed to scan domain row", err)
 			continue
 		}
+		d.IsPrimary = isPrimaryInt == 1
 		d.DKIMSelector = selector
 		d.DNSMXVerified = mxVerified == 1
 		d.DNSSPFVerified = spfVerified == 1
@@ -986,10 +993,11 @@ func (s *Server) handleDomainAdd(w http.ResponseWriter, r *http.Request) {
 		dkimStorage = "database"
 	}
 
-	// Insert domain
+	// Insert domain with auto-generated mail hostname
+	mailHostname := "mail." + name
 	_, err = s.db.ExecContext(r.Context(),
-		"INSERT INTO domains (name, dkim_selector) VALUES (?, ?)",
-		name, dkimSelector,
+		"INSERT INTO domains (name, dkim_selector, mail_hostname) VALUES (?, ?, ?)",
+		name, dkimSelector, mailHostname,
 	)
 	if err != nil {
 		s.logger.ErrorContext(r.Context(), "Failed to create domain", err)
@@ -2923,13 +2931,14 @@ func (s *Server) handleDomainWizardComplete(w http.ResponseWriter, r *http.Reque
 		dnsStatus = "pending"
 	}
 
-	// Insert domain
+	// Insert domain with auto-generated mail hostname
+	mailHostname := "mail." + domain
 	result, err := s.db.ExecContext(r.Context(),
 		`INSERT INTO domains (name, dkim_selector, dkim_storage_type, dns_status,
-		 dns_mx_verified, dns_spf_verified, dns_dkim_verified, dns_dmarc_verified, dns_last_checked)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 dns_mx_verified, dns_spf_verified, dns_dkim_verified, dns_dmarc_verified, dns_last_checked, mail_hostname)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		domain, selector, req.Storage, dnsStatus,
-		mxVerified, spfVerified, dkimVerified, dmarcVerified, time.Now())
+		mxVerified, spfVerified, dkimVerified, dmarcVerified, time.Now(), mailHostname)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{

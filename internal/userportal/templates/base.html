@@ -3,14 +3,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{.Title}} - My Account</title>
+    <title>{{.Title}} - {{if .Domain}}{{.Domain.Name}}{{else}}Mail{{end}} Account</title>
     <link rel="stylesheet" href="/static/admin.css">
 </head>
 <body>
     {{if .User}}
     <nav role="navigation" aria-label="Main navigation">
         <div class="container">
-            <a href="/account/" class="brand">My Account</a>
+            <a href="/account/" class="brand">{{if .Domain}}{{.Domain.Name}}{{else}}My Account{{end}}</a>
             <div class="nav-links">
                 <a href="/account/">dashboard</a>
                 <span class="nav-separator">|</span>
