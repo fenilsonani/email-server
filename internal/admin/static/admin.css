@@ -338,7 +338,6 @@ textarea.form-control {
 .feature-card-status {
     font-size: 12px;
     padding: 0.25rem 0.5rem;
-    border-radius: 3px;
 }
 
 .feature-card-status.active {
