@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"runtime/debug"
+	"strings"
 	"sync"
 	"time"
 )
@@ -190,6 +191,12 @@ var (
 // withCSRF wraps a handler with CSRF protection
 func (s *Server) withCSRF(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Skip CSRF for user portal (has its own CSRF handling)
+		if strings.HasPrefix(r.URL.Path, "/account/") || r.URL.Path == "/account" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
 		// Skip CSRF for GET/HEAD/OPTIONS
 		if r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodOptions {
 			// Generate token for forms
