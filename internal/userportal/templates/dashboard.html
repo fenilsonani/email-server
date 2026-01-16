@@ -1,64 +1,34 @@
-<div class="page-header">
-    <h1>Welcome, {{if .User.DisplayName}}{{.User.DisplayName}}{{else}}{{.User.Email}}{{end}}</h1>
-</div>
+<h1>Welcome, {{if .User.DisplayName}}{{.User.DisplayName}}{{else}}{{.User.Email}}{{end}}</h1>
 
-<div class="dashboard-grid">
-    <div class="card">
-        <h2>Account Info</h2>
-        <dl class="info-list">
-            <dt>Email</dt>
-            <dd>{{.User.Email}}</dd>
-            <dt>Display Name</dt>
-            <dd>{{if .User.DisplayName}}{{.User.DisplayName}}{{else}}<em>Not set</em>{{end}}</dd>
-            <dt>Storage Used</dt>
-            <dd>{{printf "%.1f" (divFloat .User.UsedBytes 1048576)}} MB of {{printf "%.0f" (divFloat .User.QuotaBytes 1073741824)}} GB</dd>
-        </dl>
+<div class="stats-grid">
+    <div class="stat-card">
+        <div class="stat-value">{{.User.Email}}</div>
+        <div class="stat-label">Email Address</div>
     </div>
-
-    <div class="card">
-        <h2>Quick Actions</h2>
-        <div class="quick-actions">
-            <a href="/account/password" class="action-link">
-                <span class="action-icon">*</span>
-                <span class="action-text">Change Password</span>
-            </a>
-            <a href="/account/profile" class="action-link">
-                <span class="action-icon">@</span>
-                <span class="action-text">Edit Profile</span>
-            </a>
-            <a href="/account/forwarding" class="action-link {{if .ForwardingActive}}active{{end}}">
-                <span class="action-icon">></span>
-                <span class="action-text">Email Forwarding {{if .ForwardingActive}}(Active){{end}}</span>
-            </a>
-            <a href="/account/vacation" class="action-link {{if .VacationActive}}active{{end}}">
-                <span class="action-icon">~</span>
-                <span class="action-text">Vacation Responder {{if .VacationActive}}(Active){{end}}</span>
-            </a>
-        </div>
+    <div class="stat-card">
+        <div class="stat-value">{{if .User.DisplayName}}{{.User.DisplayName}}{{else}}-{{end}}</div>
+        <div class="stat-label">Display Name</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-value">{{if .ForwardingActive}}Active{{else}}Off{{end}}</div>
+        <div class="stat-label">Forwarding</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-value">{{if .VacationActive}}Active{{else}}Off{{end}}</div>
+        <div class="stat-label">Vacation</div>
     </div>
 </div>
 
 <div class="card">
-    <h2>Email Client Setup</h2>
-    <p>Configure your email client with these settings:</p>
-    <table class="settings-table">
-        <tr>
-            <th>IMAP Server</th>
-            <td>mail.fenilsonani.com</td>
-            <td>Port 993 (SSL/TLS)</td>
-        </tr>
-        <tr>
-            <th>SMTP Server</th>
-            <td>mail.fenilsonani.com</td>
-            <td>Port 587 (STARTTLS)</td>
-        </tr>
-        <tr>
-            <th>Username</th>
-            <td colspan="2">{{.User.Email}}</td>
-        </tr>
-        <tr>
-            <th>Password</th>
-            <td colspan="2">Your account password</td>
-        </tr>
-    </table>
+    <h2>Quick Actions</h2>
+    <div class="button-group">
+        <a href="/account/password" class="btn">Change Password</a>
+        <a href="/account/profile" class="btn">Edit Profile</a>
+        <a href="/account/forwarding" class="btn {{if .ForwardingActive}}btn-success{{end}}">
+            Email Forwarding {{if .ForwardingActive}}(Active){{end}}
+        </a>
+        <a href="/account/vacation" class="btn {{if .VacationActive}}btn-success{{end}}">
+            Vacation Responder {{if .VacationActive}}(Active){{end}}
+        </a>
+    </div>
 </div>

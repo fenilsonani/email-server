@@ -1,14 +1,14 @@
 <div class="login-container">
     <div class="login-box">
         <h1>Account Login</h1>
-        <p class="login-subtitle">Sign in to manage your email account</p>
+        <p class="text-muted">Sign in to manage your email account</p>
 
         {{if .Error}}
         <div class="alert alert-error">{{.Error}}</div>
         {{end}}
 
-        {{if eq (index . "msg") "password_changed"}}
-        <div class="alert alert-success">Password changed successfully. Please log in with your new password.</div>
+        {{if .RateLimited}}
+        <div class="alert alert-error">Too many failed attempts. Please try again later.</div>
         {{end}}
 
         <form method="POST" action="/account/login">
@@ -16,14 +16,12 @@
 
             <div class="form-group">
                 <label for="email">Email Address</label>
-                <input type="email" id="email" name="email" value="{{.Email}}" required autofocus
-                       placeholder="you@example.com">
+                <input type="email" id="email" name="email" value="{{.Email}}" required autofocus>
             </div>
 
             <div class="form-group">
                 <label for="password">Password</label>
-                <input type="password" id="password" name="password" required
-                       placeholder="Your password">
+                <input type="password" id="password" name="password" required>
             </div>
 
             <button type="submit" class="btn btn-primary btn-block">Sign In</button>
