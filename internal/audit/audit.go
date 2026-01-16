@@ -55,6 +55,15 @@ const (
 	EventQueueRetry       EventType = "queue.retry"
 	EventQueueDelete      EventType = "queue.delete"
 	EventConfigChange     EventType = "config.change"
+
+	// User portal events
+	EventUserPortalLogin         EventType = "userportal.login"
+	EventUserPortalLoginFailure  EventType = "userportal.login.failure"
+	EventUserPortalLogout        EventType = "userportal.logout"
+	EventUserPortalPassword      EventType = "userportal.password.change"
+	EventUserPortalProfile       EventType = "userportal.profile.update"
+	EventUserPortalForwarding    EventType = "userportal.forwarding.update"
+	EventUserPortalVacation      EventType = "userportal.vacation.update"
 )
 
 // Event represents an audit log entry

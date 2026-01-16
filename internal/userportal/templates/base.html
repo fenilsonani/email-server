@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{.Title}} - Mail Account</title>
+    <link rel="stylesheet" href="/account/static/user.css">
+</head>
+<body>
+    {{if .User}}
+    <nav class="nav">
+        <div class="nav-brand">
+            <a href="/account/">My Account</a>
+        </div>
+        <div class="nav-links">
+            <a href="/account/">Dashboard</a>
+            <span class="nav-separator">|</span>
+            <a href="/account/password">Password</a>
+            <span class="nav-separator">|</span>
+            <a href="/account/profile">Profile</a>
+            <span class="nav-separator">|</span>
+            <a href="/account/forwarding">Forwarding</a>
+            <span class="nav-separator">|</span>
+            <a href="/account/vacation">Vacation</a>
+            <span style="flex: 1"></span>
+            <span class="nav-user">{{.User.Email}}</span>
+            <span class="nav-separator">|</span>
+            <form method="POST" action="/account/logout" style="display: inline;">
+                <button type="submit" class="btn-link">Logout</button>
+            </form>
+        </div>
+    </nav>
+    {{end}}
+
+    <main class="container">
+        <!-- CONTENT_PLACEHOLDER -->
+    </main>
+
+    <footer class="footer">
+        <p>Mail Server Account Portal</p>
+    </footer>
+</body>
+</html>

@@ -24,6 +24,7 @@ import (
 	"github.com/fenilsonani/email-server/internal/queue"
 	"github.com/fenilsonani/email-server/internal/sieve"
 	"github.com/fenilsonani/email-server/internal/storage/maildir"
+	"github.com/fenilsonani/email-server/internal/userportal"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
@@ -287,6 +288,15 @@ func (s *Server) Start(listen string) error {
 	mux.HandleFunc("/admin/lists/moderation/approve/", s.withAuth(s.handleListModerationAction))
 	mux.HandleFunc("/admin/lists/moderation/reject/", s.withAuth(s.handleListModerationAction))
 	mux.HandleFunc("/admin/lists/archives/", s.withAuth(s.handleListArchives))
+
+	// User portal (separate auth from admin)
+	userPortal, err := userportal.NewServer(s.db, s.authenticator, s.auditLogger, s.logger)
+	if err != nil {
+		s.logger.Error("Failed to initialize user portal", "error", err.Error())
+	} else {
+		userPortal.RegisterRoutes(mux)
+		s.logger.Info("User portal routes registered at /account/")
+	}
 
 	// Build middleware chain (order matters: innermost first, then wrapping outward)
 	// The execution order will be: logging -> security headers -> panic recovery -> CSRF -> routes
