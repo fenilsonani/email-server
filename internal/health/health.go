@@ -266,13 +266,19 @@ func (m *Monitor) RegisterDiskSpace(paths ...string) {
 
 // OnUnhealthy sets a callback for when a component becomes unhealthy.
 // Use this for self-healing actions.
+// Thread-safe: protects callback assignment with mutex.
 func (m *Monitor) OnUnhealthy(callback func(name string, result CheckResult)) {
+	m.mu.Lock()
 	m.onUnhealthy = callback
+	m.mu.Unlock()
 }
 
 // OnRecovered sets a callback for when a component recovers.
+// Thread-safe: protects callback assignment with mutex.
 func (m *Monitor) OnRecovered(callback func(name string, result CheckResult)) {
+	m.mu.Lock()
 	m.onRecovered = callback
+	m.mu.Unlock()
 }
 
 // Check runs all health checks immediately.
@@ -297,15 +303,20 @@ func (m *Monitor) Check(ctx context.Context) map[string]CheckResult {
 			m.results[n] = result
 			m.mu.Unlock()
 
-			// Trigger callbacks
+			// Trigger callbacks (read with lock to avoid race)
+			m.mu.RLock()
+			onUnhealthy := m.onUnhealthy
+			onRecovered := m.onRecovered
+			m.mu.RUnlock()
+
 			if hadOld && oldResult.Status == StatusHealthy && result.Status == StatusUnhealthy {
-				if m.onUnhealthy != nil {
-					m.onUnhealthy(n, result)
+				if onUnhealthy != nil {
+					onUnhealthy(n, result)
 				}
 			}
 			if hadOld && oldResult.Status == StatusUnhealthy && result.Status == StatusHealthy {
-				if m.onRecovered != nil {
-					m.onRecovered(n, result)
+				if onRecovered != nil {
+					onRecovered(n, result)
 				}
 			}
 

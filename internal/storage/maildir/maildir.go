@@ -927,10 +927,19 @@ func (s *Store) GetMailboxStats(ctx context.Context, mailboxID int64) (*storage.
 }
 
 // UpdateUserQuota updates the used quota for a user
+// Uses CASE expression to prevent integer overflow and ensure quota never goes negative
 func (s *Store) UpdateUserQuota(ctx context.Context, userID int64, deltaBytes int64) error {
+	// Use SQL CASE to prevent overflow and ensure non-negative result
+	// MAX prevents going below 0, MIN prevents overflow above max int64
 	_, err := s.db.ExecContext(ctx,
-		"UPDATE users SET used_bytes = used_bytes + ? WHERE id = ?",
-		deltaBytes, userID,
+		`UPDATE users SET used_bytes =
+			CASE
+				WHEN ? < 0 AND used_bytes < ABS(?) THEN 0
+				WHEN ? > 0 AND used_bytes > 9223372036854775807 - ? THEN 9223372036854775807
+				ELSE MAX(0, used_bytes + ?)
+			END
+		WHERE id = ?`,
+		deltaBytes, deltaBytes, deltaBytes, deltaBytes, deltaBytes, userID,
 	)
 	return err
 }
@@ -939,7 +948,11 @@ func (s *Store) UpdateUserQuota(ctx context.Context, userID int64, deltaBytes in
 
 func generateMaildirKey() string {
 	buf := make([]byte, 16)
-	rand.Read(buf)
+	if _, err := rand.Read(buf); err != nil {
+		// Fallback to less random but still unique key on crypto/rand failure
+		// This should never happen in practice, but ensures we don't have all-zero keys
+		return fmt.Sprintf("%d.%d", time.Now().UnixNano(), time.Now().UnixMicro())
+	}
 	return fmt.Sprintf("%d.%s", time.Now().UnixNano(), hex.EncodeToString(buf))
 }
 

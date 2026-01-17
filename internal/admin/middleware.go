@@ -64,8 +64,20 @@ func (s *Server) createSession(userID int64) string {
 		return ""
 	}
 
-	// Cache in memory
+	// Cache in memory with size limit
 	sessionCacheMu.Lock()
+	// Enforce max cache size to prevent memory exhaustion
+	if len(sessionCache) >= maxSessionCache {
+		// Evict expired sessions first
+		for t, sess := range sessionCache {
+			if now.After(sess.expiresAt) || len(sessionCache) >= maxSessionCache {
+				delete(sessionCache, t)
+				if len(sessionCache) < maxSessionCache*9/10 { // Keep 90% capacity
+					break
+				}
+			}
+		}
+	}
 	sessionCache[token] = &session{
 		userID:    userID,
 		createdAt: now,
@@ -295,7 +307,12 @@ func (s *Server) withAuth(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// CSRF token handling
+// CSRF token handling with bounded cache
+const (
+	maxCSRFTokens   = 10000 // Maximum CSRF tokens in cache
+	maxSessionCache = 10000 // Maximum sessions in cache
+)
+
 var (
 	csrfTokens   = make(map[string]time.Time)
 	csrfTokensMu sync.RWMutex
@@ -315,6 +332,19 @@ func (s *Server) withCSRF(next http.Handler) http.Handler {
 			// Generate token for forms
 			token := generateToken()
 			csrfTokensMu.Lock()
+			// Enforce max cache size to prevent memory exhaustion
+			if len(csrfTokens) >= maxCSRFTokens {
+				// Evict oldest tokens (simple eviction: remove expired first)
+				now := time.Now()
+				for t, exp := range csrfTokens {
+					if now.After(exp) || len(csrfTokens) >= maxCSRFTokens {
+						delete(csrfTokens, t)
+						if len(csrfTokens) < maxCSRFTokens*9/10 { // Keep 90% capacity
+							break
+						}
+					}
+				}
+			}
 			csrfTokens[token] = time.Now().Add(1 * time.Hour)
 			csrfTokensMu.Unlock()
 
@@ -365,11 +395,18 @@ func generateToken() string {
 }
 
 // sessionCleanupStop is used to stop the session cleanup goroutine
-var sessionCleanupStop chan struct{}
+var (
+	sessionCleanupStop   chan struct{}
+	sessionCleanupStopMu sync.Mutex
+)
 
 // CleanupExpiredSessions removes expired sessions periodically
 func CleanupExpiredSessions(db *sql.DB) {
+	sessionCleanupStopMu.Lock()
 	sessionCleanupStop = make(chan struct{})
+	stopCh := sessionCleanupStop
+	sessionCleanupStopMu.Unlock()
+
 	ticker := time.NewTicker(15 * time.Minute)
 
 	go func() {
@@ -377,7 +414,7 @@ func CleanupExpiredSessions(db *sql.DB) {
 
 		for {
 			select {
-			case <-sessionCleanupStop:
+			case <-stopCh:
 				return
 			case <-ticker.C:
 				now := time.Now()
@@ -413,8 +450,11 @@ func CleanupExpiredSessions(db *sql.DB) {
 
 // StopSessionCleanup stops the session cleanup goroutine
 func StopSessionCleanup() {
+	sessionCleanupStopMu.Lock()
+	defer sessionCleanupStopMu.Unlock()
 	if sessionCleanupStop != nil {
 		close(sessionCleanupStop)
+		sessionCleanupStop = nil
 	}
 }
 

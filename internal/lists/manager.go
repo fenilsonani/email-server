@@ -239,17 +239,29 @@ func (m *Manager) SaveToArchive(ctx context.Context, list *MailingList, data []b
 	if msgID == "" {
 		msgID = generateMessageID()
 	}
-	// Sanitize message ID for filename
+	// Sanitize message ID for filename - use filepath.Base to prevent path traversal
 	filename := strings.ReplaceAll(msgID, "<", "")
 	filename = strings.ReplaceAll(filename, ">", "")
 	filename = strings.ReplaceAll(filename, "/", "_")
 	filename = strings.ReplaceAll(filename, "\\", "_")
+	filename = strings.ReplaceAll(filename, "..", "_") // Prevent path traversal
+	filename = strings.ReplaceAll(filename, "\x00", "") // Remove null bytes
+	// Use filepath.Base as final safety to strip any remaining path components
+	filename = filepath.Base(filename)
 	if len(filename) > 100 {
 		filename = filename[:100]
+	}
+	if filename == "" || filename == "." {
+		filename = generateRandomString(20)
 	}
 	filename = filename + ".eml"
 
 	messagePath := filepath.Join(archiveDir, filename)
+
+	// Verify the path is within the expected directory (defense in depth)
+	if !strings.HasPrefix(messagePath, archiveDir) {
+		return fmt.Errorf("invalid archive path detected")
+	}
 
 	// Write message to file
 	if err := os.WriteFile(messagePath, data, 0640); err != nil {

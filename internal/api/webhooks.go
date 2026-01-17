@@ -325,7 +325,12 @@ func (s *Server) createWebhook(w http.ResponseWriter, r *http.Request, domainID 
 
 	// Generate secret
 	secret := generateWebhookSecret()
-	eventsJSON, _ := json.Marshal(req.Events)
+	eventsJSON, err := json.Marshal(req.Events)
+	if err != nil {
+		s.logger.Error("Failed to marshal webhook events", "error", err.Error())
+		jsonError(w, "Internal server error", "INTERNAL_ERROR", http.StatusInternalServerError)
+		return
+	}
 	now := time.Now()
 
 	result, err := s.db.ExecContext(r.Context(), `
@@ -339,7 +344,12 @@ func (s *Server) createWebhook(w http.ResponseWriter, r *http.Request, domainID 
 		return
 	}
 
-	id, _ := result.LastInsertId()
+	id, err := result.LastInsertId()
+	if err != nil {
+		s.logger.Debug("Failed to get webhook insert ID", "error", err.Error())
+		// Continue anyway - webhook was created, just can't get ID
+		id = 0
+	}
 
 	// Return webhook with secret (only shown on creation)
 	jsonResponse(w, map[string]interface{}{

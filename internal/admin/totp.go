@@ -145,12 +145,14 @@ func (s *Server) checkTrustedDevice(userID int64, token string) bool {
 		return false
 	}
 
-	// Update last used time
-	s.db.Exec(`
+	// Update last used time (non-critical, log errors but don't fail)
+	if _, err := s.db.Exec(`
 		UPDATE totp_trusted_devices SET last_used_at = datetime('now')
 		WHERE user_id = ? AND device_token = ?`,
 		userID, token,
-	)
+	); err != nil {
+		s.logger.Debug("Failed to update trusted device last_used_at", "error", err.Error())
+	}
 
 	return true
 }
