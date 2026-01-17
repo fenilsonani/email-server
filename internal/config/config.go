@@ -166,12 +166,15 @@ type AutodiscoverConfig struct {
 
 // APIConfig holds transactional email API configuration
 type APIConfig struct {
-	Enabled          bool   `koanf:"enabled"`            // Enable transactional API
-	Port             int    `koanf:"port"`               // API port (default 8082)
-	Listen           string `koanf:"listen"`             // Listen address (default 0.0.0.0)
-	TrackingDomain   string `koanf:"tracking_domain"`    // Domain for open/click tracking
-	RateLimitDefault int    `koanf:"rate_limit_default"` // Default rate limit per hour
-	EnableTracking   bool   `koanf:"enable_tracking"`    // Enable open/click tracking
+	Enabled                   bool     `koanf:"enabled"`                       // Enable transactional API
+	Port                      int      `koanf:"port"`                          // API port (default 8082)
+	Listen                    string   `koanf:"listen"`                        // Listen address (default 0.0.0.0)
+	TrackingDomain            string   `koanf:"tracking_domain"`               // Domain for open/click tracking
+	RateLimitDefault          int      `koanf:"rate_limit_default"`            // Default rate limit per hour
+	EnableTracking            bool     `koanf:"enable_tracking"`               // Enable open/click tracking
+	BlockedAttachmentTypes    []string `koanf:"blocked_attachment_types"`      // Blocked file extensions (e.g., [".exe", ".bat"])
+	MaxAttachmentSizeMB       int      `koanf:"max_attachment_size_mb"`        // Max size per attachment in MB (default 10)
+	MaxTotalAttachmentsSizeMB int      `koanf:"max_total_attachments_size_mb"` // Max total attachments size in MB (default 25)
 }
 
 // DefaultConfig returns a configuration with sensible defaults

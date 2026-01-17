@@ -74,6 +74,13 @@ type Webhook struct {
 	CreatedAt         time.Time  `json:"created_at"`
 }
 
+// Attachment represents an email attachment
+type Attachment struct {
+	Filename    string `json:"filename"`               // Required: filename with extension
+	Content     string `json:"content"`                // Required: base64-encoded content
+	ContentType string `json:"content_type,omitempty"` // Optional: MIME type (auto-detected if empty)
+}
+
 // SendEmailRequest is the request body for sending an email
 type SendEmailRequest struct {
 	From        string            `json:"from"`
@@ -87,6 +94,7 @@ type SendEmailRequest struct {
 	TrackClicks bool              `json:"track_clicks"`
 	ReplyTo     string            `json:"reply_to,omitempty"`
 	Headers     map[string]string `json:"headers,omitempty"`
+	Attachments []Attachment      `json:"attachments,omitempty"` // Optional: file attachments
 }
 
 // SendTemplateRequest is the request body for sending with a template
@@ -109,12 +117,13 @@ type BatchSendRequest struct {
 
 // BatchEmailMessage represents a single message in a batch
 type BatchEmailMessage struct {
-	To        string            `json:"to"`
-	Subject   string            `json:"subject,omitempty"`
-	HTML      string            `json:"html,omitempty"`
-	Text      string            `json:"text,omitempty"`
-	Variables map[string]string `json:"variables,omitempty"`
-	Tags      []string          `json:"tags,omitempty"`
+	To          string            `json:"to"`
+	Subject     string            `json:"subject,omitempty"`
+	HTML        string            `json:"html,omitempty"`
+	Text        string            `json:"text,omitempty"`
+	Variables   map[string]string `json:"variables,omitempty"`
+	Tags        []string          `json:"tags,omitempty"`
+	Attachments []Attachment      `json:"attachments,omitempty"` // Optional: file attachments
 }
 
 // SendResponse is the response for a successful send
