@@ -67,6 +67,11 @@ type DatabaseConfig struct {
 	MaxIdleConns    int    `koanf:"max_idle_conns"`    // Maximum idle connections
 	ConnMaxLifetime string `koanf:"conn_max_lifetime"` // Maximum connection lifetime
 	ConnMaxIdleTime string `koanf:"conn_max_idle_time"` // Maximum idle time before closing
+
+	// Resilience settings
+	QueryTimeout          string `koanf:"query_timeout"`           // Maximum time for a single query (default: 30s)
+	SlowQueryThreshold    string `koanf:"slow_query_threshold"`    // Duration above which queries are logged as slow (default: 1s)
+	CircuitBreakerEnabled bool   `koanf:"circuit_breaker_enabled"` // Enable circuit breaker protection (default: true)
 }
 
 // DomainConfig holds per-domain configuration
@@ -194,12 +199,15 @@ func DefaultConfig() *Config {
 			MaildirPath:  "/var/lib/mailserver/maildir",
 		},
 		Database: DatabaseConfig{
-			Driver:          "sqlite3",
-			Path:            "/var/lib/mailserver/mail.db",
-			MaxOpenConns:    25,
-			MaxIdleConns:    5,
-			ConnMaxLifetime: "0",
-			ConnMaxIdleTime: "5m",
+			Driver:                "sqlite3",
+			Path:                  "/var/lib/mailserver/mail.db",
+			MaxOpenConns:          25,
+			MaxIdleConns:          5,
+			ConnMaxLifetime:       "0",
+			ConnMaxIdleTime:       "5m",
+			QueryTimeout:          "30s",
+			SlowQueryThreshold:    "1s",
+			CircuitBreakerEnabled: true,
 		},
 		Security: SecurityConfig{
 			RequireTLS:     true,
@@ -599,6 +607,29 @@ func (c *Config) validateDatabase() error {
 	if c.Database.ConnMaxIdleTime != "" {
 		if _, err := time.ParseDuration(c.Database.ConnMaxIdleTime); err != nil {
 			return fmt.Errorf("database.conn_max_idle_time is invalid: %w", err)
+		}
+	}
+
+	// Validate resilience settings
+	if c.Database.QueryTimeout != "" {
+		d, err := time.ParseDuration(c.Database.QueryTimeout)
+		if err != nil {
+			return fmt.Errorf("database.query_timeout is invalid: %w", err)
+		}
+		if d < time.Second {
+			return fmt.Errorf("database.query_timeout must be at least 1s (got: %s)", c.Database.QueryTimeout)
+		}
+		if d > 5*time.Minute {
+			return fmt.Errorf("database.query_timeout cannot exceed 5m (got: %s)", c.Database.QueryTimeout)
+		}
+	}
+	if c.Database.SlowQueryThreshold != "" {
+		d, err := time.ParseDuration(c.Database.SlowQueryThreshold)
+		if err != nil {
+			return fmt.Errorf("database.slow_query_threshold is invalid: %w", err)
+		}
+		if d < 100*time.Millisecond {
+			return fmt.Errorf("database.slow_query_threshold must be at least 100ms (got: %s)", c.Database.SlowQueryThreshold)
 		}
 	}
 

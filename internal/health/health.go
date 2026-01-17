@@ -93,8 +93,27 @@ func (m *Monitor) RegisterChecker(name string, checker Checker) {
 	m.mu.Unlock()
 }
 
+// CircuitBreakerState represents circuit breaker state for health checks.
+type CircuitBreakerState struct {
+	State           string `json:"state"`            // closed, half-open, open
+	FailureCount    int64  `json:"failure_count"`
+	SuccessCount    int64  `json:"success_count"`
+	LastFailureTime string `json:"last_failure_time,omitempty"`
+}
+
+// CircuitBreakerProvider is an interface for components that have circuit breakers.
+type CircuitBreakerProvider interface {
+	CircuitBreakerState() interface{}  // Returns state (closed=0, half-open=1, open=2)
+	CircuitBreakerStats() interface{}  // Returns stats struct
+}
+
 // RegisterDatabase adds automatic database health checking.
 func (m *Monitor) RegisterDatabase(db *sql.DB) {
+	m.RegisterDatabaseWithCircuitBreaker(db, nil)
+}
+
+// RegisterDatabaseWithCircuitBreaker adds database health checking with circuit breaker state.
+func (m *Monitor) RegisterDatabaseWithCircuitBreaker(db *sql.DB, cbProvider CircuitBreakerProvider) {
 	m.RegisterChecker("database", func(ctx context.Context) CheckResult {
 		start := time.Now()
 		result := CheckResult{
@@ -128,6 +147,25 @@ func (m *Monitor) RegisterDatabase(db *sql.DB) {
 			usagePercent = float64(stats.InUse) / float64(stats.MaxOpenConnections) * 100
 		}
 		result.Details["usage_percent"] = usagePercent
+
+		// Add circuit breaker state if available
+		if cbProvider != nil {
+			cbState := cbProvider.CircuitBreakerState()
+			result.Details["circuit_breaker_state"] = cbState
+
+			cbStats := cbProvider.CircuitBreakerStats()
+			if cbStats != nil {
+				result.Details["circuit_breaker_stats"] = cbStats
+			}
+
+			// If circuit breaker is open, report as degraded
+			if state, ok := cbState.(int); ok && state == 2 {
+				result.Status = StatusDegraded
+				result.Message = "database circuit breaker open"
+				result.Duration = time.Since(start)
+				return result
+			}
+		}
 
 		if usagePercent > 90 {
 			result.Status = StatusDegraded
