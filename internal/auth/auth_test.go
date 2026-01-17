@@ -58,6 +58,18 @@ func setupTestDB(t *testing.T) (*sql.DB, func()) {
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			UNIQUE(domain_id, source_address)
 		);
+
+		CREATE TABLE mailing_lists (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			domain_id INTEGER NOT NULL REFERENCES domains(id) ON DELETE CASCADE,
+			local_part TEXT NOT NULL,
+			list_address TEXT NOT NULL UNIQUE,
+			name TEXT NOT NULL,
+			description TEXT,
+			is_active BOOLEAN DEFAULT TRUE,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE(domain_id, local_part)
+		);
 	`
 
 	if _, err := db.Exec(schema); err != nil {

@@ -40,7 +40,7 @@ func setupTestServer(t *testing.T) (*Server, func()) {
 			password_hash TEXT,
 			is_admin BOOLEAN DEFAULT FALSE
 		);
-		CREATE TABLE domains (id INTEGER PRIMARY KEY, domain TEXT);
+		CREATE TABLE domains (id INTEGER PRIMARY KEY, name TEXT, domain TEXT);
 		CREATE TABLE admin_sessions (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			user_id INTEGER NOT NULL,
@@ -99,7 +99,7 @@ func setupTestServer(t *testing.T) (*Server, func()) {
 		);
 
 		INSERT INTO users (id, username, password_hash, is_admin) VALUES (1, 'testuser', 'hash', TRUE);
-		INSERT INTO domains (id, domain) VALUES (1, 'example.com');
+		INSERT INTO domains (id, name, domain) VALUES (1, 'example.com', 'example.com');
 	`
 
 	if _, err := db.Exec(schema); err != nil {
