@@ -46,13 +46,14 @@ func (s *Server) getTwoFactorStatus(userID int64) (*TwoFactorStatus, error) {
 }
 
 // generateTOTPSecret generates a new TOTP secret for a user
+// SECURITY: Uses SHA256 instead of deprecated SHA1
 func (s *Server) generateTOTPSecret(username string) (*otp.Key, error) {
 	return totp.Generate(totp.GenerateOpts{
 		Issuer:      totpIssuer,
 		AccountName: username,
 		Period:      30,
 		Digits:      otp.DigitsSix,
-		Algorithm:   otp.AlgorithmSHA1,
+		Algorithm:   otp.AlgorithmSHA256,
 	})
 }
 
@@ -72,8 +73,25 @@ func generateQRCodeBase64(key *otp.Key) (string, error) {
 }
 
 // validateTOTPCode validates a TOTP code against the user's secret
+// SECURITY: Tries SHA256 first (new), then falls back to SHA1 (legacy) for backward compatibility
 func (s *Server) validateTOTPCode(secret, code string) bool {
-	return totp.Validate(code, secret)
+	// Try SHA256 first (for new enrollments)
+	valid, err := totp.ValidateCustom(code, secret, time.Now().UTC(), totp.ValidateOpts{
+		Period:    30,
+		Digits:    otp.DigitsSix,
+		Algorithm: otp.AlgorithmSHA256,
+	})
+	if err == nil && valid {
+		return true
+	}
+
+	// Fall back to SHA1 for legacy enrollments
+	valid, err = totp.ValidateCustom(code, secret, time.Now().UTC(), totp.ValidateOpts{
+		Period:    30,
+		Digits:    otp.DigitsSix,
+		Algorithm: otp.AlgorithmSHA1,
+	})
+	return err == nil && valid
 }
 
 // generateDeviceToken generates a secure random token for trusted device

@@ -76,7 +76,8 @@ func NewServer(cfg *config.Config, db *sql.DB, authenticator *auth.Authenticator
 			}
 			return result
 		},
-		"safeHTML": func(s string) template.HTML { return template.HTML(s) },
+		// SECURITY: safeHTML function removed - bypasses HTML escaping and could enable XSS
+		// If you need to render trusted HTML, use a proper sanitizer library instead
 	}
 
 	// Create template map
@@ -235,6 +236,7 @@ func (s *Server) Start(listen string) error {
 	mux.HandleFunc("/admin/domains/dkim/rotate/", s.withAuth(s.handleDKIMRotate))
 	mux.HandleFunc("/admin/domains/dns/verify/", s.withAuth(s.handleDNSVerify))
 	mux.HandleFunc("/admin/domains/dns/", s.withAuth(s.handleDomainDNS))
+	mux.HandleFunc("/admin/domains/verify-ownership/", s.withAuth(s.handleDomainVerifyOwnership))
 	mux.HandleFunc("/admin/sieve/", s.withAuth(s.handleSieve))
 	mux.HandleFunc("/admin/logs", s.withAuth(s.handleLogs))
 	mux.HandleFunc("/admin/logs/auth", s.withAuth(s.handleAuthLogs))

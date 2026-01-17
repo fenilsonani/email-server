@@ -100,9 +100,14 @@ func clearSessionCookie(w http.ResponseWriter) {
 }
 
 // generateToken creates a cryptographically secure random token
+// SECURITY: Panics if crypto/rand fails to ensure we never generate weak tokens
 func generateToken() string {
 	b := make([]byte, 32)
-	rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		// Panic is appropriate here - if crypto/rand fails, the system
+		// is in a critical state and should not continue generating tokens
+		panic("crypto/rand failed: " + err.Error())
+	}
 	return hex.EncodeToString(b)
 }
 

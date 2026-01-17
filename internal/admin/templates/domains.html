@@ -42,6 +42,9 @@
                 <td>
                     <strong>{{.Name}}</strong>
                     {{if .IsPrimary}}<span class="badge badge-info" style="margin-left: 0.5rem; font-size: 10px;">Primary</span>{{end}}
+                    {{if not .IsVerified}}
+                    <span class="badge badge-danger" style="margin-left: 0.5rem; font-size: 10px;" title="Domain ownership not verified">Unverified</span>
+                    {{end}}
                 </td>
                 <td>
                     <code style="font-size: 0.8rem;">{{.MailHostname}}</code>

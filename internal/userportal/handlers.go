@@ -81,13 +81,16 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// If we detected a domain, verify user belongs to it
+	// SECURITY: Use generic error message to prevent account enumeration
 	if domain != nil {
 		var userDomainID int64
 		s.db.QueryRowContext(r.Context(), "SELECT domain_id FROM users WHERE id = ?", user.ID).Scan(&userDomainID)
 		if userDomainID != domain.ID {
+			// Record as failed attempt to prevent bypass via domain switching
+			s.rateLimiter.RecordFailure(clientIP)
 			s.renderTemplate(w, "login.html", map[string]interface{}{
 				"Title":  "Account Login",
-				"Error":  "This account does not belong to this domain",
+				"Error":  "Invalid email or password", // Generic message prevents enumeration
 				"Email":  email,
 				"Domain": domain,
 			})

@@ -56,7 +56,7 @@ func (s *Server) loadTemplates() error {
 	baseStr := string(baseContent)
 
 	funcMap := template.FuncMap{
-		"safeHTML":  func(str string) template.HTML { return template.HTML(str) },
+		// SECURITY: safeHTML function removed - bypasses HTML escaping and could enable XSS
 		"divFloat":  func(a, b int64) float64 { return float64(a) / float64(b) },
 		"formatMB":  func(bytes int64) string { return fmt.Sprintf("%.1f", float64(bytes)/1048576) },
 		"formatGB":  func(bytes int64) string { return fmt.Sprintf("%.0f", float64(bytes)/1073741824) },
