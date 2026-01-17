@@ -2,6 +2,7 @@
 package delivery
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/tls"
@@ -11,15 +12,18 @@ import (
 	"fmt"
 	"net"
 	"net/smtp"
+	"net/textproto"
 	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/fenilsonani/email-server/internal/logging"
+	"github.com/fenilsonani/email-server/internal/metrics"
 	"github.com/fenilsonani/email-server/internal/queue"
 	"github.com/fenilsonani/email-server/internal/resilience"
 	"github.com/fenilsonani/email-server/internal/security"
+	"github.com/fenilsonani/email-server/internal/tracing"
 )
 
 // Common errors
@@ -89,6 +93,13 @@ type Engine struct {
 	stsResolver  *STSResolver  // MTA-STS policy resolver
 	daneResolver *DANEResolver // DANE/TLSA resolver
 
+	// Observability
+	tracer      *tracing.Tracer
+	domainStats *metrics.DomainStats
+
+	// Deduplication
+	dedupTracker *queue.DeliveryTracker
+
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -101,8 +112,32 @@ type Engine struct {
 	totalBounced  int64
 }
 
+// EngineOption configures the delivery engine.
+type EngineOption func(*Engine)
+
+// WithTracer sets the tracer for the delivery engine.
+func WithTracer(t *tracing.Tracer) EngineOption {
+	return func(e *Engine) {
+		e.tracer = t
+	}
+}
+
+// WithDomainStats sets the domain stats tracker for the delivery engine.
+func WithDomainStats(ds *metrics.DomainStats) EngineOption {
+	return func(e *Engine) {
+		e.domainStats = ds
+	}
+}
+
+// WithDedupTracker sets the deduplication tracker for the delivery engine.
+func WithDedupTracker(dt *queue.DeliveryTracker) EngineOption {
+	return func(e *Engine) {
+		e.dedupTracker = dt
+	}
+}
+
 // NewEngine creates a new delivery engine.
-func NewEngine(cfg Config, q *queue.RedisQueue, dkim *security.DKIMSignerPool, logger *logging.Logger, db *sql.DB) *Engine {
+func NewEngine(cfg Config, q *queue.RedisQueue, dkim *security.DKIMSignerPool, logger *logging.Logger, db *sql.DB, opts ...EngineOption) *Engine {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	e := &Engine{
@@ -125,6 +160,11 @@ func NewEngine(cfg Config, q *queue.RedisQueue, dkim *security.DKIMSignerPool, l
 		db:        db,
 		ctx:       ctx,
 		cancel:    cancel,
+	}
+
+	// Apply options
+	for _, opt := range opts {
+		opt(e)
 	}
 
 	// Initialize MTA-STS resolver if enabled
@@ -253,6 +293,48 @@ func (e *Engine) deliverMessage(msg *queue.Message) {
 	ctx := logging.WithMessageID(e.ctx, msg.ID)
 	logger := e.logger.WithFields("message_id", msg.ID, "domain", msg.Domain)
 
+	// Start tracing span
+	var span *tracing.Span
+	if e.tracer != nil {
+		ctx, span = e.tracer.StartSpan(ctx, "deliver_message")
+		span.SetTag("message_id", msg.ID)
+		span.SetTag("domain", msg.Domain)
+		span.SetTag("attempt", fmt.Sprintf("%d", msg.Attempts))
+		defer span.Finish()
+	}
+
+	// Track delivery timing for metrics
+	startTime := time.Now()
+	var deliverySuccess bool
+	defer func() {
+		duration := time.Since(startTime)
+		if e.domainStats != nil {
+			e.domainStats.RecordDelivery(msg.Domain, deliverySuccess, duration)
+		}
+	}()
+
+	// Extract SMTP Message-ID for deduplication
+	smtpMessageID := e.extractMessageID(msg.MessagePath)
+	workerID := fmt.Sprintf("worker-%d", time.Now().UnixNano())
+
+	// Check deduplication before delivery
+	if e.dedupTracker != nil && smtpMessageID != "" {
+		if err := e.dedupTracker.StartDelivery(ctx, smtpMessageID, msg.ID, workerID, msg.Recipients); err != nil {
+			if errors.Is(err, queue.ErrAlreadyDelivered) {
+				logger.InfoContext(ctx, "Message already delivered (dedup), skipping",
+					"smtp_message_id", smtpMessageID)
+				e.queue.Complete(ctx, msg.ID)
+				deliverySuccess = true
+				if span != nil {
+					span.SetTag("dedup", "skipped")
+				}
+				return
+			}
+			logger.WarnContext(ctx, "Dedup check failed, continuing delivery",
+				"error", err.Error())
+		}
+	}
+
 	logger.InfoContext(ctx, "Attempting delivery",
 		"attempt", msg.Attempts,
 		"recipients", len(msg.Recipients),
@@ -268,11 +350,24 @@ func (e *Engine) deliverMessage(msg *queue.Message) {
 		e.totalFailed++
 		e.mu.Unlock()
 		for _, rcpt := range msg.Recipients {
-			e.logDelivery(ctx, msg.ID, msg.Sender, rcpt, "rejected", 0, err.Error())
+			e.logDeliveryWithTrace(ctx, msg.ID, msg.Sender, rcpt, "rejected", 0, err.Error(), msg.Domain, msg.Attempts, startTime, "")
+		}
+		if e.dedupTracker != nil && smtpMessageID != "" {
+			e.dedupTracker.MarkFailed(ctx, smtpMessageID, err.Error())
+		}
+		if span != nil {
+			span.SetError(err)
 		}
 		return
 	}
-	if breaker.State() == resilience.StateOpen {
+
+	// Record circuit breaker state
+	cbState := breaker.State()
+	if span != nil {
+		span.SetTag("circuit_breaker_state", cbState.String())
+	}
+
+	if cbState == resilience.StateOpen {
 		logger.WarnContext(ctx, "Circuit breaker open, deferring")
 		e.queue.Retry(ctx, msg.ID, ErrCircuitOpen)
 		e.mu.Lock()
@@ -280,7 +375,10 @@ func (e *Engine) deliverMessage(msg *queue.Message) {
 		e.mu.Unlock()
 		// Log deferred status for each recipient
 		for _, rcpt := range msg.Recipients {
-			e.logDelivery(ctx, msg.ID, msg.Sender, rcpt, "deferred", 0, "circuit breaker open")
+			e.logDeliveryWithTrace(ctx, msg.ID, msg.Sender, rcpt, "deferred", 0, "circuit breaker open", msg.Domain, msg.Attempts, startTime, cbState.String())
+		}
+		if span != nil {
+			span.SetTag("result", "deferred_circuit_open")
 		}
 		return
 	}
@@ -302,7 +400,12 @@ func (e *Engine) deliverMessage(msg *queue.Message) {
 
 			// Log rejected status for each recipient
 			for _, rcpt := range msg.Recipients {
-				e.logDelivery(ctx, msg.ID, msg.Sender, rcpt, "rejected", smtpCode, err.Error())
+				e.logDeliveryWithTrace(ctx, msg.ID, msg.Sender, rcpt, "rejected", smtpCode, err.Error(), msg.Domain, msg.Attempts, startTime, cbState.String())
+			}
+
+			// Mark as failed in dedup tracker
+			if e.dedupTracker != nil && smtpMessageID != "" {
+				e.dedupTracker.MarkFailed(ctx, smtpMessageID, err.Error())
 			}
 
 			// Generate and send bounce message
@@ -315,7 +418,7 @@ func (e *Engine) deliverMessage(msg *queue.Message) {
 					e.totalBounced++
 					e.mu.Unlock()
 					// Log bounce status
-					e.logDelivery(ctx, msg.ID, "", msg.Sender, "bounced", 0, "")
+					e.logDeliveryWithTrace(ctx, msg.ID, "", msg.Sender, "bounced", 0, "", msg.Domain, msg.Attempts, startTime, "")
 				}
 			}
 
@@ -325,6 +428,11 @@ func (e *Engine) deliverMessage(msg *queue.Message) {
 					"path", msg.MessagePath,
 					"error", err.Error())
 			}
+
+			if span != nil {
+				span.SetError(err)
+				span.SetTag("result", "permanent_failure")
+			}
 		} else {
 			logger.WarnContext(ctx, "Temporary delivery failure, will retry", "error", err.Error())
 			e.queue.Retry(ctx, msg.ID, err)
@@ -333,22 +441,31 @@ func (e *Engine) deliverMessage(msg *queue.Message) {
 			e.mu.Unlock()
 			// Log deferred status for each recipient
 			for _, rcpt := range msg.Recipients {
-				e.logDelivery(ctx, msg.ID, msg.Sender, rcpt, "deferred", smtpCode, err.Error())
+				e.logDeliveryWithTrace(ctx, msg.ID, msg.Sender, rcpt, "deferred", smtpCode, err.Error(), msg.Domain, msg.Attempts, startTime, cbState.String())
+			}
+			if span != nil {
+				span.SetTag("result", "temporary_failure")
 			}
 		}
 		return
 	}
 
 	// Success!
+	deliverySuccess = true
 	logger.InfoContext(ctx, "Message delivered successfully")
 	e.queue.Complete(ctx, msg.ID)
 	e.mu.Lock()
 	e.totalSent++
 	e.mu.Unlock()
 
+	// Mark as delivered in dedup tracker
+	if e.dedupTracker != nil && smtpMessageID != "" {
+		e.dedupTracker.MarkDelivered(ctx, smtpMessageID, "250 OK")
+	}
+
 	// Log delivered status for each recipient
 	for _, rcpt := range msg.Recipients {
-		e.logDelivery(ctx, msg.ID, msg.Sender, rcpt, "delivered", 250, "")
+		e.logDeliveryWithTrace(ctx, msg.ID, msg.Sender, rcpt, "delivered", 250, "", msg.Domain, msg.Attempts, startTime, cbState.String())
 	}
 
 	// Clean up the message file from disk
@@ -356,6 +473,10 @@ func (e *Engine) deliverMessage(msg *queue.Message) {
 		logger.WarnContext(ctx, "Failed to cleanup message file",
 			"path", msg.MessagePath,
 			"error", err.Error())
+	}
+
+	if span != nil {
+		span.SetTag("result", "success")
 	}
 }
 
@@ -944,4 +1065,78 @@ func extractSMTPCode(err error) int {
 		}
 	}
 	return 0
+}
+
+// extractMessageID extracts the Message-ID header from an email file.
+func (e *Engine) extractMessageID(messagePath string) string {
+	if messagePath == "" {
+		return ""
+	}
+
+	file, err := os.Open(messagePath)
+	if err != nil {
+		return ""
+	}
+	defer file.Close()
+
+	reader := textproto.NewReader(bufio.NewReader(file))
+	header, err := reader.ReadMIMEHeader()
+	if err != nil {
+		return ""
+	}
+
+	messageID := header.Get("Message-ID")
+	// Clean up angle brackets if present
+	messageID = strings.TrimPrefix(messageID, "<")
+	messageID = strings.TrimSuffix(messageID, ">")
+	return messageID
+}
+
+// logDeliveryWithTrace logs a delivery event with tracing and observability data.
+func (e *Engine) logDeliveryWithTrace(ctx context.Context, messageID, sender, recipient, status string, smtpCode int, errorMsg, domain string, attempt int, startTime time.Time, cbState string) {
+	if e.db == nil {
+		return // Graceful degradation if no database configured
+	}
+
+	var errMsgPtr *string
+	if errorMsg != "" {
+		errMsgPtr = &errorMsg
+	}
+
+	var smtpCodePtr *int
+	if smtpCode > 0 {
+		smtpCodePtr = &smtpCode
+	}
+
+	// Get trace ID from context
+	traceID := tracing.GetTraceID(ctx)
+	var traceIDPtr *string
+	if traceID != "" {
+		traceIDPtr = &traceID
+	}
+
+	// Calculate duration
+	durationMs := int(time.Since(startTime).Milliseconds())
+
+	var domainPtr *string
+	if domain != "" {
+		domainPtr = &domain
+	}
+
+	var cbStatePtr *string
+	if cbState != "" {
+		cbStatePtr = &cbState
+	}
+
+	_, err := e.db.ExecContext(ctx,
+		`INSERT INTO delivery_log (message_id, sender, recipient, status, smtp_code, error_message, trace_id, domain, attempt_number, delivery_duration_ms, circuit_breaker_state)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		messageID, sender, recipient, status, smtpCodePtr, errMsgPtr, traceIDPtr, domainPtr, attempt, durationMs, cbStatePtr,
+	)
+	if err != nil {
+		e.logger.WarnContext(ctx, "Failed to log delivery event",
+			"error", err.Error(),
+			"message_id", messageID,
+		)
+	}
 }

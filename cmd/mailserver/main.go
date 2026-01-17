@@ -17,25 +17,27 @@ import (
 	"github.com/fenilsonani/email-server/internal/admin"
 	"github.com/fenilsonani/email-server/internal/api"
 	"github.com/fenilsonani/email-server/internal/auth"
-	"github.com/fenilsonani/email-server/internal/features"
 	"github.com/fenilsonani/email-server/internal/autodiscover"
 	"github.com/fenilsonani/email-server/internal/config"
 	"github.com/fenilsonani/email-server/internal/dav"
 	"github.com/fenilsonani/email-server/internal/dns"
+	"github.com/fenilsonani/email-server/internal/features"
 	"github.com/fenilsonani/email-server/internal/health"
 	imapserver "github.com/fenilsonani/email-server/internal/imap"
 	"github.com/fenilsonani/email-server/internal/lists"
 	"github.com/fenilsonani/email-server/internal/logging"
+	"github.com/fenilsonani/email-server/internal/metrics"
 	"github.com/fenilsonani/email-server/internal/migration"
 	"github.com/fenilsonani/email-server/internal/queue"
 	"github.com/fenilsonani/email-server/internal/security"
 	"github.com/fenilsonani/email-server/internal/setup"
 	"github.com/fenilsonani/email-server/internal/sieve"
-	"github.com/fenilsonani/email-server/internal/tuning"
 	smtpserver "github.com/fenilsonani/email-server/internal/smtp"
 	"github.com/fenilsonani/email-server/internal/smtp/delivery"
 	"github.com/fenilsonani/email-server/internal/storage/maildir"
 	"github.com/fenilsonani/email-server/internal/storage/metadata"
+	"github.com/fenilsonani/email-server/internal/tracing"
+	"github.com/fenilsonani/email-server/internal/tuning"
 	"github.com/spf13/cobra"
 )
 
@@ -425,6 +427,14 @@ var serveCmd = &cobra.Command{
 		}
 		// QueuePath for bounce messages - same as SMTP backend queue path
 		queuePath := filepath.Join(cfg.Storage.DataDir, "queue")
+
+		// Initialize observability components
+		tracer := tracing.NewTracer(true, logger)
+		domainStats := metrics.NewDomainStats(time.Hour)
+
+		// Initialize deduplication tracker using Redis
+		dedupTracker := queue.NewDeliveryTracker(redisQueue.Client(), cfg.Queue.Prefix, 7*24*time.Hour)
+
 		deliveryEngine := delivery.NewEngine(delivery.Config{
 			Workers:        cfg.Delivery.Workers,
 			Hostname:       cfg.Server.Hostname,
@@ -435,10 +445,19 @@ var serveCmd = &cobra.Command{
 			VerifyTLS:      cfg.Delivery.VerifyTLS,
 			RelayHost:      cfg.Delivery.RelayHost,
 			QueuePath:      queuePath,
-		}, redisQueue, dkimPool, logger, db.RawDB())
+		}, redisQueue, dkimPool, logger, db.RawDB(),
+			delivery.WithTracer(tracer),
+			delivery.WithDomainStats(domainStats),
+			delivery.WithDedupTracker(dedupTracker),
+		)
 		resources.deliveryEngine = deliveryEngine
 		deliveryEngine.Start()
-		logger.Info("Delivery engine started", "workers", cfg.Delivery.Workers)
+		logger.Info("Delivery engine started",
+			"workers", cfg.Delivery.Workers,
+			"tracing", true,
+			"domain_metrics", true,
+			"deduplication", true,
+		)
 
 		// Create IMAP server
 		imapAddr := fmt.Sprintf("%s:%d", cfg.Server.BindAddress, cfg.Server.IMAPPort)
