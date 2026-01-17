@@ -207,8 +207,9 @@ func (m *Manager) PrepareListMessage(ctx context.Context, list *MailingList, ori
 	// Empty line to separate headers from body
 	buf.WriteString("\r\n")
 
-	// Copy body
-	body, err := io.ReadAll(msg.Body)
+	// Copy body (limit to 25MB to prevent OOM)
+	const maxBodySize = 25 * 1024 * 1024
+	body, err := io.ReadAll(io.LimitReader(msg.Body, maxBodySize))
 	if err != nil {
 		return nil, fmt.Errorf("failed to read message body: %w", err)
 	}
@@ -451,6 +452,11 @@ func extractBodyPreview(msg *mail.Message, maxLen int) string {
 	mediaType, params, _ := mime.ParseMediaType(contentType)
 
 	var bodyText string
+	// Limit preview reads to prevent OOM (read slightly more than maxLen to handle encoding)
+	previewLimit := int64(maxLen * 4)
+	if previewLimit < 64*1024 {
+		previewLimit = 64 * 1024 // Minimum 64KB
+	}
 
 	if strings.HasPrefix(mediaType, "multipart/") {
 		mr := multipart.NewReader(msg.Body, params["boundary"])
@@ -461,14 +467,18 @@ func extractBodyPreview(msg *mail.Message, maxLen int) string {
 			}
 			partType := part.Header.Get("Content-Type")
 			if strings.HasPrefix(partType, "text/plain") || partType == "" {
-				data, _ := io.ReadAll(part)
-				bodyText = string(data)
+				data, err := io.ReadAll(io.LimitReader(part, previewLimit))
+				if err == nil {
+					bodyText = string(data)
+				}
 				break
 			}
 		}
 	} else {
-		data, _ := io.ReadAll(msg.Body)
-		bodyText = string(data)
+		data, err := io.ReadAll(io.LimitReader(msg.Body, previewLimit))
+		if err == nil {
+			bodyText = string(data)
+		}
 	}
 
 	// Clean up and truncate

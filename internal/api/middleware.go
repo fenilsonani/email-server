@@ -268,7 +268,13 @@ func generateAPIKeySalt() (string, error) {
 func hashAPIKeyWithSalt(key, salt string) string {
 	var saltBytes []byte
 	if salt != "" {
-		saltBytes, _ = hex.DecodeString(salt)
+		var err error
+		saltBytes, err = hex.DecodeString(salt)
+		if err != nil || len(saltBytes) == 0 {
+			// If salt is corrupted, fall back to legacy salt for safety
+			// This prevents timing attacks from revealing which keys have invalid salts
+			saltBytes = []byte(legacyAPIKeySalt)
+		}
 	} else {
 		// Legacy: use fixed salt for backward compatibility
 		saltBytes = []byte(legacyAPIKeySalt)

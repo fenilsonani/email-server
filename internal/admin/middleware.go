@@ -364,37 +364,58 @@ func generateToken() string {
 	return hex.EncodeToString(b)
 }
 
+// sessionCleanupStop is used to stop the session cleanup goroutine
+var sessionCleanupStop chan struct{}
+
 // CleanupExpiredSessions removes expired sessions periodically
 func CleanupExpiredSessions(db *sql.DB) {
+	sessionCleanupStop = make(chan struct{})
 	ticker := time.NewTicker(15 * time.Minute)
+
 	go func() {
-		for range ticker.C {
-			now := time.Now()
+		defer ticker.Stop()
 
-			// Clean expired sessions from database
-			if db != nil {
-				_, _ = db.Exec(`DELETE FROM admin_sessions WHERE expires_at < ?`, now)
-			}
+		for {
+			select {
+			case <-sessionCleanupStop:
+				return
+			case <-ticker.C:
+				now := time.Now()
 
-			// Clean session cache
-			sessionCacheMu.Lock()
-			for token, sess := range sessionCache {
-				if now.After(sess.expiresAt) {
-					delete(sessionCache, token)
+				// Clean expired sessions from database
+				if db != nil {
+					if _, err := db.Exec(`DELETE FROM admin_sessions WHERE expires_at < ?`, now); err != nil {
+						// Log error but continue - non-critical
+					}
 				}
-			}
-			sessionCacheMu.Unlock()
 
-			// Clean CSRF tokens
-			csrfTokensMu.Lock()
-			for token, expiry := range csrfTokens {
-				if now.After(expiry) {
-					delete(csrfTokens, token)
+				// Clean session cache
+				sessionCacheMu.Lock()
+				for token, sess := range sessionCache {
+					if now.After(sess.expiresAt) {
+						delete(sessionCache, token)
+					}
 				}
+				sessionCacheMu.Unlock()
+
+				// Clean CSRF tokens
+				csrfTokensMu.Lock()
+				for token, expiry := range csrfTokens {
+					if now.After(expiry) {
+						delete(csrfTokens, token)
+					}
+				}
+				csrfTokensMu.Unlock()
 			}
-			csrfTokensMu.Unlock()
 		}
 	}()
+}
+
+// StopSessionCleanup stops the session cleanup goroutine
+func StopSessionCleanup() {
+	if sessionCleanupStop != nil {
+		close(sessionCleanupStop)
+	}
 }
 
 // isValidToken validates token format (must be hex and minimum 32 chars)

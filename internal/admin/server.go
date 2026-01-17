@@ -445,10 +445,16 @@ func (s *Server) getStats(ctx context.Context) (*Stats, error) {
 		}
 	}
 
-	// Get mailing list stats
-	_ = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_lists WHERE is_active = 1").Scan(&stats.TotalLists)
-	_ = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM list_members").Scan(&stats.TotalListMembers)
-	_ = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM list_moderation_queue WHERE status = 'pending'").Scan(&stats.PendingModeration)
+	// Get mailing list stats (non-critical, log errors but continue)
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_lists WHERE is_active = 1").Scan(&stats.TotalLists); err != nil {
+		s.logger.Debug("Failed to get mailing list count", "error", err.Error())
+	}
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM list_members").Scan(&stats.TotalListMembers); err != nil {
+		s.logger.Debug("Failed to get list members count", "error", err.Error())
+	}
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM list_moderation_queue WHERE status = 'pending'").Scan(&stats.PendingModeration); err != nil {
+		s.logger.Debug("Failed to get pending moderation count", "error", err.Error())
+	}
 
 	// Get recent auth activity
 	rows, err := s.db.QueryContext(ctx, `
