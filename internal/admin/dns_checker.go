@@ -12,6 +12,14 @@ import (
 	"github.com/fenilsonani/email-server/internal/security"
 )
 
+// DNS lookup timeout for all DNS operations
+const dnsLookupTimeout = 10 * time.Second
+
+// dnsResolver is a context-aware DNS resolver with timeout support
+var dnsResolver = &net.Resolver{
+	PreferGo: true,
+}
+
 // DNSChecker periodically verifies DNS configuration for all domains
 type DNSChecker struct {
 	db       *sql.DB
@@ -65,7 +73,9 @@ func (c *DNSChecker) Stop() {
 
 // checkAllDomains verifies DNS for all domains
 func (c *DNSChecker) checkAllDomains() {
-	ctx := context.Background()
+	// Use timeout context for the entire operation
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
 
 	rows, err := c.db.QueryContext(ctx, `
 		SELECT id, name, COALESCE(dkim_selector, 'mail'), dkim_storage_type
@@ -193,7 +203,10 @@ func (c *DNSChecker) getDKIMPath() string {
 
 // verifyMXRecord checks if MX record points to the correct hostname
 func (c *DNSChecker) verifyMXRecord(domain, expectedHost string) bool {
-	mxRecords, err := net.LookupMX(domain)
+	ctx, cancel := context.WithTimeout(context.Background(), dnsLookupTimeout)
+	defer cancel()
+
+	mxRecords, err := dnsResolver.LookupMX(ctx, domain)
 	if err != nil || len(mxRecords) == 0 {
 		return false
 	}
@@ -209,7 +222,10 @@ func (c *DNSChecker) verifyMXRecord(domain, expectedHost string) bool {
 
 // verifySPFRecord checks if SPF record exists and contains expected values
 func (c *DNSChecker) verifySPFRecord(domain string) bool {
-	txtRecords, err := net.LookupTXT(domain)
+	ctx, cancel := context.WithTimeout(context.Background(), dnsLookupTimeout)
+	defer cancel()
+
+	txtRecords, err := dnsResolver.LookupTXT(ctx, domain)
 	if err != nil {
 		return false
 	}
@@ -230,8 +246,11 @@ func (c *DNSChecker) verifyDKIMRecord(domain, selector, expectedDKIM string) boo
 		return false
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), dnsLookupTimeout)
+	defer cancel()
+
 	dkimDomain := selector + "._domainkey." + domain
-	txtRecords, err := net.LookupTXT(dkimDomain)
+	txtRecords, err := dnsResolver.LookupTXT(ctx, dkimDomain)
 	if err != nil {
 		return false
 	}
@@ -249,8 +268,11 @@ func (c *DNSChecker) verifyDKIMRecord(domain, selector, expectedDKIM string) boo
 
 // verifyDMARCRecord checks if DMARC record exists
 func (c *DNSChecker) verifyDMARCRecord(domain string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), dnsLookupTimeout)
+	defer cancel()
+
 	dmarcDomain := "_dmarc." + domain
-	txtRecords, err := net.LookupTXT(dmarcDomain)
+	txtRecords, err := dnsResolver.LookupTXT(ctx, dmarcDomain)
 	if err != nil {
 		return false
 	}
@@ -265,19 +287,22 @@ func (c *DNSChecker) verifyDMARCRecord(domain string) bool {
 
 // verifyMailHostnameRecord checks if mail.{domain} A record resolves to an IP address
 func (c *DNSChecker) verifyMailHostnameRecord(domain string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), dnsLookupTimeout)
+	defer cancel()
+
 	mailHostname := "mail." + domain
-	ips, err := net.LookupIP(mailHostname)
+	ips, err := dnsResolver.LookupIPAddr(ctx, mailHostname)
 	if err != nil || len(ips) == 0 {
 		return false
 	}
 
 	// If we have a configured hostname, check if IPs match
 	if c.config.Server.Hostname != "" {
-		serverIPs, err := net.LookupIP(c.config.Server.Hostname)
+		serverIPs, err := dnsResolver.LookupIPAddr(ctx, c.config.Server.Hostname)
 		if err == nil && len(serverIPs) > 0 {
 			for _, serverIP := range serverIPs {
 				for _, ip := range ips {
-					if serverIP.Equal(ip) {
+					if serverIP.IP.Equal(ip.IP) {
 						return true
 					}
 				}
@@ -294,15 +319,18 @@ func (c *DNSChecker) verifyMailHostnameRecord(domain string) bool {
 
 // GetMailHostnameIPs returns the IPs that mail.{domain} resolves to
 func (c *DNSChecker) GetMailHostnameIPs(domain string) ([]string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), dnsLookupTimeout)
+	defer cancel()
+
 	mailHostname := "mail." + domain
-	ips, err := net.LookupIP(mailHostname)
+	ips, err := dnsResolver.LookupIPAddr(ctx, mailHostname)
 	if err != nil {
 		return nil, err
 	}
 
 	result := make([]string, len(ips))
 	for i, ip := range ips {
-		result[i] = ip.String()
+		result[i] = ip.IP.String()
 	}
 	return result, nil
 }

@@ -17,10 +17,14 @@ import (
 )
 
 const (
-	webhookTimeout     = 10 * time.Second
-	maxWebhookRetries  = 3
-	webhookMaxFailures = 5
+	webhookTimeout        = 10 * time.Second
+	maxWebhookRetries     = 3
+	webhookMaxFailures    = 5
+	maxConcurrentWebhooks = 50 // Maximum concurrent webhook deliveries
 )
+
+// webhookSemaphore limits concurrent webhook deliveries to prevent goroutine explosion
+var webhookSemaphore = make(chan struct{}, maxConcurrentWebhooks)
 
 // triggerWebhook sends webhook events to registered endpoints
 func (s *Server) triggerWebhook(ctx context.Context, domainID int64, eventType string, event *WebhookEvent) {
@@ -55,8 +59,23 @@ func (s *Server) triggerWebhook(ctx context.Context, domainID int64, eventType s
 			continue
 		}
 
-		// Send webhook in goroutine
-		go s.deliverWebhook(ctx, &webhook, event)
+		// Send webhook with bounded concurrency
+		// Copy webhook to avoid closure capture issues
+		wh := webhook
+		go func() {
+			// Acquire semaphore (blocks if too many concurrent webhooks)
+			select {
+			case webhookSemaphore <- struct{}{}:
+				defer func() { <-webhookSemaphore }()
+				s.deliverWebhook(ctx, &wh, event)
+			case <-time.After(30 * time.Second):
+				// Timeout waiting for semaphore - too many webhooks queued
+				s.logger.Warn("Webhook delivery skipped: too many concurrent deliveries",
+					"webhook_id", wh.ID,
+					"event", event.Event,
+				)
+			}
+		}()
 	}
 
 	if err := rows.Err(); err != nil {
