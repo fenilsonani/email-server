@@ -150,26 +150,39 @@ func WithMailbox(ctx context.Context, mailbox string) context.Context {
 }
 
 // extractContextAttrs extracts logging attributes from context.
+// Uses safe type assertions to prevent panics from malformed context values.
 func extractContextAttrs(ctx context.Context) []slog.Attr {
 	var attrs []slog.Attr
 
 	if v := ctx.Value(traceIDKey); v != nil {
-		attrs = append(attrs, slog.String("trace_id", v.(string)))
+		if s, ok := v.(string); ok {
+			attrs = append(attrs, slog.String("trace_id", s))
+		}
 	}
 	if v := ctx.Value(userIDKey); v != nil {
-		attrs = append(attrs, slog.Int64("user_id", v.(int64)))
+		if id, ok := v.(int64); ok {
+			attrs = append(attrs, slog.Int64("user_id", id))
+		}
 	}
 	if v := ctx.Value(remoteAddrKey); v != nil {
-		attrs = append(attrs, slog.String("remote_addr", v.(string)))
+		if s, ok := v.(string); ok {
+			attrs = append(attrs, slog.String("remote_addr", s))
+		}
 	}
 	if v := ctx.Value(protocolKey); v != nil {
-		attrs = append(attrs, slog.String("protocol", v.(string)))
+		if s, ok := v.(string); ok {
+			attrs = append(attrs, slog.String("protocol", s))
+		}
 	}
 	if v := ctx.Value(messageIDKey); v != nil {
-		attrs = append(attrs, slog.String("message_id", v.(string)))
+		if s, ok := v.(string); ok {
+			attrs = append(attrs, slog.String("message_id", s))
+		}
 	}
 	if v := ctx.Value(mailboxKey); v != nil {
-		attrs = append(attrs, slog.String("mailbox", v.(string)))
+		if s, ok := v.(string); ok {
+			attrs = append(attrs, slog.String("mailbox", s))
+		}
 	}
 
 	return attrs

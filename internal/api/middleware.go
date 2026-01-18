@@ -106,17 +106,18 @@ func (s *Server) validateAPIKey(ctx context.Context, token string) (*APIKey, err
 	// Find API key by prefix
 	var apiKey APIKey
 	var keyHash, scopesJSON string
+	var keySalt sql.NullString
 	var expiresAt, lastUsedAt sql.NullTime
 
 	err := s.db.QueryRowContext(ctx, `
 		SELECT id, domain_id, key_hash, key_prefix, name, scopes, is_active,
-		       rate_limit_per_hour, last_used_at, created_at, expires_at
+		       rate_limit_per_hour, last_used_at, created_at, expires_at, key_salt
 		FROM api_keys
 		WHERE key_prefix = ? AND is_active = TRUE
 	`, prefix).Scan(
 		&apiKey.ID, &apiKey.DomainID, &keyHash, &apiKey.KeyPrefix, &apiKey.Name,
 		&scopesJSON, &apiKey.IsActive, &apiKey.RateLimitPerHour, &lastUsedAt,
-		&apiKey.CreatedAt, &expiresAt,
+		&apiKey.CreatedAt, &expiresAt, &keySalt,
 	)
 
 	if err == sql.ErrNoRows {
@@ -127,7 +128,12 @@ func (s *Server) validateAPIKey(ctx context.Context, token string) (*APIKey, err
 	}
 
 	// Verify the full key against stored hash
-	if !verifyAPIKeyHash(token, keyHash) {
+	// SECURITY: Use per-key salt if available, otherwise fall back to legacy fixed salt
+	var salt string
+	if keySalt.Valid && keySalt.String != "" {
+		salt = keySalt.String
+	}
+	if !verifyAPIKeyHashWithSalt(token, keyHash, salt) {
 		return nil, ErrInvalidAPIKey
 	}
 
@@ -212,12 +218,13 @@ func hasScope(scopes []string, target string) bool {
 	return false
 }
 
-// GenerateAPIKey generates a new API key
-func GenerateAPIKey(isTest bool) (fullKey, prefix, hash string, err error) {
-	// Generate 32 random bytes
+// GenerateAPIKey generates a new API key with a random per-key salt
+// SECURITY: Each key has its own salt for better protection against rainbow tables
+func GenerateAPIKey(isTest bool) (fullKey, prefix, hash, salt string, err error) {
+	// Generate 32 random bytes for the key
 	keyBytes := make([]byte, 32)
 	if _, err := rand.Read(keyBytes); err != nil {
-		return "", "", "", err
+		return "", "", "", "", err
 	}
 
 	keyHex := hex.EncodeToString(keyBytes)
@@ -231,24 +238,68 @@ func GenerateAPIKey(isTest bool) (fullKey, prefix, hash string, err error) {
 	fullKey = "sk_" + keyType + "_" + keyHex
 	prefix = fullKey[:16] // First 16 chars for lookup
 
-	// Hash the full key for storage
-	hash = hashAPIKey(fullKey)
+	// Generate random salt for this key
+	salt, err = generateAPIKeySalt()
+	if err != nil {
+		return "", "", "", "", err
+	}
 
-	return fullKey, prefix, hash, nil
+	// Hash the full key with the salt
+	hash = hashAPIKeyWithSalt(fullKey, salt)
+
+	return fullKey, prefix, hash, salt, nil
 }
 
-// hashAPIKey hashes an API key using argon2id
-func hashAPIKey(key string) string {
-	// Use a fixed salt for API keys (they're already high entropy)
-	salt := []byte("mailserver_api_key_salt_v1")
-	hash := argon2.IDKey([]byte(key), salt, 1, 64*1024, 4, 32)
+// legacyAPIKeySalt is used for backward compatibility with existing API keys
+// SECURITY: New keys use per-key random salt instead
+const legacyAPIKeySalt = "mailserver_api_key_salt_v1"
+
+// generateAPIKeySalt generates a random salt for a new API key
+func generateAPIKeySalt() (string, error) {
+	salt := make([]byte, 16)
+	if _, err := rand.Read(salt); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(salt), nil
+}
+
+// hashAPIKeyWithSalt hashes an API key using argon2id with the given salt
+// SECURITY: Uses 3 iterations (same as password hashing) for better security
+func hashAPIKeyWithSalt(key, salt string) string {
+	var saltBytes []byte
+	if salt != "" {
+		var err error
+		saltBytes, err = hex.DecodeString(salt)
+		if err != nil || len(saltBytes) == 0 {
+			// If salt is corrupted, fall back to legacy salt for safety
+			// This prevents timing attacks from revealing which keys have invalid salts
+			saltBytes = []byte(legacyAPIKeySalt)
+		}
+	} else {
+		// Legacy: use fixed salt for backward compatibility
+		saltBytes = []byte(legacyAPIKeySalt)
+	}
+	// Use 3 iterations instead of 1 for better security
+	hash := argon2.IDKey([]byte(key), saltBytes, 3, 64*1024, 4, 32)
 	return hex.EncodeToString(hash)
 }
 
-// verifyAPIKeyHash verifies a key against its hash
-func verifyAPIKeyHash(key, storedHash string) bool {
-	computedHash := hashAPIKey(key)
+// hashAPIKey hashes an API key using the legacy fixed salt (for backward compatibility)
+// DEPRECATED: Use hashAPIKeyWithSalt for new keys
+func hashAPIKey(key string) string {
+	return hashAPIKeyWithSalt(key, "")
+}
+
+// verifyAPIKeyHashWithSalt verifies a key against its hash using the given salt
+func verifyAPIKeyHashWithSalt(key, storedHash, salt string) bool {
+	computedHash := hashAPIKeyWithSalt(key, salt)
 	return subtle.ConstantTimeCompare([]byte(computedHash), []byte(storedHash)) == 1
+}
+
+// verifyAPIKeyHash verifies a key against its hash (legacy, uses fixed salt)
+// DEPRECATED: Use verifyAPIKeyHashWithSalt for new keys
+func verifyAPIKeyHash(key, storedHash string) bool {
+	return verifyAPIKeyHashWithSalt(key, storedHash, "")
 }
 
 // jsonError sends a JSON error response
@@ -269,9 +320,42 @@ func jsonResponse(w http.ResponseWriter, data interface{}, status int) {
 }
 
 // corsMiddleware adds CORS headers for API access
+// SECURITY: Restricts CORS to same-origin requests only
+// API is designed for server-to-server communication, not browser clients
 func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		origin := r.Header.Get("Origin")
+
+		// Only allow same-origin requests or requests without Origin header (non-browser)
+		// For cross-origin browser requests, the origin must match the server hostname
+		if origin != "" {
+			// Check if origin matches server hostname
+			serverHost := s.config.Server.Hostname
+			allowedOrigins := []string{
+				"https://" + serverHost,
+				"https://mail." + serverHost,
+			}
+
+			allowed := false
+			for _, allowedOrigin := range allowedOrigins {
+				if origin == allowedOrigin {
+					allowed = true
+					w.Header().Set("Access-Control-Allow-Origin", origin)
+					w.Header().Set("Access-Control-Allow-Credentials", "true")
+					break
+				}
+			}
+
+			if !allowed {
+				// Don't set CORS headers for unauthorized origins
+				// Browser will block the request
+				if r.Method == http.MethodOptions {
+					w.WriteHeader(http.StatusForbidden)
+					return
+				}
+			}
+		}
+
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
 		w.Header().Set("Access-Control-Max-Age", "86400")

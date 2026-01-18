@@ -5,11 +5,122 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/emersion/go-smtp"
 	"github.com/fenilsonani/email-server/internal/config"
 )
+
+// Default connection limits
+const (
+	defaultMaxConnections      = 1000
+	defaultMaxConnectionsPerIP = 50
+)
+
+// limitedListener wraps a net.Listener with connection limits
+type limitedListener struct {
+	net.Listener
+	maxConns      int
+	maxConnsPerIP int
+	currentConns  int64
+	perIPConns    map[string]int
+	perIPMu       sync.Mutex
+	sem           chan struct{}
+}
+
+// newLimitedListener creates a connection-limiting listener
+func newLimitedListener(l net.Listener, maxConns, maxConnsPerIP int) *limitedListener {
+	if maxConns <= 0 {
+		maxConns = defaultMaxConnections
+	}
+	if maxConnsPerIP <= 0 {
+		maxConnsPerIP = defaultMaxConnectionsPerIP
+	}
+	return &limitedListener{
+		Listener:      l,
+		maxConns:      maxConns,
+		maxConnsPerIP: maxConnsPerIP,
+		perIPConns:    make(map[string]int),
+		sem:           make(chan struct{}, maxConns),
+	}
+}
+
+func (l *limitedListener) Accept() (net.Conn, error) {
+	// Acquire global semaphore
+	l.sem <- struct{}{}
+
+	conn, err := l.Listener.Accept()
+	if err != nil {
+		<-l.sem // Release on error
+		return nil, err
+	}
+
+	// Check per-IP limit
+	ip := extractIP(conn.RemoteAddr())
+	l.perIPMu.Lock()
+	if l.perIPConns[ip] >= l.maxConnsPerIP {
+		l.perIPMu.Unlock()
+		<-l.sem // Release global semaphore
+		conn.Close()
+		log.Printf("SMTP: Rejected connection from %s: per-IP limit exceeded", ip)
+		return l.Accept() // Try accepting another connection
+	}
+	l.perIPConns[ip]++
+	l.perIPMu.Unlock()
+
+	atomic.AddInt64(&l.currentConns, 1)
+
+	return &limitedConn{
+		Conn:     conn,
+		listener: l,
+		ip:       ip,
+	}, nil
+}
+
+// limitedConn tracks connection lifecycle for proper cleanup
+type limitedConn struct {
+	net.Conn
+	listener *limitedListener
+	ip       string
+	closed   int32
+}
+
+func (c *limitedConn) Close() error {
+	if atomic.CompareAndSwapInt32(&c.closed, 0, 1) {
+		c.listener.perIPMu.Lock()
+		c.listener.perIPConns[c.ip]--
+		if c.listener.perIPConns[c.ip] <= 0 {
+			delete(c.listener.perIPConns, c.ip)
+		}
+		c.listener.perIPMu.Unlock()
+
+		atomic.AddInt64(&c.listener.currentConns, -1)
+		<-c.listener.sem // Release global semaphore
+	}
+	return c.Conn.Close()
+}
+
+// extractIP extracts the IP address from a net.Addr
+func extractIP(addr net.Addr) string {
+	if addr == nil {
+		return "unknown"
+	}
+	switch a := addr.(type) {
+	case *net.TCPAddr:
+		return a.IP.String()
+	case *net.UDPAddr:
+		return a.IP.String()
+	default:
+		// Try to parse as host:port
+		host, _, err := net.SplitHostPort(addr.String())
+		if err != nil {
+			return addr.String()
+		}
+		return host
+	}
+}
 
 // Server wraps the go-smtp server
 type Server struct {
@@ -71,13 +182,16 @@ func (b *submissionBackend) NewSession(c *smtp.Conn) (smtp.Session, error) {
 func (s *Server) ListenAndServe() error {
 	addr := fmt.Sprintf("%s:%d", s.config.Server.BindAddress, s.config.Server.SMTPPort)
 
-	listener, err := net.Listen("tcp", addr)
+	rawListener, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("failed to listen on %s: %w", addr, err)
 	}
+
+	// Wrap with connection limits
+	listener := newLimitedListener(rawListener, defaultMaxConnections, defaultMaxConnectionsPerIP)
 	s.mxListener = listener
 
-	log.Printf("SMTP MX server listening on %s", addr)
+	log.Printf("SMTP MX server listening on %s (max %d conns, %d per IP)", addr, defaultMaxConnections, defaultMaxConnectionsPerIP)
 
 	go func() {
 		if err := s.mxServer.Serve(listener); err != nil {
@@ -92,13 +206,16 @@ func (s *Server) ListenAndServe() error {
 func (s *Server) ListenAndServeSubmission() error {
 	addr := fmt.Sprintf("%s:%d", s.config.Server.BindAddress, s.config.Server.SubmissionPort)
 
-	listener, err := net.Listen("tcp", addr)
+	rawListener, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("failed to listen on %s: %w", addr, err)
 	}
+
+	// Wrap with connection limits
+	listener := newLimitedListener(rawListener, defaultMaxConnections, defaultMaxConnectionsPerIP)
 	s.subListener = listener
 
-	log.Printf("SMTP Submission server listening on %s", addr)
+	log.Printf("SMTP Submission server listening on %s (max %d conns, %d per IP)", addr, defaultMaxConnections, defaultMaxConnectionsPerIP)
 
 	go func() {
 		if err := s.submissionServer.Serve(listener); err != nil {
@@ -117,13 +234,16 @@ func (s *Server) ListenAndServeTLS() error {
 
 	addr := fmt.Sprintf("%s:%d", s.config.Server.BindAddress, s.config.Server.SMTPSPort)
 
-	listener, err := tls.Listen("tcp", addr, s.submissionServer.TLSConfig)
+	rawListener, err := tls.Listen("tcp", addr, s.submissionServer.TLSConfig)
 	if err != nil {
 		return fmt.Errorf("failed to listen on %s: %w", addr, err)
 	}
+
+	// Wrap with connection limits
+	listener := newLimitedListener(rawListener, defaultMaxConnections, defaultMaxConnectionsPerIP)
 	s.tlsListener = listener
 
-	log.Printf("SMTPS server listening on %s", addr)
+	log.Printf("SMTPS server listening on %s (max %d conns, %d per IP)", addr, defaultMaxConnections, defaultMaxConnectionsPerIP)
 
 	go func() {
 		if err := s.submissionServer.Serve(listener); err != nil {

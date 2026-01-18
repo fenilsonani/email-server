@@ -1,0 +1,67 @@
+<h1>Welcome, {{if .User.DisplayName}}{{.User.DisplayName}}{{else}}{{.User.Email}}{{end}}</h1>
+
+<div class="card">
+    <h2>Account Overview</h2>
+    <div class="stats-grid">
+        <div class="stat-card">
+            <div class="stat-value wrap">{{.User.Email}}</div>
+            <div class="stat-label">email address</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-value">{{if .User.DisplayName}}{{.User.DisplayName}}{{else}}-{{end}}</div>
+            <div class="stat-label">display name</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-value">{{printf "%.1f" (divFloat .User.UsedBytes 1048576)}} MB</div>
+            <div class="stat-label">of {{printf "%.0f" (divFloat .User.QuotaBytes 1073741824)}} GB ({{.StoragePercent}}%)</div>
+        </div>
+    </div>
+</div>
+
+<div class="feature-card">
+    <div class="feature-card-header">
+        <h3>Email Forwarding</h3>
+        <span class="feature-card-status {{if .ForwardingActive}}active{{else}}inactive{{end}}">
+            {{if .ForwardingActive}}Active{{else}}Off{{end}}
+        </span>
+    </div>
+    <p class="feature-card-desc">Forward incoming emails to another address.</p>
+    {{if .ForwardingActive}}
+    <dl class="feature-card-details">
+        <dt>Forward to:</dt>
+        <dd>{{.ForwardTo}}</dd>
+        <dt>Keep copy:</dt>
+        <dd>{{if .KeepCopy}}Yes{{else}}No{{end}}</dd>
+    </dl>
+    {{end}}
+    <a href="/account/forwarding" class="btn">Configure Forwarding</a>
+</div>
+
+<div class="feature-card">
+    <div class="feature-card-header">
+        <h3>Vacation Responder</h3>
+        <span class="feature-card-status {{if .VacationActive}}active{{else}}inactive{{end}}">
+            {{if .VacationActive}}Active{{else}}Off{{end}}
+        </span>
+    </div>
+    <p class="feature-card-desc">Automatically reply to incoming emails when you're away.</p>
+    {{if .VacationActive}}
+    <dl class="feature-card-details">
+        {{if .VacationSubject}}<dt>Subject:</dt><dd>{{.VacationSubject}}</dd>{{end}}
+        {{if .VacationStart}}<dt>From:</dt><dd>{{.VacationStart}}</dd>{{end}}
+        {{if .VacationEnd}}<dt>Until:</dt><dd>{{.VacationEnd}}</dd>{{end}}
+    </dl>
+    {{end}}
+    <a href="/account/vacation" class="btn">Configure Vacation</a>
+</div>
+
+<div class="feature-card">
+    <div class="feature-card-header">
+        <h3>Security</h3>
+    </div>
+    <p class="feature-card-desc">Manage your account password and security settings.</p>
+    <div class="button-group">
+        <a href="/account/password" class="btn">Change Password</a>
+        <a href="/account/profile" class="btn">Edit Profile</a>
+    </div>
+</div>

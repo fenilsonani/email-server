@@ -1,0 +1,53 @@
+<div class="breadcrumbs">
+    <a href="/admin/">home</a>
+    <span>&gt;</span>
+    <a href="/admin/features">features</a>
+    <span>&gt;</span>
+    <a href="/admin/features/aliases">aliases</a>
+    <span>&gt;</span>
+    <span>create</span>
+</div>
+
+<div class="page-header">
+    <h1>create alias</h1>
+</div>
+
+{{if .Error}}
+<div class="alert alert-danger">{{.Error}}</div>
+{{end}}
+
+<div class="card">
+    <form method="POST" action="/admin/features/aliases/add">
+
+        <div class="form-group">
+            <label for="domain_id">domain</label>
+            <select id="domain_id" name="domain_id" class="form-control" style="max-width: 300px;" required>
+                <option value="">select a domain</option>
+                {{range .Domains}}
+                <option value="{{.ID}}">{{.Domain}}</option>
+                {{end}}
+            </select>
+            <small style="color: var(--text-muted); display: block; margin-top: 0.25rem; font-size: 11px;">the domain for your alias address</small>
+        </div>
+
+        <div class="form-group">
+            <label for="description">description</label>
+            <input type="text" id="description" name="description" class="form-control" style="max-width: 400px;"
+                   placeholder="e.g., amazon shopping, newsletter signups">
+            <small style="color: var(--text-muted); display: block; margin-top: 0.25rem; font-size: 11px;">optional: helps you remember what this alias is for</small>
+        </div>
+
+        <div class="form-group">
+            <label for="local_part">custom local part (optional)</label>
+            <input type="text" id="local_part" name="local_part" class="form-control" style="max-width: 300px;"
+                   placeholder="leave blank to auto-generate"
+                   pattern="[a-z0-9_]+" title="only lowercase letters, numbers, and underscores">
+            <small style="color: var(--text-muted); display: block; margin-top: 0.25rem; font-size: 11px;">leave blank to auto-generate like "shop_a1b2c3d4"</small>
+        </div>
+
+        <div style="margin-top: 1rem;">
+            <button type="submit" class="btn btn-primary">create alias</button>
+            <a href="/admin/features/aliases" class="btn btn-secondary">cancel</a>
+        </div>
+    </form>
+</div>

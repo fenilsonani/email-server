@@ -4,10 +4,23 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/base64"
+	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"golang.org/x/crypto/argon2"
+)
+
+// Pre-allocated errors for hash parsing (avoid allocations in hot path)
+var (
+	errInvalidHashFormat   = errors.New("invalid hash format")
+	errUnsupportedAlgo     = errors.New("unsupported algorithm")
+	errInvalidVersion      = errors.New("invalid version format")
+	errIncompatibleVersion = errors.New("incompatible argon2 version")
+	errInvalidParams       = errors.New("invalid parameters format")
+	errInvalidSalt         = errors.New("invalid salt encoding")
+	errInvalidHash         = errors.New("invalid hash encoding")
 )
 
 // Argon2id parameters (OWASP recommended)
@@ -67,41 +80,84 @@ type argon2Params struct {
 	keyLen  uint32
 }
 
+// parseArgon2Hash parses an argon2id encoded hash string.
+// Optimized to avoid fmt.Sscanf which is slow due to reflection.
 func parseArgon2Hash(encoded string) (*argon2Params, []byte, []byte, error) {
 	parts := strings.Split(encoded, "$")
 	if len(parts) != 6 {
-		return nil, nil, nil, fmt.Errorf("invalid hash format")
+		return nil, nil, nil, errInvalidHashFormat
 	}
 
 	if parts[1] != "argon2id" {
-		return nil, nil, nil, fmt.Errorf("unsupported algorithm: %s", parts[1])
+		return nil, nil, nil, errUnsupportedAlgo
 	}
 
-	var version int
-	if _, err := fmt.Sscanf(parts[2], "v=%d", &version); err != nil {
-		return nil, nil, nil, fmt.Errorf("invalid version: %w", err)
+	// Parse version: "v=19"
+	if !strings.HasPrefix(parts[2], "v=") {
+		return nil, nil, nil, errInvalidVersion
+	}
+	version, err := strconv.Atoi(parts[2][2:])
+	if err != nil {
+		return nil, nil, nil, errInvalidVersion
 	}
 	if version != argon2.Version {
-		return nil, nil, nil, fmt.Errorf("incompatible version: %d", version)
+		return nil, nil, nil, errIncompatibleVersion
 	}
 
-	var params argon2Params
-	if _, err := fmt.Sscanf(parts[3], "m=%d,t=%d,p=%d",
-		&params.memory, &params.time, &params.threads); err != nil {
-		return nil, nil, nil, fmt.Errorf("invalid parameters: %w", err)
+	// Parse parameters: "m=65536,t=3,p=4"
+	params, err := parseArgon2Params(parts[3])
+	if err != nil {
+		return nil, nil, nil, err
 	}
 
 	salt, err := base64.RawStdEncoding.DecodeString(parts[4])
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("invalid salt: %w", err)
+		return nil, nil, nil, errInvalidSalt
 	}
 
 	hash, err := base64.RawStdEncoding.DecodeString(parts[5])
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("invalid hash: %w", err)
+		return nil, nil, nil, errInvalidHash
 	}
 
 	params.keyLen = uint32(len(hash))
 
-	return &params, salt, hash, nil
+	return params, salt, hash, nil
+}
+
+// parseArgon2Params parses the parameter string "m=65536,t=3,p=4"
+// Uses direct string parsing instead of fmt.Sscanf for better performance.
+func parseArgon2Params(s string) (*argon2Params, error) {
+	var params argon2Params
+
+	// Split by comma
+	paramParts := strings.Split(s, ",")
+	if len(paramParts) != 3 {
+		return nil, errInvalidParams
+	}
+
+	for _, part := range paramParts {
+		idx := strings.IndexByte(part, '=')
+		if idx < 1 {
+			return nil, errInvalidParams
+		}
+		key := part[:idx]
+		val, err := strconv.ParseUint(part[idx+1:], 10, 32)
+		if err != nil {
+			return nil, errInvalidParams
+		}
+
+		switch key {
+		case "m":
+			params.memory = uint32(val)
+		case "t":
+			params.time = uint32(val)
+		case "p":
+			params.threads = uint8(val)
+		default:
+			return nil, errInvalidParams
+		}
+	}
+
+	return &params, nil
 }

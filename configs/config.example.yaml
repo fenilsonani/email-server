@@ -1,19 +1,26 @@
 # Example configuration for the email server
-# Copy this file to config.yaml and modify as needed
+# Copy this file to /etc/mailserver/config.yaml and modify as needed
+#
+# IMPORTANT: Replace all example.com references with your actual domain!
+# - hostname: mail.YOUR_DOMAIN.com
+# - domain: YOUR_DOMAIN.com (add this line)
+# - tls.email: admin@YOUR_DOMAIN.com
+# - domains[].name: YOUR_DOMAIN.com
 
 server:
-  hostname: mail.example.com
-  bind_address: 0.0.0.0   # Listen on all interfaces (or specific IP for multi-homed servers)
-  smtp_port: 25           # MX receiving
-  submission_port: 587    # Client submission (STARTTLS)
-  smtps_port: 465         # Client submission (implicit TLS)
-  imap_port: 143          # IMAP (STARTTLS)
-  imaps_port: 993         # IMAP (implicit TLS)
-  dav_port: 443           # CalDAV/CardDAV (HTTPS)
+  hostname: mail.example.com   # CHANGE THIS to mail.yourdomain.com
+  domain: example.com          # CHANGE THIS to yourdomain.com
+  bind_address: 0.0.0.0        # Listen on all interfaces
+  smtp_port: 25                # MX receiving
+  submission_port: 587         # Client submission (STARTTLS)
+  smtps_port: 465              # Client submission (implicit TLS)
+  imap_port: 143               # IMAP (STARTTLS)
+  imaps_port: 993              # IMAP (implicit TLS)
+  dav_port: 8443               # CalDAV/CardDAV (internal port, nginx proxies 443)
 
 tls:
-  auto_tls: true          # Use Let's Encrypt for automatic certificates
-  email: admin@example.com  # Required for Let's Encrypt
+  auto_tls: true               # Use Let's Encrypt for automatic certificates
+  email: admin@example.com     # CHANGE THIS - Required for Let's Encrypt
   # For manual certificates, set auto_tls: false and specify:
   # cert_file: /etc/mailserver/tls/cert.pem
   # key_file: /etc/mailserver/tls/key.pem
@@ -21,18 +28,44 @@ tls:
 
 storage:
   data_dir: /var/lib/mailserver
-  database_path: /var/lib/mailserver/mail.db
+  database_path: /var/lib/mailserver/mail.db  # Legacy, use database.path instead
   maildir_path: /var/lib/mailserver/maildir
 
+# Database configuration (new in v2.0)
+database:
+  driver: sqlite3           # sqlite3 or postgres
+  path: /var/lib/mailserver/mail.db  # SQLite database file path
+  # PostgreSQL connection string (when driver: postgres)
+  # dsn: postgres://user:password@localhost:5432/mailserver?sslmode=require
+  max_open_conns: 25        # Maximum open database connections
+  max_idle_conns: 5         # Maximum idle connections
+  conn_max_lifetime: "0"    # Maximum connection lifetime (0 = forever)
+  conn_max_idle_time: "5m"  # Maximum idle time before closing
+
+  # PostgreSQL example configuration:
+  # driver: postgres
+  # dsn: postgres://mailserver:password@localhost:5432/mailserver?sslmode=require
+  # max_open_conns: 100     # PostgreSQL can handle more connections
+  # max_idle_conns: 25
+  # conn_max_lifetime: "30m"
+  # conn_max_idle_time: "5m"
+
 domains:
-  - name: example.com
+  - name: example.com                                    # CHANGE THIS to yourdomain.com
     dkim_selector: mail
-    dkim_key_file: /etc/mailserver/dkim/example.com.key
+    dkim_key_file: /etc/mailserver/dkim/example.com.key  # CHANGE THIS path
 
   # Add more domains as needed:
   # - name: otherdomain.org
   #   dkim_selector: mail
   #   dkim_key_file: /etc/mailserver/dkim/otherdomain.org.key
+
+# Autodiscover configuration (email client auto-setup)
+autodiscover:
+  enabled: true
+  port: 8081
+  listen: "0.0.0.0"
+  display_name: ""   # Defaults to "domain.com Mail"
 
 security:
   require_tls: true       # Require TLS for client connections
@@ -46,3 +79,35 @@ logging:
   level: info             # debug, info, warn, error
   format: json            # json or text
   output: stdout          # stdout, stderr, or file path
+
+# Queue configuration (Redis)
+queue:
+  redis_url: redis://localhost:6379/0  # Redis URL for standalone mode
+  mode: standalone                      # standalone, sentinel, or cluster
+  prefix: mail                          # Key prefix for queue entries
+  max_retries: 15                       # Maximum delivery attempts
+  retry_max_age: "168h"                 # Max retry time (7 days)
+  pool_size: 10                         # Connection pool size
+  min_idle_conns: 5                     # Minimum idle connections
+  dial_timeout: "5s"                    # Connection dial timeout
+  read_timeout: "3s"                    # Read timeout
+  write_timeout: "3s"                   # Write timeout
+
+  # Redis Sentinel configuration (when mode: sentinel)
+  # sentinel_master: mymaster
+  # sentinel_addrs:
+  #   - sentinel1:26379
+  #   - sentinel2:26379
+  #   - sentinel3:26379
+
+  # Redis Cluster configuration (when mode: cluster)
+  # cluster_addrs:
+  #   - redis1:7000
+  #   - redis2:7000
+  #   - redis3:7000
+
+# Delivery configuration
+delivery:
+  workers: 4              # Number of concurrent delivery workers (max: 500)
+  connect_timeout: "30s"  # TCP connection timeout
+  command_timeout: "5m"   # SMTP command timeout

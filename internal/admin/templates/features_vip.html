@@ -1,0 +1,55 @@
+<div class="breadcrumbs">
+    <a href="/admin/">home</a>
+    <span>&gt;</span>
+    <a href="/admin/features">features</a>
+    <span>&gt;</span>
+    <span>vip</span>
+</div>
+
+<div class="page-header">
+    <h1>vip contacts</h1>
+    <a href="/admin/features/vip/add" class="btn btn-primary">add vip</a>
+</div>
+
+<div class="stats-grid">
+    <div class="card stat-card">
+        <div class="stat-value">{{.Count}}</div>
+        <div class="stat-label">vip contacts</div>
+    </div>
+</div>
+
+<div class="card">
+    {{if .VIPs}}
+    <table>
+        <thead>
+            <tr>
+                <th>email</th>
+                <th>name</th>
+                <th>added</th>
+                <th>actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {{range .VIPs}}
+            <tr>
+                <td><code>{{.Email}}</code></td>
+                <td>{{if .Name}}{{.Name}}{{else}}--{{end}}</td>
+                <td>{{.CreatedAt.Format "Jan 02, 2006"}}</td>
+                <td>
+                    <form method="POST" action="/admin/features/vip/delete/{{.ID}}" style="display: inline;"
+                          onsubmit="return confirm('Remove this VIP?');">
+                        <button type="submit" class="btn btn-sm btn-danger">remove</button>
+                    </form>
+                </td>
+            </tr>
+            {{end}}
+        </tbody>
+    </table>
+    {{else}}
+    <div class="empty-state">
+        <p>no vip contacts yet</p>
+        <p>emails from vips always go to your priority inbox zone</p>
+        <a href="/admin/features/vip/add" class="btn btn-primary">add your first vip</a>
+    </div>
+    {{end}}
+</div>

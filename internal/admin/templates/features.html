@@ -1,0 +1,147 @@
+<div class="breadcrumbs">
+    <a href="/admin/">home</a>
+    <span>&gt;</span>
+    <span>features</span>
+</div>
+
+<div class="page-header">
+    <h1>features</h1>
+    <a href="/admin/features/preferences" class="btn btn-primary">configure preferences</a>
+</div>
+
+<div class="stats-grid">
+    <div class="card stat-card">
+        <div class="stat-value">{{if .Preferences}}{{if .Preferences.ScreenerEnabled}}on{{else}}off{{end}}{{else}}--{{end}}</div>
+        <div class="stat-label">screener</div>
+    </div>
+    <div class="card stat-card">
+        <div class="stat-value">{{if .Preferences}}{{.Preferences.UndoSendDelay}}s{{else}}--{{end}}</div>
+        <div class="stat-label">undo send delay</div>
+    </div>
+    <div class="card stat-card">
+        <div class="stat-value">{{if .Preferences}}{{.Preferences.TrackerBlocking}}{{else}}--{{end}}</div>
+        <div class="stat-label">tracker blocking</div>
+    </div>
+    <div class="card stat-card">
+        <div class="stat-value">{{if .Preferences}}{{if .Preferences.ZonesEnabled}}on{{else}}off{{end}}{{else}}--{{end}}</div>
+        <div class="stat-label">smart zones</div>
+    </div>
+</div>
+
+<div class="card">
+    <h2>inbox control</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>feature</th>
+                <th>description</th>
+                <th>status</th>
+                <th>action</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td><strong>screener</strong></td>
+                <td>first-contact filtering - unknown senders are held until you approve them</td>
+                <td>
+                    {{if .Preferences}}
+                    <span class="badge {{if .Preferences.ScreenerEnabled}}badge-success{{else}}badge-secondary{{end}}">
+                        {{if .Preferences.ScreenerEnabled}}enabled{{else}}disabled{{end}}
+                    </span>
+                    {{end}}
+                </td>
+                <td><a href="/admin/features/screener" class="btn btn-sm">manage</a></td>
+            </tr>
+            <tr>
+                <td><strong>vip contacts</strong></td>
+                <td>mark important senders for priority handling and notifications</td>
+                <td><span class="badge badge-success">available</span></td>
+                <td><a href="/admin/features/vip" class="btn btn-sm">manage</a></td>
+            </tr>
+        </tbody>
+    </table>
+</div>
+
+<div class="card">
+    <h2>privacy</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>feature</th>
+                <th>description</th>
+                <th>status</th>
+                <th>action</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td><strong>email aliases</strong></td>
+                <td>create disposable addresses like shop_x7k2@domain.com - disable anytime</td>
+                <td><span class="badge badge-success">available</span></td>
+                <td><a href="/admin/features/aliases" class="btn btn-sm">manage</a></td>
+            </tr>
+            <tr>
+                <td><strong>tracker blocking</strong></td>
+                <td>block spy pixels and tracking links in emails</td>
+                <td>
+                    {{if .Preferences}}
+                    <span class="badge {{if eq .Preferences.TrackerBlocking "block"}}badge-success{{else if eq .Preferences.TrackerBlocking "proxy"}}badge-warning{{else}}badge-secondary{{end}}">
+                        {{.Preferences.TrackerBlocking}}
+                    </span>
+                    {{end}}
+                </td>
+                <td><a href="/admin/features/preferences" class="btn btn-sm">configure</a></td>
+            </tr>
+        </tbody>
+    </table>
+</div>
+
+<div class="card">
+    <h2>productivity</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>feature</th>
+                <th>description</th>
+                <th>status</th>
+                <th>action</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td><strong>undo send</strong></td>
+                <td>delay before sending - catch mistakes before they happen</td>
+                <td>
+                    {{if .Preferences}}
+                    <span class="badge badge-success">{{.Preferences.UndoSendDelay}}s delay</span>
+                    {{end}}
+                </td>
+                <td><a href="/admin/features/preferences" class="btn btn-sm">configure</a></td>
+            </tr>
+            <tr>
+                <td><strong>smart zones</strong></td>
+                <td>auto-sort emails into priority, feed, paper trail zones</td>
+                <td>
+                    {{if .Preferences}}
+                    <span class="badge {{if .Preferences.ZonesEnabled}}badge-success{{else}}badge-secondary{{end}}">
+                        {{if .Preferences.ZonesEnabled}}enabled{{else}}disabled{{end}}
+                    </span>
+                    {{end}}
+                </td>
+                <td><a href="/admin/features/preferences" class="btn btn-sm">configure</a></td>
+            </tr>
+            <tr>
+                <td><strong>send later</strong></td>
+                <td>schedule emails to be sent at a specific time</td>
+                <td><span class="badge badge-success">available</span></td>
+                <td><a href="/admin/features/scheduled" class="btn btn-sm">manage</a></td>
+            </tr>
+            <tr>
+                <td><strong>snooze</strong></td>
+                <td>hide email until later, then it reappears at top of inbox</td>
+                <td><span class="badge badge-success">available</span></td>
+                <td><a href="/admin/features/snoozed" class="btn btn-sm">manage</a></td>
+            </tr>
+        </tbody>
+    </table>
+</div>

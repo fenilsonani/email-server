@@ -4,9 +4,11 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"context"
+	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -538,7 +540,12 @@ func (s *Server) handleDomains(w http.ResponseWriter, r *http.Request) {
 			COALESCE(d.dns_spf_verified, 0),
 			COALESCE(d.dns_dkim_verified, 0),
 			COALESCE(d.dns_dmarc_verified, 0),
-			d.dns_last_checked
+			COALESCE(d.dns_mail_hostname_verified, 0),
+			d.dns_last_checked,
+			COALESCE(d.mail_hostname, 'mail.' || d.name),
+			COALESCE(d.is_primary, 0),
+			COALESCE(d.is_verified, TRUE),
+			COALESCE(d.verification_token, '')
 		FROM domains d WHERE 1=1`
 	countQuery := `SELECT COUNT(*) FROM domains WHERE 1=1`
 	args := []interface{}{}
@@ -572,19 +579,24 @@ func (s *Server) handleDomains(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	type Domain struct {
-		ID              int64
-		Name            string
-		UserCount       int
-		CreatedAt       time.Time
-		DKIMSelector    string
-		HasDKIMKey      bool
-		DNSStatus       string
-		DNSMXVerified   bool
-		DNSSPFVerified  bool
-		DNSDKIMVerified bool
-		DNSDMARCVerified bool
-		DNSLastChecked  sql.NullTime
-		DNSVerifiedCount int
+		ID                      int64
+		Name                    string
+		UserCount               int
+		CreatedAt               time.Time
+		DKIMSelector            string
+		HasDKIMKey              bool
+		DNSStatus               string
+		DNSMXVerified           bool
+		DNSSPFVerified          bool
+		DNSDKIMVerified         bool
+		DNSDMARCVerified        bool
+		DNSMailHostnameVerified bool
+		DNSLastChecked          sql.NullTime
+		DNSVerifiedCount        int
+		MailHostname            string
+		IsPrimary               bool
+		IsVerified              bool
+		VerificationToken       string
 	}
 
 	// Get DKIM key directory for file-based check
@@ -596,17 +608,22 @@ func (s *Server) handleDomains(w http.ResponseWriter, r *http.Request) {
 		var selector string
 		var hasDBKey bool
 		var keyFile sql.NullString
-		var mxVerified, spfVerified, dkimVerified, dmarcVerified int
+		var mxVerified, spfVerified, dkimVerified, dmarcVerified, mailHostnameVerified int
+		var isPrimaryInt, isVerifiedInt int
 		if err := rows.Scan(&d.ID, &d.Name, &d.CreatedAt, &selector, &hasDBKey, &keyFile, &d.UserCount,
-			&d.DNSStatus, &mxVerified, &spfVerified, &dkimVerified, &dmarcVerified, &d.DNSLastChecked); err != nil {
+			&d.DNSStatus, &mxVerified, &spfVerified, &dkimVerified, &dmarcVerified, &mailHostnameVerified,
+			&d.DNSLastChecked, &d.MailHostname, &isPrimaryInt, &isVerifiedInt, &d.VerificationToken); err != nil {
 			s.logger.ErrorContext(r.Context(), "Failed to scan domain row", err)
 			continue
 		}
+		d.IsPrimary = isPrimaryInt == 1
+		d.IsVerified = isVerifiedInt == 1
 		d.DKIMSelector = selector
 		d.DNSMXVerified = mxVerified == 1
 		d.DNSSPFVerified = spfVerified == 1
 		d.DNSDKIMVerified = dkimVerified == 1
 		d.DNSDMARCVerified = dmarcVerified == 1
+		d.DNSMailHostnameVerified = mailHostnameVerified == 1
 		d.DNSVerifiedCount = mxVerified + spfVerified + dkimVerified + dmarcVerified
 
 		// Check if key exists either in database or as file
@@ -986,10 +1003,16 @@ func (s *Server) handleDomainAdd(w http.ResponseWriter, r *http.Request) {
 		dkimStorage = "database"
 	}
 
-	// Insert domain
+	// Generate verification token for domain ownership verification
+	// SECURITY: Requires DNS TXT record verification before domain can send emails
+	verificationToken := generateDomainVerificationToken()
+
+	// Insert domain with auto-generated mail hostname (unverified initially)
+	mailHostname := "mail." + name
 	_, err = s.db.ExecContext(r.Context(),
-		"INSERT INTO domains (name, dkim_selector) VALUES (?, ?)",
-		name, dkimSelector,
+		`INSERT INTO domains (name, dkim_selector, mail_hostname, verification_token, is_verified)
+		 VALUES (?, ?, ?, ?, FALSE)`,
+		name, dkimSelector, mailHostname, verificationToken,
 	)
 	if err != nil {
 		s.logger.ErrorContext(r.Context(), "Failed to create domain", err)
@@ -1052,6 +1075,102 @@ func (s *Server) handleDomainDelete(w http.ResponseWriter, r *http.Request) {
 	s.auditLogger.Log(r.Context(), adminUser, audit.EventDomainDelete, strconv.FormatInt(domainID, 10), nil, getIP(r))
 
 	http.Redirect(w, r, "/admin/domains", http.StatusSeeOther)
+}
+
+// handleDomainVerifyOwnership verifies domain ownership via TXT record
+// SECURITY: Ensures only domain owners can add domains to the system
+func (s *Server) handleDomainVerifyOwnership(w http.ResponseWriter, r *http.Request) {
+	// Extract domain ID from path
+	parts := strings.Split(r.URL.Path, "/")
+	if len(parts) < 5 {
+		http.NotFound(w, r)
+		return
+	}
+	domainID, err := strconv.ParseInt(parts[4], 10, 64)
+	if err != nil {
+		http.Error(w, "Invalid domain ID format", http.StatusBadRequest)
+		return
+	}
+
+	// Get domain info including verification token
+	var domainName, verificationToken string
+	var isVerified bool
+	err = s.db.QueryRowContext(r.Context(),
+		"SELECT name, COALESCE(verification_token, ''), COALESCE(is_verified, FALSE) FROM domains WHERE id = ?",
+		domainID).Scan(&domainName, &verificationToken, &isVerified)
+	if err != nil {
+		http.Error(w, "Domain not found", http.StatusNotFound)
+		return
+	}
+
+	// If already verified, return success
+	if isVerified {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success":  true,
+			"verified": true,
+			"message":  "Domain is already verified",
+		})
+		return
+	}
+
+	// Look up TXT record at _mailserver-verify.domain.com
+	verifyDomain := "_mailserver-verify." + domainName
+	txtRecords, err := net.LookupTXT(verifyDomain)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success":           false,
+			"verified":          false,
+			"message":           "TXT record not found",
+			"expected_record":   verifyDomain,
+			"expected_value":    verificationToken,
+			"instructions":      "Add a TXT record with the name '_mailserver-verify' and the value shown above",
+		})
+		return
+	}
+
+	// Check if any TXT record matches our verification token
+	verified := false
+	for _, txt := range txtRecords {
+		if strings.TrimSpace(txt) == verificationToken {
+			verified = true
+			break
+		}
+	}
+
+	if verified {
+		// Update domain as verified
+		_, err = s.db.ExecContext(r.Context(),
+			"UPDATE domains SET is_verified = TRUE, verified_at = ? WHERE id = ?",
+			time.Now(), domainID)
+		if err != nil {
+			s.logger.ErrorContext(r.Context(), "Failed to update domain verification", err)
+		}
+
+		// Audit log
+		adminUser := getSessionUser(r)
+		s.auditLogger.Log(r.Context(), adminUser, audit.EventDomainCreate, domainName, map[string]interface{}{
+			"action": "ownership_verified",
+		}, getIP(r))
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success":  true,
+			"verified": true,
+			"message":  "Domain ownership verified successfully",
+		})
+	} else {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success":           false,
+			"verified":          false,
+			"message":           "TXT record found but value doesn't match",
+			"expected_record":   verifyDomain,
+			"expected_value":    verificationToken,
+			"found_values":      txtRecords,
+		})
+	}
 }
 
 // handleDKIMGenerate generates a DKIM key for a domain
@@ -1299,6 +1418,15 @@ func (s *Server) handleDomainDNS(w http.ResponseWriter, r *http.Request) {
 	// Get DKIM record name
 	dkimRecordName := selector + "._domainkey." + domainName
 
+	// Get mail hostname
+	mailHostname := "mail." + domainName
+
+	// Get server IP for A record suggestion
+	var serverIP string
+	if ips, err := net.LookupIP(s.config.Server.Hostname); err == nil && len(ips) > 0 {
+		serverIP = ips[0].String()
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"domain":         domainName,
@@ -1309,6 +1437,8 @@ func (s *Server) handleDomainDNS(w http.ResponseWriter, r *http.Request) {
 		"dkimRecord":     records.DKIM,
 		"dkimRecordName": dkimRecordName,
 		"selector":       selector,
+		"mailHostname":   mailHostname,
+		"serverIP":       serverIP,
 	})
 }
 
@@ -1359,8 +1489,11 @@ func (s *Server) handleDNSVerify(w http.ResponseWriter, r *http.Request) {
 	// Verify DMARC record
 	dmarcResult := s.verifyDMARCRecord(domainName)
 
+	// Verify mail hostname A record
+	mailHostnameResult := s.verifyMailHostnameRecord(domainName)
+
 	// Persist results to database
-	var mxVerified, spfVerified, dkimVerified, dmarcVerified int
+	var mxVerified, spfVerified, dkimVerified, dmarcVerified, mailHostnameVerified int
 	if mxResult["ok"].(bool) {
 		mxVerified = 1
 	}
@@ -1373,8 +1506,11 @@ func (s *Server) handleDNSVerify(w http.ResponseWriter, r *http.Request) {
 	if dmarcResult["ok"].(bool) {
 		dmarcVerified = 1
 	}
+	if mailHostnameResult["ok"].(bool) {
+		mailHostnameVerified = 1
+	}
 
-	// Calculate overall status
+	// Calculate overall status (mail hostname is optional for core email functionality)
 	var dnsStatus string
 	if mxVerified == 1 && spfVerified == 1 && dkimVerified == 1 && dmarcVerified == 1 {
 		dnsStatus = "ready"
@@ -1391,22 +1527,24 @@ func (s *Server) handleDNSVerify(w http.ResponseWriter, r *http.Request) {
 			dns_spf_verified = ?,
 			dns_dkim_verified = ?,
 			dns_dmarc_verified = ?,
+			dns_mail_hostname_verified = ?,
 			dns_status = ?,
 			dns_last_checked = ?
 		WHERE id = ?`,
-		mxVerified, spfVerified, dkimVerified, dmarcVerified, dnsStatus, time.Now(), domainID)
+		mxVerified, spfVerified, dkimVerified, dmarcVerified, mailHostnameVerified, dnsStatus, time.Now(), domainID)
 	if err != nil {
 		s.logger.ErrorContext(r.Context(), "Failed to update DNS status", err)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"mx":        mxResult,
-		"spf":       spfResult,
-		"dkim":      dkimResult,
-		"dmarc":     dmarcResult,
-		"domain":    domainName,
-		"dnsStatus": dnsStatus,
+		"mx":           mxResult,
+		"spf":          spfResult,
+		"dkim":         dkimResult,
+		"dmarc":        dmarcResult,
+		"mailHostname": mailHostnameResult,
+		"domain":       domainName,
+		"dnsStatus":    dnsStatus,
 	})
 }
 
@@ -1551,6 +1689,30 @@ func (s *Server) verifyDMARCRecord(domain string) map[string]interface{} {
 			return result
 		}
 	}
+
+	return result
+}
+
+// verifyMailHostnameRecord checks if mail.{domain} A record resolves to an IP
+func (s *Server) verifyMailHostnameRecord(domain string) map[string]interface{} {
+	result := map[string]interface{}{
+		"ok":    false,
+		"found": "",
+	}
+
+	mailHostname := "mail." + domain
+	ips, err := net.LookupIP(mailHostname)
+	if err != nil || len(ips) == 0 {
+		return result
+	}
+
+	// Format IPs found
+	var ipStrings []string
+	for _, ip := range ips {
+		ipStrings = append(ipStrings, ip.String())
+	}
+	result["found"] = strings.Join(ipStrings, ", ")
+	result["ok"] = true
 
 	return result
 }
@@ -2270,6 +2432,17 @@ func generateMessageID(domain string) string {
 	return time.Now().Format("20060102150405") + "." + strconv.FormatInt(time.Now().UnixNano(), 36) + "@" + domain
 }
 
+// generateDomainVerificationToken creates a random token for domain ownership verification
+// The token should be added as a TXT record: _mailserver-verify.domain.com
+func generateDomainVerificationToken() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		// Fallback to time-based token if crypto/rand fails
+		return "mailserver-verify=" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	}
+	return "mailserver-verify=" + hex.EncodeToString(b)
+}
+
 // min returns the minimum of two integers
 func min(a, b int) int {
 	if a < b {
@@ -2923,13 +3096,14 @@ func (s *Server) handleDomainWizardComplete(w http.ResponseWriter, r *http.Reque
 		dnsStatus = "pending"
 	}
 
-	// Insert domain
+	// Insert domain with auto-generated mail hostname
+	mailHostname := "mail." + domain
 	result, err := s.db.ExecContext(r.Context(),
 		`INSERT INTO domains (name, dkim_selector, dkim_storage_type, dns_status,
-		 dns_mx_verified, dns_spf_verified, dns_dkim_verified, dns_dmarc_verified, dns_last_checked)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 dns_mx_verified, dns_spf_verified, dns_dkim_verified, dns_dmarc_verified, dns_last_checked, mail_hostname)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		domain, selector, req.Storage, dnsStatus,
-		mxVerified, spfVerified, dkimVerified, dmarcVerified, time.Now())
+		mxVerified, spfVerified, dkimVerified, dmarcVerified, time.Now(), mailHostname)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{

@@ -18,8 +18,32 @@ var (
 	ErrPrivateIP     = errors.New("private/reserved IP address not allowed")
 )
 
+// Pre-parsed reserved CIDR ranges for SSRF protection
+// Initialized once at package load time for efficiency
+var reservedNetworks []*net.IPNet
+
+func init() {
+	reservedCIDRs := []string{
+		"100.64.0.0/10",   // Carrier-grade NAT
+		"192.0.0.0/24",    // IETF Protocol Assignments
+		"192.0.2.0/24",    // TEST-NET-1
+		"198.51.100.0/24", // TEST-NET-2
+		"203.0.113.0/24",  // TEST-NET-3
+		"192.88.99.0/24",  // 6to4 Relay Anycast
+		"169.254.0.0/16",  // Link-local
+	}
+	reservedNetworks = make([]*net.IPNet, 0, len(reservedCIDRs))
+	for _, cidr := range reservedCIDRs {
+		_, network, err := net.ParseCIDR(cidr)
+		if err == nil {
+			reservedNetworks = append(reservedNetworks, network)
+		}
+	}
+}
+
 // isPrivateIP checks if an IP address is in a private/reserved range
-// to prevent SSRF attacks via malicious MX records
+// to prevent SSRF attacks via malicious MX records.
+// Uses pre-parsed CIDR networks for efficiency.
 func isPrivateIP(ipStr string) bool {
 	ip := net.ParseIP(ipStr)
 	if ip == nil {
@@ -51,20 +75,9 @@ func isPrivateIP(ipStr string) bool {
 		return true
 	}
 
-	// Additional reserved ranges not covered by Go's built-in checks
-	reservedRanges := []string{
-		"100.64.0.0/10",   // Carrier-grade NAT
-		"192.0.0.0/24",    // IETF Protocol Assignments
-		"192.0.2.0/24",    // TEST-NET-1
-		"198.51.100.0/24", // TEST-NET-2
-		"203.0.113.0/24",  // TEST-NET-3
-		"192.88.99.0/24",  // 6to4 Relay Anycast
-		"169.254.0.0/16",  // Link-local
-	}
-
-	for _, cidr := range reservedRanges {
-		_, network, err := net.ParseCIDR(cidr)
-		if err == nil && network.Contains(ip) {
+	// Check against pre-parsed reserved networks
+	for _, network := range reservedNetworks {
+		if network.Contains(ip) {
 			return true
 		}
 	}

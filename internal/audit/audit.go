@@ -4,8 +4,17 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
+)
+
+// DBDriver represents the database driver type
+type DBDriver string
+
+const (
+	DriverSQLite   DBDriver = "sqlite"
+	DriverPostgres DBDriver = "postgres"
 )
 
 // escapeLikeWildcards escapes SQL LIKE wildcards in user input
@@ -16,6 +25,18 @@ func escapeLikeWildcards(s string) string {
 	s = strings.ReplaceAll(s, "%", "\\%")
 	s = strings.ReplaceAll(s, "_", "\\_")
 	return s
+}
+
+// convertPlaceholders converts ? placeholders to $1, $2, etc. for PostgreSQL
+func convertPlaceholders(query string, driver DBDriver) string {
+	if driver != DriverPostgres {
+		return query
+	}
+	result := query
+	for i := 1; strings.Contains(result, "?"); i++ {
+		result = strings.Replace(result, "?", fmt.Sprintf("$%d", i), 1)
+	}
+	return result
 }
 
 // EventType represents the type of audit event
@@ -34,6 +55,15 @@ const (
 	EventQueueRetry       EventType = "queue.retry"
 	EventQueueDelete      EventType = "queue.delete"
 	EventConfigChange     EventType = "config.change"
+
+	// User portal events
+	EventUserPortalLogin         EventType = "userportal.login"
+	EventUserPortalLoginFailure  EventType = "userportal.login.failure"
+	EventUserPortalLogout        EventType = "userportal.logout"
+	EventUserPortalPassword      EventType = "userportal.password.change"
+	EventUserPortalProfile       EventType = "userportal.profile.update"
+	EventUserPortalForwarding    EventType = "userportal.forwarding.update"
+	EventUserPortalVacation      EventType = "userportal.vacation.update"
 )
 
 // Event represents an audit log entry
@@ -49,35 +79,61 @@ type Event struct {
 
 // Logger handles audit logging
 type Logger struct {
-	db *sql.DB
+	db     *sql.DB
+	driver DBDriver
 }
 
-// NewLogger creates a new audit logger
+// NewLogger creates a new audit logger with SQLite (default)
 func NewLogger(db *sql.DB) (*Logger, error) {
+	return NewLoggerWithDriver(db, DriverSQLite)
+}
+
+// NewLoggerWithDriver creates a new audit logger with specified driver
+func NewLoggerWithDriver(db *sql.DB, driver DBDriver) (*Logger, error) {
 	if db == nil {
 		return nil, nil // Return nil logger if no database (graceful degradation)
 	}
 
-	// Create audit_log table if it doesn't exist
-	_, err := db.Exec(`
-		CREATE TABLE IF NOT EXISTS audit_log (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-			actor TEXT NOT NULL,
-			action TEXT NOT NULL,
-			target TEXT,
-			details TEXT,
-			ip_address TEXT
-		);
-		CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log(timestamp);
-		CREATE INDEX IF NOT EXISTS idx_audit_actor ON audit_log(actor);
-		CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_log(action);
-	`)
+	// Create audit_log table if it doesn't exist (syntax differs by driver)
+	var schema string
+	if driver == DriverPostgres {
+		schema = `
+			CREATE TABLE IF NOT EXISTS audit_log (
+				id SERIAL PRIMARY KEY,
+				timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+				actor TEXT NOT NULL,
+				action TEXT NOT NULL,
+				target TEXT,
+				details TEXT,
+				ip_address TEXT
+			)`
+		// Create indexes separately for PostgreSQL
+		db.Exec(`CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log(timestamp)`)
+		db.Exec(`CREATE INDEX IF NOT EXISTS idx_audit_actor ON audit_log(actor)`)
+		db.Exec(`CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_log(action)`)
+	} else {
+		schema = `
+			CREATE TABLE IF NOT EXISTS audit_log (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+				actor TEXT NOT NULL,
+				action TEXT NOT NULL,
+				target TEXT,
+				details TEXT,
+				ip_address TEXT
+			);
+			CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log(timestamp);
+			CREATE INDEX IF NOT EXISTS idx_audit_actor ON audit_log(actor);
+			CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_log(action);
+		`
+	}
+
+	_, err := db.Exec(schema)
 	if err != nil {
 		return nil, err
 	}
 
-	return &Logger{db: db}, nil
+	return &Logger{db: db, driver: driver}, nil
 }
 
 // Log records an audit event
@@ -96,10 +152,11 @@ func (l *Logger) Log(ctx context.Context, actor string, action EventType, target
 		}
 	}
 
-	_, err := l.db.ExecContext(ctx,
+	query := convertPlaceholders(
 		`INSERT INTO audit_log (actor, action, target, details, ip_address) VALUES (?, ?, ?, ?, ?)`,
-		actor, string(action), target, detailsJSON, ipAddress,
+		l.driver,
 	)
+	_, err := l.db.ExecContext(ctx, query, actor, string(action), target, detailsJSON, ipAddress)
 	return err
 }
 
@@ -164,6 +221,9 @@ func (l *Logger) Query(ctx context.Context, filter QueryFilter) ([]Event, error)
 		args = append(args, filter.Offset)
 	}
 
+	// Convert placeholders for the appropriate database driver
+	query = convertPlaceholders(query, l.driver)
+
 	rows, err := l.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
@@ -208,6 +268,9 @@ func (l *Logger) Count(ctx context.Context, filter QueryFilter) (int, error) {
 		query += " AND action = ?"
 		args = append(args, string(filter.Action))
 	}
+
+	// Convert placeholders for the appropriate database driver
+	query = convertPlaceholders(query, l.driver)
 
 	var count int
 	err := l.db.QueryRowContext(ctx, query, args...).Scan(&count)

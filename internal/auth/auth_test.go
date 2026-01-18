@@ -58,6 +58,18 @@ func setupTestDB(t *testing.T) (*sql.DB, func()) {
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			UNIQUE(domain_id, source_address)
 		);
+
+		CREATE TABLE mailing_lists (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			domain_id INTEGER NOT NULL REFERENCES domains(id) ON DELETE CASCADE,
+			local_part TEXT NOT NULL,
+			list_address TEXT NOT NULL UNIQUE,
+			name TEXT NOT NULL,
+			description TEXT,
+			is_active BOOLEAN DEFAULT TRUE,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE(domain_id, local_part)
+		);
 	`
 
 	if _, err := db.Exec(schema); err != nil {
@@ -299,9 +311,17 @@ func TestAuthenticator_DisabledUser(t *testing.T) {
 	}
 
 	// Test authentication of disabled user
+	// Note: Returns ErrInvalidCredentials (not ErrUserDisabled) to prevent user enumeration attacks.
+	// This is a security feature - attackers cannot determine if an account exists but is disabled.
 	_, err = auth.Authenticate(ctx, "disabled@example.com", password)
-	if err != ErrUserDisabled {
-		t.Errorf("Expected ErrUserDisabled, got %v", err)
+	if err != ErrInvalidCredentials {
+		t.Errorf("Expected ErrInvalidCredentials for disabled user (security: prevents enumeration), got %v", err)
+	}
+
+	// Verify that the user cannot authenticate (regardless of error type)
+	user, _ := auth.Authenticate(ctx, "disabled@example.com", password)
+	if user != nil {
+		t.Error("Disabled user should not be able to authenticate")
 	}
 }
 

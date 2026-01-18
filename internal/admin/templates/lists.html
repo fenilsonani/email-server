@@ -1,0 +1,76 @@
+<div class="breadcrumbs">
+    <a href="/admin/">home</a>
+    <span>&gt;</span>
+    <span>mailing lists</span>
+</div>
+
+<div class="page-header">
+    <h1>mailing lists</h1>
+    <div>
+        {{if gt .PendingModeration 0}}
+        <a href="/admin/lists/moderation/" class="btn btn-warning">{{.PendingModeration}} pending moderation</a>
+        {{end}}
+        <a href="/admin/lists/add" class="btn btn-primary">create list</a>
+    </div>
+</div>
+
+<div class="card">
+    {{if .Lists}}
+    <table>
+        <thead>
+            <tr>
+                <th>list address</th>
+                <th>name</th>
+                <th>type</th>
+                <th>members</th>
+                <th>status</th>
+                <th>actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {{range .Lists}}
+            <tr>
+                <td><code>{{.ListAddress}}</code></td>
+                <td>{{.Name}}</td>
+                <td>
+                    {{if eq .ListType "announcement"}}
+                    <span class="badge badge-info">announcement</span>
+                    {{else}}
+                    <span class="badge badge-primary">discussion</span>
+                    {{end}}
+                </td>
+                <td>
+                    {{if .Stats}}{{.Stats.ConfirmedMembers}}{{else}}0{{end}}
+                    {{if .Stats}}{{if gt .Stats.PendingModeration 0}}<span class="badge badge-warning">{{.Stats.PendingModeration}} pending</span>{{end}}{{end}}
+                </td>
+                <td>
+                    {{if .IsActive}}
+                    <span class="badge badge-success">active</span>
+                    {{else}}
+                    <span class="badge badge-secondary">inactive</span>
+                    {{end}}
+                    {{if .ModerationEnabled}}
+                    <span class="badge badge-info">moderated</span>
+                    {{end}}
+                </td>
+                <td>
+                    <a href="/admin/lists/members/{{.ID}}" class="btn btn-sm">members</a>
+                    <a href="/admin/lists/archives/{{.ID}}" class="btn btn-sm">archives</a>
+                    <a href="/admin/lists/edit/{{.ID}}" class="btn btn-sm">edit</a>
+                    <form method="POST" action="/admin/lists/delete/{{.ID}}" style="display: inline;"
+                          onsubmit="return confirm('Delete this list and all members?');">
+                        <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                        <button type="submit" class="btn btn-sm btn-danger">delete</button>
+                    </form>
+                </td>
+            </tr>
+            {{end}}
+        </tbody>
+    </table>
+    {{else}}
+    <div class="empty-state">
+        <p>no mailing lists created yet</p>
+        <a href="/admin/lists/add" class="btn btn-primary">create your first list</a>
+    </div>
+    {{end}}
+</div>

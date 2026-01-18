@@ -105,6 +105,7 @@ func (g *Generator) GenerateAll() []Record {
 
 	records = append(records, g.GenerateMX())
 	records = append(records, g.GenerateA())
+	records = append(records, g.GenerateMailHostnameA())
 	records = append(records, g.GenerateSPF())
 	records = append(records, g.GenerateDKIM())
 	records = append(records, g.GenerateDMARC())
@@ -137,6 +138,18 @@ func (g *Generator) GenerateA() Record {
 		Value:   g.serverIP,
 		TTL:     3600,
 		Comment: "Mail server IP address",
+	}
+}
+
+// GenerateMailHostnameA generates A record for mail.{domain} hostname
+// This enables per-domain user portal access at mail.yourdomain.com/account
+func (g *Generator) GenerateMailHostnameA() Record {
+	return Record{
+		Type:    "A",
+		Host:    "mail",
+		Value:   g.serverIP,
+		TTL:     3600,
+		Comment: "Per-domain mail hostname for user portal (mail." + g.domain + ")",
 	}
 }
 

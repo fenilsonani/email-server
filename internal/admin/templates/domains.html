@@ -29,6 +29,7 @@
         <thead>
             <tr role="row">
                 <th role="columnheader" scope="col">Domain</th>
+                <th role="columnheader" scope="col">Mail Hostname</th>
                 <th role="columnheader" scope="col">DNS Status</th>
                 <th role="columnheader" scope="col">DKIM</th>
                 <th role="columnheader" scope="col">Users</th>
@@ -38,7 +39,21 @@
         <tbody>
             {{range .Domains}}
             <tr>
-                <td><strong>{{.Name}}</strong></td>
+                <td>
+                    <strong>{{.Name}}</strong>
+                    {{if .IsPrimary}}<span class="badge badge-info" style="margin-left: 0.5rem; font-size: 10px;">Primary</span>{{end}}
+                    {{if not .IsVerified}}
+                    <span class="badge badge-danger" style="margin-left: 0.5rem; font-size: 10px;" title="Domain ownership not verified">Unverified</span>
+                    {{end}}
+                </td>
+                <td>
+                    <code style="font-size: 0.8rem;">{{.MailHostname}}</code>
+                    {{if .DNSMailHostnameVerified}}
+                    <span class="badge badge-success" title="A record configured">A</span>
+                    {{else}}
+                    <span class="badge badge-warning" title="A record not found">No A</span>
+                    {{end}}
+                </td>
                 <td>
                     {{if eq .DNSStatus "ready"}}
                     <span class="badge badge-success" title="All DNS records verified">Ready</span>
@@ -160,6 +175,14 @@
                 <p>Value: <code id="dmarcRecord"></code></p>
                 <p id="dmarcCurrent" style="font-size: 0.8rem; color: var(--text-muted);"></p>
             </div>
+            <div class="dns-record" style="background: var(--bg); border-left: 3px solid var(--primary);">
+                <h4>Mail Hostname A Record <span id="mailHostnameStatus" class="dns-check-status"></span></h4>
+                <p>Name: <code id="mailHostnameName">mail.<span id="dnsDomainName4"></span></code></p>
+                <p>Type: <code>A</code></p>
+                <p>Value: <code id="mailHostnameIP">&lt;your server IP&gt;</code></p>
+                <p id="mailHostnameCurrent" style="font-size: 0.8rem; color: var(--text-muted);"></p>
+                <small style="color: var(--text-muted);">Required for per-domain user portal access (mail.yourdomain.com/account)</small>
+            </div>
 
             <div style="margin-top: 1rem; text-align: center;">
                 <button onclick="verifyDNS()" class="btn btn-primary" id="verifyDNSBtn">Verify DNS Configuration</button>
@@ -270,11 +293,11 @@ function showDNS(domainId, domainName) {
     currentDomainName = domainName;
 
     // Reset status indicators
-    ['mxStatus', 'spfStatus', 'dkimStatus', 'dmarcStatus'].forEach(function(id) {
+    ['mxStatus', 'spfStatus', 'dkimStatus', 'dmarcStatus', 'mailHostnameStatus'].forEach(function(id) {
         document.getElementById(id).textContent = '';
         document.getElementById(id).className = 'dns-check-status';
     });
-    ['mxCurrent', 'spfCurrent', 'dkimCurrent', 'dmarcCurrent'].forEach(function(id) {
+    ['mxCurrent', 'spfCurrent', 'dkimCurrent', 'dmarcCurrent', 'mailHostnameCurrent'].forEach(function(id) {
         document.getElementById(id).textContent = '';
     });
     document.getElementById('dnsStatusSummary').style.display = 'none';
@@ -286,11 +309,13 @@ function showDNS(domainId, domainName) {
             document.getElementById('dnsDomainName').textContent = data.domain;
             document.getElementById('dnsDomainName2').textContent = data.domain;
             document.getElementById('dnsDomainName3').textContent = data.domain;
+            document.getElementById('dnsDomainName4').textContent = data.domain;
             document.getElementById('mxRecord').textContent = data.mxRecord || data.hostname;
             document.getElementById('spfRecord').textContent = data.spfRecord || 'v=spf1 mx ~all';
             document.getElementById('dmarcRecord').textContent = data.dmarcRecord || 'v=DMARC1; p=quarantine; rua=mailto:dmarc@' + data.domain;
             document.getElementById('dkimRecordName').textContent = data.dkimRecordName || 'mail._domainkey.' + data.domain;
             document.getElementById('dkimRecord').value = data.dkimRecord || 'No DKIM key generated - click "Generate DKIM" first';
+            document.getElementById('mailHostnameIP').textContent = data.serverIP || '<your server IP>';
             document.getElementById('dnsModal').style.display = 'flex';
         })
         .catch(function(err) {
@@ -306,7 +331,7 @@ function verifyDNS() {
     btn.disabled = true;
 
     // Set all to checking
-    ['mxStatus', 'spfStatus', 'dkimStatus', 'dmarcStatus'].forEach(function(id) {
+    ['mxStatus', 'spfStatus', 'dkimStatus', 'dmarcStatus', 'mailHostnameStatus'].forEach(function(id) {
         var el = document.getElementById(id);
         el.textContent = 'Checking...';
         el.className = 'dns-check-status dns-checking';
@@ -315,19 +340,24 @@ function verifyDNS() {
     fetch('/admin/domains/dns/verify/' + currentDomainId)
         .then(response => response.json())
         .then(data => {
-            // Update MX status
+            // Update all status indicators
             updateDNSStatus('mx', data.mx);
             updateDNSStatus('spf', data.spf);
             updateDNSStatus('dkim', data.dkim);
             updateDNSStatus('dmarc', data.dmarc);
+            updateDNSStatus('mailHostname', data.mailHostname);
 
             // Show summary
             var summary = document.getElementById('dnsStatusSummary');
-            var allOk = data.mx.ok && data.spf.ok && data.dkim.ok && data.dmarc.ok;
+            var coreOk = data.mx.ok && data.spf.ok && data.dkim.ok && data.dmarc.ok;
+            var mailHostnameOk = data.mailHostname && data.mailHostname.ok;
 
-            if (allOk) {
-                summary.innerHTML = '<strong style="color: #16a34a;">All DNS records are correctly configured! Your domain is ready to send and receive emails.</strong>';
+            if (coreOk && mailHostnameOk) {
+                summary.innerHTML = '<strong style="color: #16a34a;">All DNS records are correctly configured! Your domain is ready to send and receive emails, and the user portal is accessible at mail.' + data.domain + '</strong>';
                 summary.style.background = '#dcfce7';
+            } else if (coreOk) {
+                summary.innerHTML = '<strong style="color: #16a34a;">Core DNS records configured!</strong> Email will work.<br><span style="color: #d97706;">Note: mail.' + data.domain + ' A record not found. Configure it to enable per-domain user portal access.</span>';
+                summary.style.background = '#fef3c7';
             } else {
                 var missing = [];
                 if (!data.mx.ok) missing.push('MX');
@@ -340,7 +370,7 @@ function verifyDNS() {
             summary.style.display = 'block';
 
             // Update table status
-            updateTableDNSStatus(currentDomainId, allOk, data);
+            updateTableDNSStatus(currentDomainId, coreOk, data);
         })
         .catch(function(err) {
             alert('DNS verification failed: ' + err);

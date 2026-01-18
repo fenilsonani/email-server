@@ -75,20 +75,46 @@ systemctl daemon-reload
 echo -e "${YELLOW}Initializing database...${NC}"
 sudo -u "$USER" "$INSTALL_DIR/mailserver" migrate --config "$CONFIG_DIR/config.yaml"
 
+# Install nginx config if nginx is present
+if command -v nginx &>/dev/null; then
+    echo -e "${YELLOW}Nginx detected. Installing mail server config...${NC}"
+    if [ ! -f "/etc/nginx/sites-available/mail" ]; then
+        cp deploy/nginx-mail.conf /etc/nginx/sites-available/mail
+        echo -e "${YELLOW}NOTE: Edit /etc/nginx/sites-available/mail and replace DOMAIN/MAIL_HOSTNAME placeholders${NC}"
+    else
+        echo -e "${YELLOW}Nginx config already exists at /etc/nginx/sites-available/mail - skipping${NC}"
+    fi
+fi
+
 echo ""
 echo -e "${GREEN}Installation complete!${NC}"
 echo ""
 echo "Next steps:"
 echo "1. Edit the config file: $CONFIG_DIR/config.yaml"
-echo "2. Generate DKIM keys: $INSTALL_DIR/mailserver dkim generate --domain yourdomain.com"
-echo "3. Add your domain: $INSTALL_DIR/mailserver domain add yourdomain.com"
-echo "4. Create a user: $INSTALL_DIR/mailserver user add user@yourdomain.com"
-echo "5. Start the service: systemctl start mailserver"
-echo "6. Enable on boot: systemctl enable mailserver"
+echo "   - Set hostname to mail.yourdomain.com"
+echo "   - Set domain to yourdomain.com"
+echo "   - Configure TLS certificates"
+echo "2. If using nginx, configure /etc/nginx/sites-available/mail:"
+echo "   - Replace DOMAIN with your domain (e.g., example.com)"
+echo "   - Replace MAIL_HOSTNAME with mail.yourdomain.com"
+echo "   - ln -s /etc/nginx/sites-available/mail /etc/nginx/sites-enabled/"
+echo "   - nginx -t && systemctl reload nginx"
+echo "3. Generate DKIM keys: $INSTALL_DIR/mailserver dkim generate --domain yourdomain.com"
+echo "4. Add your domain: $INSTALL_DIR/mailserver domain add yourdomain.com"
+echo "5. Create a user: $INSTALL_DIR/mailserver user add user@yourdomain.com"
+echo "6. Start the service: systemctl start mailserver"
+echo "7. Enable on boot: systemctl enable mailserver"
 echo ""
 echo "DNS Records needed:"
 echo "  - MX record: @ -> mail.yourdomain.com (priority 10)"
 echo "  - A record: mail -> your.server.ip"
+echo "  - A record: autoconfig -> your.server.ip (for autodiscover)"
+echo "  - A record: autodiscover -> your.server.ip (for autodiscover)"
 echo "  - SPF: @ TXT \"v=spf1 mx -all\""
 echo "  - DKIM: See output of dkim generate command"
 echo "  - DMARC: _dmarc TXT \"v=DMARC1; p=quarantine; rua=mailto:postmaster@yourdomain.com\""
+echo ""
+echo "Autodiscover endpoints (configure in nginx):"
+echo "  - https://mail.yourdomain.com/.well-known/autoconfig/mail/config-v1.1.xml"
+echo "  - https://mail.yourdomain.com/.well-known/email.mobileconfig?email=user@domain.com"
+echo "  - https://mail.yourdomain.com/autodiscover/autodiscover.xml"

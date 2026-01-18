@@ -1,0 +1,34 @@
+<h1>Edit Profile</h1>
+
+<div class="card">
+    {{if .Error}}
+    <div class="alert alert-error">{{.Error}}</div>
+    {{end}}
+
+    {{if .Success}}
+    <div class="alert alert-success">{{.Success}}</div>
+    {{end}}
+
+    <form method="POST" action="/account/profile">
+        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+
+        <div class="form-group">
+            <label>Email Address</label>
+            <input type="email" value="{{.User.Email}}" disabled>
+            <small class="text-muted">Your email address cannot be changed</small>
+        </div>
+
+        <div class="form-group">
+            <label for="display_name">Display Name</label>
+            <input type="text" id="display_name" name="display_name"
+                   value="{{.User.DisplayName}}" maxlength="255"
+                   placeholder="Your Name">
+            <small class="text-muted">This name will appear as the sender name in emails you send</small>
+        </div>
+
+        <div class="button-group">
+            <button type="submit" class="btn btn-primary">Save Changes</button>
+            <a href="/account/" class="btn">Cancel</a>
+        </div>
+    </form>
+</div>

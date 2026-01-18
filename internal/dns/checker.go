@@ -83,6 +83,7 @@ func (c *Checker) CheckAll(ctx context.Context) []CheckResult {
 	results = append(results, c.CheckDKIM(ctx))
 	results = append(results, c.CheckDMARC(ctx))
 	results = append(results, c.CheckPTR(ctx))
+	results = append(results, c.CheckMailHostname(ctx))
 
 	return results
 }
@@ -458,6 +459,72 @@ func (c *Checker) CheckPTR(ctx context.Context) CheckResult {
 		Expected:   c.mailServer,
 		Actual:     strings.Join(names, ", "),
 		Message:    "PTR record exists but doesn't match mail server hostname",
+	}
+}
+
+// CheckMailHostname checks if mail.{domain} A record resolves
+func (c *Checker) CheckMailHostname(ctx context.Context) CheckResult {
+	// Check parent context first
+	if err := ctx.Err(); err != nil {
+		return CheckResult{
+			RecordType: "A (mail hostname)",
+			Status:     StatusFail,
+			Message:    fmt.Sprintf("Context error: %v", err),
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	mailHostname := "mail." + c.domain
+	ips, err := c.resolver.LookupIPAddr(ctx, mailHostname)
+	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return CheckResult{
+				RecordType: "A (mail hostname)",
+				Status:     StatusFail,
+				Expected:   mailHostname,
+				Message:    "DNS lookup timeout",
+			}
+		}
+		var dnsErr *net.DNSError
+		if errors.As(err, &dnsErr) && dnsErr.IsNotFound {
+			return CheckResult{
+				RecordType: "A (mail hostname)",
+				Status:     StatusWarning,
+				Expected:   mailHostname,
+				Message:    fmt.Sprintf("No A record for %s - required for per-domain user portal", mailHostname),
+			}
+		}
+		return CheckResult{
+			RecordType: "A (mail hostname)",
+			Status:     StatusFail,
+			Expected:   mailHostname,
+			Message:    fmt.Sprintf("DNS lookup failed: %v", err),
+		}
+	}
+
+	if len(ips) == 0 {
+		return CheckResult{
+			RecordType: "A (mail hostname)",
+			Status:     StatusWarning,
+			Expected:   mailHostname,
+			Message:    fmt.Sprintf("No A record for %s - required for per-domain user portal", mailHostname),
+		}
+	}
+
+	// Format IPs
+	var ipStrings []string
+	for _, ip := range ips {
+		ipStrings = append(ipStrings, ip.IP.String())
+	}
+
+	return CheckResult{
+		RecordType: "A (mail hostname)",
+		Status:     StatusPass,
+		Expected:   mailHostname,
+		Actual:     strings.Join(ipStrings, ", "),
+		Message:    fmt.Sprintf("A record for %s resolves to %s", mailHostname, strings.Join(ipStrings, ", ")),
 	}
 }
 

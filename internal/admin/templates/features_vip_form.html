@@ -1,0 +1,41 @@
+<div class="breadcrumbs">
+    <a href="/admin/">home</a>
+    <span>&gt;</span>
+    <a href="/admin/features">features</a>
+    <span>&gt;</span>
+    <a href="/admin/features/vip">vip</a>
+    <span>&gt;</span>
+    <span>add</span>
+</div>
+
+<div class="page-header">
+    <h1>add vip contact</h1>
+</div>
+
+{{if .Error}}
+<div class="alert alert-danger">{{.Error}}</div>
+{{end}}
+
+<div class="card">
+    <form method="POST" action="/admin/features/vip/add">
+
+        <div class="form-group">
+            <label for="email">email address</label>
+            <input type="email" id="email" name="email" class="form-control" style="max-width: 300px;" required
+                   placeholder="boss@company.com">
+            <small style="color: var(--text-muted); display: block; margin-top: 0.25rem; font-size: 11px;">emails from this address will be marked as vip</small>
+        </div>
+
+        <div class="form-group">
+            <label for="name">name (optional)</label>
+            <input type="text" id="name" name="name" class="form-control" style="max-width: 300px;"
+                   placeholder="e.g., john smith">
+            <small style="color: var(--text-muted); display: block; margin-top: 0.25rem; font-size: 11px;">a friendly name to help you identify this contact</small>
+        </div>
+
+        <div style="margin-top: 1rem;">
+            <button type="submit" class="btn btn-primary">add vip</button>
+            <a href="/admin/features/vip" class="btn btn-secondary">cancel</a>
+        </div>
+    </form>
+</div>

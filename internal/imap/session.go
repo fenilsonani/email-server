@@ -16,6 +16,85 @@ import (
 	"github.com/fenilsonani/email-server/internal/storage"
 )
 
+// Flag slice pools to reduce allocations in hot paths.
+// Most messages have 1-5 flags, so we pool slices with capacity 8.
+var (
+	imapFlagPool = sync.Pool{
+		New: func() any {
+			s := make([]imap.Flag, 0, 8)
+			return &s
+		},
+	}
+	storageFlagPool = sync.Pool{
+		New: func() any {
+			s := make([]storage.Flag, 0, 8)
+			return &s
+		},
+	}
+	// Buffer pool for reading message bodies
+	bodyBufferPool = sync.Pool{
+		New: func() any {
+			return bytes.NewBuffer(make([]byte, 0, 64*1024)) // 64KB initial
+		},
+	}
+)
+
+// getImapFlags gets a flag slice from pool and populates it
+func getImapFlags(flags []storage.Flag) []imap.Flag {
+	ptr := imapFlagPool.Get().(*[]imap.Flag)
+	result := (*ptr)[:0]
+	for _, f := range flags {
+		result = append(result, imap.Flag(f))
+	}
+	return result
+}
+
+// putImapFlags returns a flag slice to the pool
+func putImapFlags(flags []imap.Flag) {
+	if cap(flags) <= 16 { // Only pool reasonably sized slices
+		flags = flags[:0]
+		imapFlagPool.Put(&flags)
+	}
+}
+
+// getStorageFlags gets a storage flag slice from pool and populates it
+func getStorageFlags(flags []imap.Flag) []storage.Flag {
+	ptr := storageFlagPool.Get().(*[]storage.Flag)
+	result := (*ptr)[:0]
+	for _, f := range flags {
+		result = append(result, storage.Flag(f))
+	}
+	return result
+}
+
+// putStorageFlags returns a storage flag slice to the pool
+func putStorageFlags(flags []storage.Flag) {
+	if cap(flags) <= 16 {
+		flags = flags[:0]
+		storageFlagPool.Put(&flags)
+	}
+}
+
+// readBodyEfficiently reads message body using pooled buffer
+func readBodyEfficiently(r io.ReadCloser) ([]byte, error) {
+	buf := bodyBufferPool.Get().(*bytes.Buffer)
+	buf.Reset()
+
+	_, err := buf.ReadFrom(r)
+	r.Close()
+
+	if err != nil {
+		bodyBufferPool.Put(buf)
+		return nil, err
+	}
+
+	// Make a copy since we're returning the buffer to pool
+	data := make([]byte, buf.Len())
+	copy(data, buf.Bytes())
+	bodyBufferPool.Put(buf)
+	return data, nil
+}
+
 // messageMappings holds pre-allocated maps for seq/uid lookups
 // This reduces GC pressure by pre-allocating with known capacity
 type messageMappings struct {
@@ -499,13 +578,11 @@ func (s *Session) Fetch(w *imapserver.FetchWriter, numSet imap.NumSet, options *
 		// Always include UID
 		respWriter.WriteUID(imap.UID(msg.UID))
 
-		// Write flags
+		// Write flags (using pooled slice)
 		if options.Flags {
-			flags := make([]imap.Flag, len(msg.Flags))
-			for i, f := range msg.Flags {
-				flags[i] = imap.Flag(f)
-			}
+			flags := getImapFlags(msg.Flags)
 			respWriter.WriteFlags(flags)
+			putImapFlags(flags)
 		}
 
 		// Write internal date
@@ -518,12 +595,11 @@ func (s *Session) Fetch(w *imapserver.FetchWriter, numSet imap.NumSet, options *
 			respWriter.WriteRFC822Size(msg.Size)
 		}
 
-		// Write envelope
+		// Write envelope (using pooled buffer)
 		if options.Envelope {
 			body, err := s.server.store.GetMessageBody(ctx, msg)
 			if err == nil {
-				data, readErr := io.ReadAll(body)
-				body.Close() // Close immediately, not deferred in loop
+				data, readErr := readBodyEfficiently(body)
 				if readErr == nil {
 					envelope := extractEnvelope(data)
 					respWriter.WriteEnvelope(envelope)
@@ -535,7 +611,7 @@ func (s *Session) Fetch(w *imapserver.FetchWriter, numSet imap.NumSet, options *
 			}
 		}
 
-		// Write body sections
+		// Write body sections (using pooled buffer)
 		for _, bs := range options.BodySection {
 			body, err := s.server.store.GetMessageBody(ctx, msg)
 			if err != nil {
@@ -543,9 +619,7 @@ func (s *Session) Fetch(w *imapserver.FetchWriter, numSet imap.NumSet, options *
 				continue
 			}
 
-			data, readErr := io.ReadAll(body)
-			body.Close() // Close immediately after reading
-
+			data, readErr := readBodyEfficiently(body)
 			if readErr != nil {
 				log.Printf("IMAP: Failed to read message body for section: %v", readErr)
 				continue
@@ -609,16 +683,14 @@ func (s *Session) Store(w *imapserver.FetchWriter, numSet imap.NumSet, flags *im
 		}
 	}
 
-	// Update each message
+	// Update each message (using pooled flag slices)
+	storageFlags := getStorageFlags(flags.Flags)
+	defer putStorageFlags(storageFlags)
+
 	for _, seqNum := range toUpdate {
 		msg := m.seqToMsg[seqNum]
 		if msg == nil {
 			continue
-		}
-
-		storageFlags := make([]storage.Flag, len(flags.Flags))
-		for i, f := range flags.Flags {
-			storageFlags[i] = storage.Flag(f)
 		}
 
 		switch flags.Op {
@@ -643,11 +715,9 @@ func (s *Session) Store(w *imapserver.FetchWriter, numSet imap.NumSet, flags *im
 			if err != nil {
 				log.Printf("IMAP: Failed to get updated message UID %d: %v", msg.UID, err)
 			} else if updatedMsg != nil {
-				newFlags := make([]imap.Flag, len(updatedMsg.Flags))
-				for i, f := range updatedMsg.Flags {
-					newFlags[i] = imap.Flag(f)
-				}
+				newFlags := getImapFlags(updatedMsg.Flags)
 				respWriter.WriteFlags(newFlags)
+				putImapFlags(newFlags)
 			}
 			respWriter.Close()
 		}
@@ -848,23 +918,36 @@ func extractEnvelope(data []byte) *imap.Envelope {
 	// Simple envelope extraction - in production use proper MIME parsing
 	env := &imap.Envelope{}
 
-	lines := strings.Split(string(data), "\n")
+	// Convert to string once
+	dataStr := string(data)
+	lines := strings.Split(dataStr, "\n")
+
 	for _, line := range lines {
-		if strings.HasPrefix(strings.ToLower(line), "subject:") {
+		if len(line) == 0 || line == "\r" {
+			break // End of headers
+		}
+
+		// Use case-insensitive prefix matching without allocating new strings
+		lineLower := strings.ToLower(line)
+		switch {
+		case strings.HasPrefix(lineLower, "subject:"):
 			env.Subject = strings.TrimSpace(line[8:])
-		} else if strings.HasPrefix(strings.ToLower(line), "date:") {
+		case strings.HasPrefix(lineLower, "date:"):
 			dateStr := strings.TrimSpace(line[5:])
+			// Try multiple date formats
 			if t, err := time.Parse(time.RFC1123Z, dateStr); err == nil {
 				env.Date = t
+			} else if t, err := time.Parse(time.RFC1123, dateStr); err == nil {
+				env.Date = t
+			} else if t, err := time.Parse(time.RFC822Z, dateStr); err == nil {
+				env.Date = t
 			}
-		} else if strings.HasPrefix(strings.ToLower(line), "from:") {
+		case strings.HasPrefix(lineLower, "from:"):
 			env.From = parseAddresses(strings.TrimSpace(line[5:]))
-		} else if strings.HasPrefix(strings.ToLower(line), "to:") {
+		case strings.HasPrefix(lineLower, "to:"):
 			env.To = parseAddresses(strings.TrimSpace(line[3:]))
-		} else if strings.HasPrefix(strings.ToLower(line), "message-id:") {
+		case strings.HasPrefix(lineLower, "message-id:"):
 			env.MessageID = strings.TrimSpace(line[11:])
-		} else if line == "" || line == "\r" {
-			break // End of headers
 		}
 	}
 
@@ -872,9 +955,15 @@ func extractEnvelope(data []byte) *imap.Envelope {
 }
 
 func parseAddresses(s string) []imap.Address {
-	// Simple address parsing
+	if s == "" {
+		return nil
+	}
+
+	// Simple address parsing with preallocated slice
 	parts := strings.Split(s, ",")
-	var addrs []imap.Address
+	// Preallocate with capacity based on number of parts
+	addrs := make([]imap.Address, 0, len(parts))
+
 	for _, part := range parts {
 		part = strings.TrimSpace(part)
 		if part == "" {

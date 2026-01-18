@@ -14,7 +14,6 @@ A self-hosted email server written in Go, designed for individuals and small tea
 ### Core Email
 - **IMAP Server** with IDLE support for real-time push notifications
 - **SMTP Server** for sending and receiving with smart retry logic
-- **POP3 Support** for legacy clients
 - **DKIM Signing** for outbound email authentication
 - **SPF/DMARC** verification for inbound security
 
@@ -32,6 +31,16 @@ A self-hosted email server written in Go, designed for individuals and small tea
 - **TLS Fallback** for servers with misconfigured certificates
 
 > **Note on encryption**: Emails are encrypted in transit (TLS) but stored unencrypted on disk (standard Maildir format). This is similar to most email servers including Gmail. For at-rest encryption, use full-disk encryption (LUKS, FileVault, etc.) on your server.
+
+> **Why no POP3?** POP3 is an outdated protocol from 1984 with significant limitations:
+> - Downloads and deletes emails from server (no sync across devices)
+> - No folder support (only inbox)
+> - No server-side search or flags
+> - Poor multi-device experience (emails scattered across devices)
+> - Modern email clients (Apple Mail, Thunderbird, Outlook) all prefer IMAP
+> - IMAP provides superior multi-device sync, folder support, and server-side operations
+>
+> POP3 was designed for single-device, dial-up internet scenarios that no longer exist. In 2026, IMAP is the standard and provides a vastly better user experience. If you need POP3 for a specific legacy client, consider using an IMAP-to-POP3 proxy.
 
 ### Administration
 - **Web Admin Panel** for user/domain management

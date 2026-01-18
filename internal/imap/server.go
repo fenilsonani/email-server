@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/emersion/go-imap/v2"
@@ -13,6 +14,113 @@ import (
 	"github.com/fenilsonani/email-server/internal/auth"
 	"github.com/fenilsonani/email-server/internal/storage/maildir"
 )
+
+// Default connection limits for IMAP
+const (
+	defaultIMAPMaxConnections      = 2000
+	defaultIMAPMaxConnectionsPerIP = 100
+)
+
+// limitedListener wraps a net.Listener with connection limits
+type limitedListener struct {
+	net.Listener
+	maxConns      int
+	maxConnsPerIP int
+	currentConns  int64
+	perIPConns    map[string]int
+	perIPMu       sync.Mutex
+	sem           chan struct{}
+}
+
+// newLimitedListener creates a connection-limiting listener
+func newLimitedListener(l net.Listener, maxConns, maxConnsPerIP int) *limitedListener {
+	return &limitedListener{
+		Listener:      l,
+		maxConns:      maxConns,
+		maxConnsPerIP: maxConnsPerIP,
+		perIPConns:    make(map[string]int),
+		sem:           make(chan struct{}, maxConns),
+	}
+}
+
+func (l *limitedListener) Accept() (net.Conn, error) {
+	// Acquire global semaphore
+	l.sem <- struct{}{}
+
+	conn, err := l.Listener.Accept()
+	if err != nil {
+		<-l.sem
+		return nil, err
+	}
+
+	// Check per-IP limit
+	ip := extractIP(conn.RemoteAddr())
+	l.perIPMu.Lock()
+	if l.perIPConns[ip] >= l.maxConnsPerIP {
+		l.perIPMu.Unlock()
+		<-l.sem
+		conn.Close()
+		log.Printf("IMAP: Rejected connection from %s: per-IP limit exceeded", ip)
+		return l.Accept()
+	}
+	l.perIPConns[ip]++
+	l.perIPMu.Unlock()
+
+	atomic.AddInt64(&l.currentConns, 1)
+
+	return &limitedConn{
+		Conn:     conn,
+		listener: l,
+		ip:       ip,
+	}, nil
+}
+
+type limitedConn struct {
+	net.Conn
+	listener *limitedListener
+	ip       string
+	closed   int32
+}
+
+func (c *limitedConn) Close() error {
+	if atomic.CompareAndSwapInt32(&c.closed, 0, 1) {
+		c.listener.perIPMu.Lock()
+		c.listener.perIPConns[c.ip]--
+		if c.listener.perIPConns[c.ip] <= 0 {
+			delete(c.listener.perIPConns, c.ip)
+		}
+		c.listener.perIPMu.Unlock()
+
+		atomic.AddInt64(&c.listener.currentConns, -1)
+		<-c.listener.sem
+	}
+	return c.Conn.Close()
+}
+
+func extractIP(addr net.Addr) string {
+	if addr == nil {
+		return "unknown"
+	}
+	switch a := addr.(type) {
+	case *net.TCPAddr:
+		return a.IP.String()
+	default:
+		host, _, err := net.SplitHostPort(addr.String())
+		if err != nil {
+			return addr.String()
+		}
+		return host
+	}
+}
+
+// Maximum number of mailbox trackers to cache (prevents unbounded memory growth)
+const maxTrackerCacheSize = 5000
+
+// trackerEntry holds a tracker with access time for LRU eviction
+type trackerEntry struct {
+	tracker    *imapserver.MailboxTracker
+	lastAccess time.Time
+}
 
 // Server wraps the go-imap v2 server
 type Server struct {
@@ -25,9 +133,9 @@ type Server struct {
 	listener      net.Listener
 	tlsListener   net.Listener
 
-	// Mailbox trackers for IDLE notifications
+	// Mailbox trackers for IDLE notifications with LRU eviction
 	trackersMu sync.RWMutex
-	trackers   map[int64]*imapserver.MailboxTracker
+	trackers   map[int64]*trackerEntry
 
 	// Shutdown coordination
 	ctx        context.Context
@@ -44,7 +152,7 @@ func NewServer(authenticator *auth.Authenticator, store *maildir.Store, addr, tl
 		tlsConfig:     tlsConfig,
 		addr:          addr,
 		tlsAddr:       tlsAddr,
-		trackers:      make(map[int64]*imapserver.MailboxTracker),
+		trackers:      make(map[int64]*trackerEntry),
 		ctx:           ctx,
 		cancel:        cancel,
 	}
@@ -69,35 +177,91 @@ func NewServer(authenticator *auth.Authenticator, store *maildir.Store, addr, tl
 
 // GetMailboxTracker returns or creates a tracker for a mailbox
 func (s *Server) GetMailboxTracker(mailboxID int64) *imapserver.MailboxTracker {
+	now := time.Now()
+
 	s.trackersMu.RLock()
-	tracker, ok := s.trackers[mailboxID]
+	entry, ok := s.trackers[mailboxID]
 	s.trackersMu.RUnlock()
 
 	if ok {
-		return tracker
+		// Update last access time (under write lock)
+		s.trackersMu.Lock()
+		if entry, ok = s.trackers[mailboxID]; ok {
+			entry.lastAccess = now
+		}
+		s.trackersMu.Unlock()
+		if entry != nil {
+			return entry.tracker
+		}
 	}
 
 	s.trackersMu.Lock()
 	defer s.trackersMu.Unlock()
 
 	// Double-check after acquiring write lock
-	if tracker, ok = s.trackers[mailboxID]; ok {
-		return tracker
+	if entry, ok = s.trackers[mailboxID]; ok {
+		entry.lastAccess = now
+		return entry.tracker
+	}
+
+	// Evict old entries if cache is full (LRU eviction)
+	if len(s.trackers) >= maxTrackerCacheSize {
+		s.evictOldTrackers()
 	}
 
 	// Create new tracker with initial message count
-	tracker = imapserver.NewMailboxTracker(0)
-	s.trackers[mailboxID] = tracker
+	tracker := imapserver.NewMailboxTracker(0)
+	s.trackers[mailboxID] = &trackerEntry{
+		tracker:    tracker,
+		lastAccess: now,
+	}
 	return tracker
+}
+
+// evictOldTrackers removes the least recently used trackers
+// Must be called with trackersMu held
+func (s *Server) evictOldTrackers() {
+	// Remove 20% of entries to make room
+	toRemove := maxTrackerCacheSize / 5
+	if toRemove < 10 {
+		toRemove = 10
+	}
+
+	// Find oldest entries
+	type ageEntry struct {
+		id   int64
+		time time.Time
+	}
+	entries := make([]ageEntry, 0, len(s.trackers))
+	for id, entry := range s.trackers {
+		entries = append(entries, ageEntry{id: id, time: entry.lastAccess})
+	}
+
+	// Sort by time (oldest first) using simple selection for small batches
+	for i := 0; i < toRemove && i < len(entries); i++ {
+		minIdx := i
+		for j := i + 1; j < len(entries); j++ {
+			if entries[j].time.Before(entries[minIdx].time) {
+				minIdx = j
+			}
+		}
+		if minIdx != i {
+			entries[i], entries[minIdx] = entries[minIdx], entries[i]
+		}
+		// Delete the oldest entry
+		delete(s.trackers, entries[i].id)
+	}
+
+	log.Printf("IMAP: Evicted %d old mailbox trackers (cache was at %d)", toRemove, maxTrackerCacheSize)
 }
 
 // NotifyMailboxUpdate notifies all sessions watching a mailbox about updates
 func (s *Server) NotifyMailboxUpdate(mailboxID int64) {
 	s.trackersMu.RLock()
-	tracker, ok := s.trackers[mailboxID]
+	entry, ok := s.trackers[mailboxID]
 	s.trackersMu.RUnlock()
 
-	if !ok {
+	if !ok || entry == nil {
 		return
 	}
 
@@ -112,7 +276,7 @@ func (s *Server) NotifyMailboxUpdate(mailboxID int64) {
 	}
 
 	log.Printf("IMAP v2: Notifying IDLE clients of mailbox update (messages: %d)", stats.Messages)
-	tracker.QueueNumMessages(uint32(stats.Messages))
+	entry.tracker.QueueNumMessages(uint32(stats.Messages))
 }
 
 // NotifyMailboxUpdateByName notifies by username and mailbox name
@@ -140,13 +304,16 @@ func (s *Server) NotifyMailboxUpdateByName(username, mailboxName string) {
 // ListenAndServe starts the IMAP server
 func (s *Server) ListenAndServe() error {
 	if s.addr != "" {
-		listener, err := net.Listen("tcp", s.addr)
+		rawListener, err := net.Listen("tcp", s.addr)
 		if err != nil {
 			return err
 		}
+
+		// Wrap with connection limits
+		listener := newLimitedListener(rawListener, defaultIMAPMaxConnections, defaultIMAPMaxConnectionsPerIP)
 		s.listener = listener
 
-		log.Printf("IMAP server listening on %s", s.addr)
+		log.Printf("IMAP server listening on %s (max %d conns, %d per IP)", s.addr, defaultIMAPMaxConnections, defaultIMAPMaxConnectionsPerIP)
 
 		s.shutdownWg.Add(1)
 		go func() {
@@ -169,13 +336,16 @@ func (s *Server) ListenAndServe() error {
 // ListenAndServeTLS starts the IMAPS server
 func (s *Server) ListenAndServeTLS(tlsConfig *tls.Config) error {
 	if s.tlsAddr != "" && tlsConfig != nil {
-		listener, err := tls.Listen("tcp", s.tlsAddr, tlsConfig)
+		rawListener, err := tls.Listen("tcp", s.tlsAddr, tlsConfig)
 		if err != nil {
 			return err
 		}
+
+		// Wrap with connection limits
+		listener := newLimitedListener(rawListener, defaultIMAPMaxConnections, defaultIMAPMaxConnectionsPerIP)
 		s.tlsListener = listener
 
-		log.Printf("IMAPS server listening on %s", s.tlsAddr)
+		log.Printf("IMAPS server listening on %s (max %d conns, %d per IP)", s.tlsAddr, defaultIMAPMaxConnections, defaultIMAPMaxConnectionsPerIP)
 
 		s.shutdownWg.Add(1)
 		go func() {
@@ -246,12 +416,12 @@ func (s *Server) Close() error {
 
 	// Close all trackers
 	s.trackersMu.Lock()
-	for id, tracker := range s.trackers {
-		if tracker != nil {
+	for id, entry := range s.trackers {
+		if entry != nil && entry.tracker != nil {
 			log.Printf("IMAP: Closing tracker for mailbox %d", id)
 		}
 	}
-	s.trackers = make(map[int64]*imapserver.MailboxTracker)
+	s.trackers = make(map[int64]*trackerEntry)
 	s.trackersMu.Unlock()
 
 	return closeErr

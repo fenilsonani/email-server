@@ -1,0 +1,81 @@
+<div class="breadcrumbs">
+    <a href="/admin/">home</a>
+    <span>&gt;</span>
+    <a href="/admin/lists">mailing lists</a>
+    <span>&gt;</span>
+    <span>{{.List.Name}} archives</span>
+</div>
+
+<div class="page-header">
+    <h1>{{.List.Name}} - archives</h1>
+    <code>{{.List.ListAddress}}</code>
+</div>
+
+<div class="card">
+    <form method="GET" class="search-form">
+        <input type="text" name="q" value="{{.Query}}" placeholder="Search archives...">
+        <button type="submit" class="btn">search</button>
+        {{if .Query}}
+        <a href="/admin/lists/archives/{{.List.ID}}" class="btn">clear</a>
+        {{end}}
+    </form>
+</div>
+
+<div class="card">
+    <p>{{.TotalCount}} archived messages</p>
+
+    {{if .Archives}}
+    <table>
+        <thead>
+            <tr>
+                <th>date</th>
+                <th>from</th>
+                <th>subject</th>
+                <th>size</th>
+            </tr>
+        </thead>
+        <tbody>
+            {{range .Archives}}
+            <tr>
+                <td>{{.SentAt.Format "2006-01-02 15:04"}}</td>
+                <td>
+                    {{if .SenderName}}{{.SenderName}}<br><small>{{.SenderEmail}}</small>{{else}}{{.SenderEmail}}{{end}}
+                </td>
+                <td>
+                    {{if .Subject}}{{.Subject}}{{else}}(no subject){{end}}
+                    {{if .BodyPreview}}
+                    <br><small class="text-muted">{{.BodyPreview}}</small>
+                    {{end}}
+                </td>
+                <td>{{if .MessageSize}}{{.MessageSize}}{{else}}--{{end}}</td>
+            </tr>
+            {{end}}
+        </tbody>
+    </table>
+
+    {{if gt .TotalPages 1}}
+    <div class="pagination">
+        {{if gt .Page 1}}
+        <a href="/admin/lists/archives/{{.List.ID}}?page={{subtract .Page 1}}{{if .Query}}&q={{.Query}}{{end}}" class="btn btn-sm">&laquo; Previous</a>
+        {{end}}
+        <span>Page {{.Page}} of {{.TotalPages}}</span>
+        {{if lt .Page .TotalPages}}
+        <a href="/admin/lists/archives/{{.List.ID}}?page={{add .Page 1}}{{if .Query}}&q={{.Query}}{{end}}" class="btn btn-sm">Next &raquo;</a>
+        {{end}}
+    </div>
+    {{end}}
+    {{else}}
+    <div class="empty-state">
+        {{if .Query}}
+        <p>no messages found matching "{{.Query}}"</p>
+        {{else}}
+        <p>no archived messages yet</p>
+        {{end}}
+    </div>
+    {{end}}
+</div>
+
+<div class="form-actions">
+    <a href="/admin/lists" class="btn">back to lists</a>
+    <a href="/admin/lists/members/{{.List.ID}}" class="btn">members</a>
+</div>

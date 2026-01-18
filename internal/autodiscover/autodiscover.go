@@ -229,7 +229,10 @@ func (s *Server) handleMicrosoftAutodiscover(w http.ResponseWriter, r *http.Requ
 		slog.String("remote_addr", r.RemoteAddr))
 }
 
-// Apple mobileconfig template
+// Apple mobileconfig template - Email only
+// Note: CardDAV/CalDAV cannot be included because Apple validates accounts during
+// profile installation before password entry, causing DAAccountValidationDomain:102 errors.
+// Users should add Contacts/Calendar manually via System Settings after email is configured.
 const appleMobileconfigTemplate = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -268,7 +271,7 @@ const appleMobileconfigTemplate = `<?xml version="1.0" encoding="UTF-8"?>
             <key>OutgoingPasswordSameAsIncomingPassword</key>
             <true/>
             <key>PayloadDescription</key>
-            <string>Email account configuration for {{.Domain}}</string>
+            <string>Email account</string>
             <key>PayloadDisplayName</key>
             <string>{{.DisplayName}}</string>
             <key>PayloadIdentifier</key>
@@ -276,7 +279,7 @@ const appleMobileconfigTemplate = `<?xml version="1.0" encoding="UTF-8"?>
             <key>PayloadType</key>
             <string>com.apple.mail.managed</string>
             <key>PayloadUUID</key>
-            <string>{{.UUID}}</string>
+            <string>{{.EmailUUID}}</string>
             <key>PayloadVersion</key>
             <integer>1</integer>
             <key>PreventAppSheet</key>
@@ -288,7 +291,7 @@ const appleMobileconfigTemplate = `<?xml version="1.0" encoding="UTF-8"?>
         </dict>
     </array>
     <key>PayloadDescription</key>
-    <string>Email configuration profile for {{.Domain}}</string>
+    <string>Email configuration for {{.Domain}}</string>
     <key>PayloadDisplayName</key>
     <string>{{.DisplayName}}</string>
     <key>PayloadIdentifier</key>
@@ -326,15 +329,23 @@ func (s *Server) handleAppleMobileconfig(w http.ResponseWriter, r *http.Request)
     </style>
 </head>
 <body>
-    <h1>%s Email Setup</h1>
-    <p>Enter your email address to download the configuration profile for Apple Mail.</p>
+    <h1>%s Account Setup</h1>
+    <p>Enter your email address to download the configuration profile.</p>
     <form method="get">
         <input type="email" name="email" placeholder="your.email@%s" required>
         <button type="submit">Download Profile</button>
     </form>
-    <p>After downloading, open the profile on your iPhone, iPad, or Mac to automatically configure your email.</p>
+    <p>This profile configures <strong>Mail</strong> on your iPhone, iPad, or Mac.</p>
+    <hr style="margin: 20px 0; border: none; border-top: 1px solid #eee;">
+    <h2 style="font-size: 18px; margin-bottom: 10px;">Add Contacts &amp; Calendar</h2>
+    <p>After installing the mail profile, add Contacts and Calendar manually:</p>
+    <ol style="font-size: 13px; padding-left: 20px; color: #555;">
+        <li><strong>iPhone/iPad:</strong> Settings → Apps → Contacts → Accounts → Add Account → Other → Add CardDAV/CalDAV Account</li>
+        <li><strong>Mac:</strong> System Settings → Internet Accounts → Add Other Account → CardDAV/CalDAV</li>
+    </ol>
+    <p style="font-size: 12px; color: #888; margin-top: 10px;">Server: <code>mail.%s</code> | Username: your email | Port: 443 (SSL)</p>
 </body>
-</html>`, s.config.DisplayName, s.config.DisplayName, s.config.Domain)
+</html>`, s.config.DisplayName, s.config.DisplayName, s.config.Domain, s.config.Domain)
 		return
 	}
 
@@ -350,7 +361,7 @@ func (s *Server) handleAppleMobileconfig(w http.ResponseWriter, r *http.Request)
 	displayName := emailDomain + " Mail"
 
 	// Generate deterministic UUIDs based on email
-	uuid := generateUUID(email)
+	emailUUID := generateUUID(email + "-email")
 	profileUUID := generateUUID(email + "-profile")
 
 	data := struct {
@@ -360,16 +371,16 @@ func (s *Server) handleAppleMobileconfig(w http.ResponseWriter, r *http.Request)
 		Email       string
 		IMAPPort    int
 		SMTPPort    int
-		UUID        string
+		EmailUUID   string
 		ProfileUUID string
 	}{
 		DisplayName: displayName,
 		Domain:      emailDomain,
-		Hostname:    s.config.Hostname, // Server hostname stays the same
+		Hostname:    s.config.Hostname,
 		Email:       email,
 		IMAPPort:    s.config.IMAPPort,
 		SMTPPort:    s.config.SMTPPort,
-		UUID:        uuid,
+		EmailUUID:   emailUUID,
 		ProfileUUID: profileUUID,
 	}
 

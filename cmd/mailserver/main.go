@@ -21,8 +21,13 @@ import (
 	"github.com/fenilsonani/email-server/internal/config"
 	"github.com/fenilsonani/email-server/internal/dav"
 	"github.com/fenilsonani/email-server/internal/dns"
+	"github.com/fenilsonani/email-server/internal/features"
+	"github.com/fenilsonani/email-server/internal/health"
 	imapserver "github.com/fenilsonani/email-server/internal/imap"
+	"github.com/fenilsonani/email-server/internal/lists"
 	"github.com/fenilsonani/email-server/internal/logging"
+	"github.com/fenilsonani/email-server/internal/metrics"
+	"github.com/fenilsonani/email-server/internal/migration"
 	"github.com/fenilsonani/email-server/internal/queue"
 	"github.com/fenilsonani/email-server/internal/security"
 	"github.com/fenilsonani/email-server/internal/setup"
@@ -31,13 +36,15 @@ import (
 	"github.com/fenilsonani/email-server/internal/smtp/delivery"
 	"github.com/fenilsonani/email-server/internal/storage/maildir"
 	"github.com/fenilsonani/email-server/internal/storage/metadata"
+	"github.com/fenilsonani/email-server/internal/tracing"
+	"github.com/fenilsonani/email-server/internal/tuning"
 	"github.com/spf13/cobra"
 )
 
 var (
 	cfgFile string
 	cfg     *config.Config
-	db      *metadata.DB
+	db      metadata.Store
 )
 
 func main() {
@@ -88,17 +95,56 @@ var serveCmd = &cobra.Command{
 
 		// Track resources for cleanup
 		type resourceTracker struct {
-			db             *metadata.DB
-			redisQueue     *queue.RedisQueue
-			deliveryEngine *delivery.Engine
-			imapSrv        *imapserver.Server
-			smtpSrv        *smtpserver.Server
-			davSrv         *dav.Server
-			adminSrv       *admin.Server
-			apiSrv         *api.Server
-			logger         *logging.Logger
+			db               metadata.Store
+			redisQueue       *queue.RedisQueue
+			deliveryEngine   *delivery.Engine
+			imapSrv          *imapserver.Server
+			smtpSrv          *smtpserver.Server
+			davSrv           *dav.Server
+			adminSrv         *admin.Server
+			apiSrv           *api.Server
+			logger           *logging.Logger
+			healthMonitor    *health.Monitor
+			featureScheduler *features.Scheduler
 		}
 		resources := &resourceTracker{}
+
+		// Initialize health monitor (auto-starts background checks)
+		healthMonitor := health.NewMonitor()
+		resources.healthMonitor = healthMonitor
+
+		// Auto-detect environment and apply optimizations
+		env := setup.DetectEnvironment()
+		if env["container"] != "none" {
+			fmt.Printf("Detected container environment: %s\n", env["container"])
+		}
+
+		// Auto-tune performance based on system resources
+		autoConfig := tuning.AutoTune()
+		autoConfig.ApplyEnvOverrides()
+
+		// Apply auto-tuned values where config values are not explicitly set
+		if cfg.Delivery.Workers == 0 {
+			cfg.Delivery.Workers = autoConfig.DeliveryWorkers
+		}
+		if cfg.Database.MaxOpenConns == 0 {
+			cfg.Database.MaxOpenConns = autoConfig.DBMaxOpenConns
+		}
+		if cfg.Database.MaxIdleConns == 0 {
+			cfg.Database.MaxIdleConns = autoConfig.DBMaxIdleConns
+		}
+		if cfg.Queue.PoolSize == 0 {
+			cfg.Queue.PoolSize = autoConfig.RedisPoolSize
+		}
+		if cfg.Queue.MinIdleConns == 0 {
+			cfg.Queue.MinIdleConns = autoConfig.RedisMinIdle
+		}
+		if cfg.Security.MaxMessageSize == 0 {
+			cfg.Security.MaxMessageSize = int(autoConfig.MaxMessageSize)
+		}
+
+		fmt.Printf("Auto-tuned for %d CPUs, %dMB memory (%s)\n",
+			autoConfig.NumCPU, autoConfig.TotalMemoryMB, autoConfig.Environment)
 
 		// Cleanup function - called on both success and error paths
 		cleanup := func() {
@@ -130,6 +176,14 @@ var serveCmd = &cobra.Command{
 						fmt.Fprintf(os.Stderr, "API server shutdown error: %v\n", err)
 					}
 				}
+			}
+
+			// Stop feature scheduler
+			if resources.featureScheduler != nil {
+				if resources.logger != nil {
+					resources.logger.Info("Shutting down feature scheduler")
+				}
+				resources.featureScheduler.Stop()
 			}
 
 			if resources.adminSrv != nil {
@@ -223,6 +277,14 @@ var serveCmd = &cobra.Command{
 				}
 			}
 
+			// 7. Stop health monitor
+			if resources.healthMonitor != nil {
+				if resources.logger != nil {
+					resources.logger.Info("Stopping health monitor")
+				}
+				resources.healthMonitor.Stop()
+			}
+
 			if resources.logger != nil {
 				resources.logger.Info("Shutdown complete")
 			}
@@ -249,14 +311,14 @@ var serveCmd = &cobra.Command{
 		resources.logger = logger
 		logger.Info("Mail server starting", "hostname", cfg.Server.Hostname)
 
-		// Open database with proper error handling
-		db, err = metadata.Open(cfg.Storage.DatabasePath)
+		// Open database with proper error handling using factory
+		db, err = metadata.OpenFromConfig(cfg.Database)
 		if err != nil {
 			cleanup()
 			return fmt.Errorf("failed to open database: %w", err)
 		}
 		resources.db = db
-		logger.Info("Database opened", "path", cfg.Storage.DatabasePath)
+		logger.Info("Database opened", "driver", db.Driver())
 
 		// Run migrations with timeout
 		migrateCtx, migrateCancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -281,10 +343,10 @@ var serveCmd = &cobra.Command{
 		}
 
 		// Initialize authenticator
-		authenticator := auth.NewAuthenticator(db.DB)
+		authenticator := auth.NewAuthenticator(db.RawDB())
 
 		// Initialize maildir store
-		store, err := maildir.NewStore(db.DB, cfg.Storage.MaildirPath)
+		store, err := maildir.NewStore(db.RawDB(), cfg.Storage.MaildirPath)
 		if err != nil {
 			cleanup()
 			return fmt.Errorf("failed to initialize maildir store: %w", err)
@@ -296,11 +358,25 @@ var serveCmd = &cobra.Command{
 		if retryMaxAge == 0 {
 			retryMaxAge = 7 * 24 * time.Hour
 		}
+		dialTimeout, _ := time.ParseDuration(cfg.Queue.DialTimeout)
+		readTimeout, _ := time.ParseDuration(cfg.Queue.ReadTimeout)
+		writeTimeout, _ := time.ParseDuration(cfg.Queue.WriteTimeout)
 		redisQueue, err := queue.NewRedisQueue(queue.Config{
-			RedisURL:    cfg.Queue.RedisURL,
-			Prefix:      cfg.Queue.Prefix,
-			MaxRetries:  cfg.Queue.MaxRetries,
-			RetryMaxAge: retryMaxAge,
+			RedisURL:       cfg.Queue.RedisURL,
+			Mode:           cfg.Queue.Mode,
+			SentinelMaster: cfg.Queue.SentinelMaster,
+			SentinelAddrs:  cfg.Queue.SentinelAddrs,
+			ClusterAddrs:   cfg.Queue.ClusterAddrs,
+			Password:       cfg.Queue.Password,
+			DB:             cfg.Queue.DB,
+			Prefix:         cfg.Queue.Prefix,
+			MaxRetries:     cfg.Queue.MaxRetries,
+			RetryMaxAge:    retryMaxAge,
+			PoolSize:       cfg.Queue.PoolSize,
+			MinIdleConns:   cfg.Queue.MinIdleConns,
+			DialTimeout:    dialTimeout,
+			ReadTimeout:    readTimeout,
+			WriteTimeout:   writeTimeout,
 		})
 		if err != nil {
 			cleanup()
@@ -308,6 +384,23 @@ var serveCmd = &cobra.Command{
 		}
 		resources.redisQueue = redisQueue
 		logger.Info("Redis queue connected", "url", cfg.Queue.RedisURL)
+
+		// Register components with health monitor for automatic health checks
+		healthMonitor.RegisterDatabase(db.RawDB())
+		healthMonitor.RegisterRedis(redisQueue.Client())
+		healthMonitor.RegisterDiskSpace(cfg.Storage.DataDir, cfg.Storage.MaildirPath)
+
+		// Set up self-healing callbacks
+		healthMonitor.OnUnhealthy(func(name string, result health.CheckResult) {
+			logger.Warn("Component unhealthy", "component", name, "message", result.Message)
+		})
+		healthMonitor.OnRecovered(func(name string, result health.CheckResult) {
+			logger.Info("Component recovered", "component", name)
+		})
+
+		// Start health monitoring (runs in background)
+		healthMonitor.Start()
+		logger.Info("Health monitoring started")
 
 		// Initialize DKIM signer pool
 		dkimPool := security.NewDKIMSignerPool()
@@ -334,6 +427,14 @@ var serveCmd = &cobra.Command{
 		}
 		// QueuePath for bounce messages - same as SMTP backend queue path
 		queuePath := filepath.Join(cfg.Storage.DataDir, "queue")
+
+		// Initialize observability components
+		tracer := tracing.NewTracer(true, logger)
+		domainStats := metrics.NewDomainStats(time.Hour)
+
+		// Initialize deduplication tracker using Redis
+		dedupTracker := queue.NewDeliveryTracker(redisQueue.Client(), cfg.Queue.Prefix, 7*24*time.Hour)
+
 		deliveryEngine := delivery.NewEngine(delivery.Config{
 			Workers:        cfg.Delivery.Workers,
 			Hostname:       cfg.Server.Hostname,
@@ -344,10 +445,19 @@ var serveCmd = &cobra.Command{
 			VerifyTLS:      cfg.Delivery.VerifyTLS,
 			RelayHost:      cfg.Delivery.RelayHost,
 			QueuePath:      queuePath,
-		}, redisQueue, dkimPool, logger, db.DB)
+		}, redisQueue, dkimPool, logger, db.RawDB(),
+			delivery.WithTracer(tracer),
+			delivery.WithDomainStats(domainStats),
+			delivery.WithDedupTracker(dedupTracker),
+		)
 		resources.deliveryEngine = deliveryEngine
 		deliveryEngine.Start()
-		logger.Info("Delivery engine started", "workers", cfg.Delivery.Workers)
+		logger.Info("Delivery engine started",
+			"workers", cfg.Delivery.Workers,
+			"tracing", true,
+			"domain_metrics", true,
+			"deduplication", true,
+		)
 
 		// Create IMAP server
 		imapAddr := fmt.Sprintf("%s:%d", cfg.Server.BindAddress, cfg.Server.IMAPPort)
@@ -370,11 +480,24 @@ var serveCmd = &cobra.Command{
 		// Initialize Sieve executor if enabled
 		var sieveStore *sieve.Store
 		if cfg.Sieve.Enabled {
-			sieveStore = sieve.NewStore(db.DB)
-			sieveExecutor := sieve.NewExecutor(db.DB)
+			sieveStore = sieve.NewStore(db.RawDB())
+			sieveExecutor := sieve.NewExecutor(db.RawDB())
 			smtpBackend.SetSieveExecutor(sieveExecutor)
 			logger.Info("Sieve filtering enabled")
 		}
+
+		// Initialize mailing lists manager
+		listsStore := lists.NewStore(db.RawDB())
+		archivePath := filepath.Join(cfg.Storage.DataDir, "archives")
+		moderationPath := filepath.Join(cfg.Storage.DataDir, "moderation")
+		listsManager := lists.NewManager(listsStore, archivePath, moderationPath, logger)
+		listsCommandHandler := lists.NewCommandHandler(listsStore, listsManager, cfg.Server.Hostname, logger)
+		smtpBackend.SetListsManager(listsManager, listsCommandHandler)
+		logger.Info("Mailing lists enabled")
+
+		// Initialize features store for SMTP backend (Screener, Aliases, etc.)
+		featuresStore := features.NewStore(db.RawDB())
+		smtpBackend.SetFeaturesStore(featuresStore)
 
 		smtpSrv := smtpserver.NewServer(smtpBackend, cfg, tlsManager.TLSConfig())
 		resources.smtpSrv = smtpSrv
@@ -423,7 +546,7 @@ var serveCmd = &cobra.Command{
 
 		// Start DAV server (CalDAV/CardDAV)
 		if cfg.Server.DAVPort > 0 {
-			davSrv, err := dav.NewServer(cfg, authenticator, db.DB)
+			davSrv, err := dav.NewServer(cfg, authenticator, db.RawDB())
 			if err != nil {
 				logger.Warn("Failed to initialize DAV server", "error", err.Error())
 			} else {
@@ -441,10 +564,36 @@ var serveCmd = &cobra.Command{
 
 		// Start admin server if enabled
 		if cfg.Admin.Enabled {
-			adminSrv, err := admin.NewServer(cfg, db.DB, authenticator, store, sieveStore, redisQueue, logger)
+			adminSrv, err := admin.NewServer(cfg, db.RawDB(), authenticator, store, sieveStore, redisQueue, logger)
 			if err != nil {
 				logger.Warn("Failed to initialize admin server", "error", err.Error())
 			} else {
+				// Use the already-initialized features store
+				adminSrv.SetFeaturesStore(featuresStore)
+				// Set lists store for mailing list management
+				adminSrv.SetListsStore(listsStore)
+
+				// Start feature scheduler for scheduled sends, snooze wake-ups, undo send
+				featureScheduler := features.NewScheduler(featuresStore, logger)
+
+				// Configure email sender for scheduled sends using delivery queue
+				if resources.deliveryEngine != nil {
+					queuePath := filepath.Join(cfg.Storage.DataDir, "queue")
+					emailSender := features.NewQueueEmailSender(resources.deliveryEngine, queuePath)
+					featureScheduler.SetEmailSender(emailSender)
+					logger.Info("Feature scheduler configured with delivery queue")
+				} else {
+					logger.Warn("Delivery engine not available, scheduled sends disabled")
+				}
+
+				// Configure message mover for snooze wake-ups
+				featureScheduler.SetMessageMover(featuresStore)
+				logger.Info("Feature scheduler configured with message mover for snooze")
+
+				featureScheduler.Start()
+				resources.featureScheduler = featureScheduler
+				logger.Info("Feature scheduler started")
+
 				resources.adminSrv = adminSrv
 				adminAddr := fmt.Sprintf("%s:%d", cfg.Admin.Listen, cfg.Admin.Port)
 				go func() {
@@ -484,7 +633,7 @@ var serveCmd = &cobra.Command{
 
 		// Start transactional API server if enabled
 		if cfg.API.Enabled {
-			apiSrv, err := api.NewServer(cfg, db.DB, redisQueue, deliveryEngine, logger)
+			apiSrv, err := api.NewServer(cfg, db.RawDB(), redisQueue, deliveryEngine, logger)
 			if err != nil {
 				logger.Warn("Failed to initialize API server", "error", err.Error())
 			} else {
@@ -600,7 +749,7 @@ Use --generate-dkim to automatically generate a DKIM signing key for the domain.
 				dkimPath = filepath.Join(filepath.Dir(cfg.Storage.MaildirPath), "dkim")
 			}
 
-			store := security.NewKeyStore(domainDKIMStorage, dkimPath, db.DB)
+			store := security.NewKeyStore(domainDKIMStorage, dkimPath, db.RawDB())
 
 			fmt.Printf("Generating %d-bit DKIM key...\n", domainDKIMBits)
 			_, err = security.GenerateAndSaveKey(context.Background(), store, domainName, domainDKIMSelector, domainDKIMBits)
@@ -699,7 +848,7 @@ var userAddCmd = &cobra.Command{
 		}
 
 		// Parse email
-		authenticator := auth.NewAuthenticator(db.DB)
+		authenticator := auth.NewAuthenticator(db.RawDB())
 		parts := splitEmail(email)
 		if len(parts) != 2 {
 			return fmt.Errorf("invalid email format: %s", email)
@@ -916,7 +1065,7 @@ The key will be stored based on the --storage option:
 		}
 
 		// Create key store based on storage type
-		store := security.NewKeyStore(dkimStorage, dkimPath, db.DB)
+		store := security.NewKeyStore(dkimStorage, dkimPath, db.RawDB())
 
 		// Check if key already exists
 		if store.KeyExists(context.Background(), domainName) && !dkimForce {
@@ -985,7 +1134,7 @@ Formats:
 			storageType = "file"
 		}
 
-		store := security.NewKeyStore(storageType, dkimPath, db.DB)
+		store := security.NewKeyStore(storageType, dkimPath, db.RawDB())
 
 		// Get key metadata
 		meta, err := store.GetKeyMetadata(context.Background(), domainName)
@@ -1076,7 +1225,7 @@ This command:
 			return fmt.Errorf("domain '%s' not found", domainName)
 		}
 
-		store := security.NewKeyStore(storageType, dkimPath, db.DB)
+		store := security.NewKeyStore(storageType, dkimPath, db.RawDB())
 
 		fmt.Printf("Rotating DKIM key for %s...\n", domainName)
 
@@ -1126,7 +1275,7 @@ var dkimListCmd = &cobra.Command{
 			dkimPath = filepath.Join(filepath.Dir(cfg.Storage.MaildirPath), "dkim")
 		}
 
-		store := security.NewFileKeyStore(dkimPath, db.DB)
+		store := security.NewFileKeyStore(dkimPath, db.RawDB())
 		domains, err := store.ListDomains(context.Background())
 		if err != nil {
 			return fmt.Errorf("failed to list domains: %w", err)
@@ -1183,7 +1332,7 @@ Default rotation period is 90 days.`,
 			dkimPath = filepath.Join(filepath.Dir(cfg.Storage.MaildirPath), "dkim")
 		}
 
-		store := security.NewFileKeyStore(dkimPath, db.DB)
+		store := security.NewFileKeyStore(dkimPath, db.RawDB())
 		domains, err := store.ListDomains(context.Background())
 		if err != nil {
 			return fmt.Errorf("failed to list domains: %w", err)
@@ -1213,7 +1362,7 @@ Default rotation period is 90 days.`,
 				storageType = "file"
 			}
 
-			domainStore := security.NewKeyStore(storageType, dkimPath, db.DB)
+			domainStore := security.NewKeyStore(storageType, dkimPath, db.RawDB())
 			newSelector, _, err := security.RotateKey(context.Background(), domainStore, meta.Domain, 2048)
 			if err != nil {
 				fmt.Printf("  ERROR: Failed to rotate key for %s: %v\n", meta.Domain, err)
@@ -1830,6 +1979,278 @@ var doctorCmd = &cobra.Command{
 	},
 }
 
+// Database migration commands
+var migrateDBCmd = &cobra.Command{
+	Use:   "migrate-db",
+	Short: "Database migration tools",
+	Long: `Tools for migrating data between databases.
+
+Supports automatic migration from SQLite to PostgreSQL with:
+- Automatic detection of source and target databases
+- Data integrity verification
+- Automatic backup before migration`,
+}
+
+var migrateTargetDSN string
+var migrateAutoBackup bool
+
+var migrateDBAutoCmd = &cobra.Command{
+	Use:   "auto",
+	Short: "Automatically migrate data to configured database",
+	Long: `Automatically detect and migrate data from the source database to the target.
+
+This command is safe to run on every startup - it will skip migration if:
+- Target database already has data
+- Source database is empty
+
+The migration process:
+1. Creates a backup of the source database
+2. Copies all data to the target database
+3. Verifies data integrity
+4. Reports any issues
+
+Example:
+  mailserver migrate-db auto --target "postgres://user:pass@localhost/mail"`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := cfg.EnsureDirectories(); err != nil {
+			return err
+		}
+
+		fmt.Println("=== Automatic Database Migration ===")
+		fmt.Println()
+
+		// Open source database (SQLite)
+		fmt.Printf("Opening source database: %s\n", cfg.Storage.DatabasePath)
+		sourceDB, err := metadata.Open(cfg.Storage.DatabasePath)
+		if err != nil {
+			return fmt.Errorf("failed to open source database: %w", err)
+		}
+		defer sourceDB.Close()
+
+		// Determine target DSN
+		targetDSN := migrateTargetDSN
+		if targetDSN == "" {
+			targetDSN = cfg.Database.DSN
+		}
+		if targetDSN == "" {
+			return fmt.Errorf("target database not specified. Use --target flag or set database.dsn in config")
+		}
+
+		fmt.Printf("Opening target database: %s\n", maskDSN(targetDSN))
+
+		// Open target database (PostgreSQL)
+		targetDB, err := metadata.OpenPostgres(metadata.PostgresConfig{
+			DSN:          targetDSN,
+			MaxOpenConns: cfg.Database.MaxOpenConns,
+			MaxIdleConns: cfg.Database.MaxIdleConns,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to open target database: %w", err)
+		}
+		defer targetDB.Close()
+
+		// Run migrations on target first
+		fmt.Println("Running schema migrations on target...")
+		if err := targetDB.Migrate(context.Background()); err != nil {
+			return fmt.Errorf("failed to migrate target schema: %w", err)
+		}
+
+		// Create backup if requested
+		if migrateAutoBackup {
+			fmt.Println()
+			fmt.Print("Creating backup of source database... ")
+			backupDir := filepath.Join(cfg.Storage.DataDir, "backups")
+			backupPath, err := migration.BackupDatabase(cfg.Storage.DatabasePath, backupDir)
+			if err != nil {
+				return fmt.Errorf("backup failed: %w", err)
+			}
+			fmt.Printf("saved to %s\n", backupPath)
+		}
+
+		// Create migrator and run
+		fmt.Println()
+		migrator := migration.NewAutoMigrator(sourceDB.RawDB(), targetDB.RawDB(), migration.DefaultLogger{})
+
+		result, err := migrator.DetectAndMigrate(context.Background())
+		if err != nil {
+			return fmt.Errorf("migration failed: %w", err)
+		}
+
+		// Print results
+		fmt.Println()
+		fmt.Println("=== Migration Results ===")
+		fmt.Printf("Status: %s\n", boolToStatus(result.Success))
+		fmt.Printf("Duration: %v\n", result.Duration)
+		fmt.Printf("Tables: %d\n", result.TablesCount)
+
+		if len(result.RowsCopied) > 0 {
+			fmt.Println()
+			fmt.Println("Rows copied:")
+			for table, count := range result.RowsCopied {
+				if count > 0 {
+					fmt.Printf("  %s: %d\n", table, count)
+				}
+			}
+		}
+
+		if len(result.Errors) > 0 {
+			fmt.Println()
+			fmt.Println("Errors:")
+			for _, err := range result.Errors {
+				fmt.Printf("  - %s\n", err)
+			}
+		}
+
+		// Verify migration
+		fmt.Println()
+		fmt.Print("Verifying migration... ")
+		verifyResult, err := migrator.VerifyMigration(context.Background())
+		if err != nil {
+			fmt.Printf("error: %v\n", err)
+		} else if verifyResult.Success {
+			fmt.Println("passed")
+		} else {
+			fmt.Println("MISMATCH DETECTED")
+			for table, tv := range verifyResult.Tables {
+				if !tv.Match {
+					fmt.Printf("  %s: source=%d, target=%d\n", table, tv.SourceRows, tv.TargetRows)
+				}
+			}
+		}
+
+		if !result.Success {
+			return fmt.Errorf("migration completed with errors")
+		}
+
+		fmt.Println()
+		fmt.Println("Migration completed successfully!")
+		fmt.Println()
+		fmt.Println("Next steps:")
+		fmt.Println("1. Update config.yaml to use the new database:")
+		fmt.Println("   database:")
+		fmt.Println("     driver: postgres")
+		fmt.Printf("     dsn: %s\n", maskDSN(targetDSN))
+		fmt.Println("2. Restart the mail server")
+		fmt.Println("3. Monitor logs for any issues")
+		fmt.Println("4. Keep the SQLite backup for 30 days")
+
+		return nil
+	},
+}
+
+var migrateDBVerifyCmd = &cobra.Command{
+	Use:   "verify",
+	Short: "Verify migration integrity between source and target",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := cfg.EnsureDirectories(); err != nil {
+			return err
+		}
+
+		// Open source database
+		sourceDB, err := metadata.Open(cfg.Storage.DatabasePath)
+		if err != nil {
+			return fmt.Errorf("failed to open source database: %w", err)
+		}
+		defer sourceDB.Close()
+
+		// Determine target DSN
+		targetDSN := migrateTargetDSN
+		if targetDSN == "" {
+			targetDSN = cfg.Database.DSN
+		}
+		if targetDSN == "" {
+			return fmt.Errorf("target database not specified")
+		}
+
+		// Open target database
+		targetDB, err := metadata.OpenPostgres(metadata.PostgresConfig{
+			DSN: targetDSN,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to open target database: %w", err)
+		}
+		defer targetDB.Close()
+
+		// Verify
+		migrator := migration.NewAutoMigrator(sourceDB.RawDB(), targetDB.RawDB(), nil)
+		result, err := migrator.VerifyMigration(context.Background())
+		if err != nil {
+			return err
+		}
+
+		fmt.Println("=== Migration Verification ===")
+		fmt.Printf("%-20s %10s %10s %8s\n", "TABLE", "SOURCE", "TARGET", "STATUS")
+		fmt.Println("---------------------------------------------------")
+
+		for table, tv := range result.Tables {
+			status := "OK"
+			if !tv.Match {
+				status = "MISMATCH"
+			}
+			if tv.SourceRows == -1 {
+				status = "MISSING"
+			}
+			fmt.Printf("%-20s %10d %10d %8s\n", table, tv.SourceRows, tv.TargetRows, status)
+		}
+
+		fmt.Println()
+		if result.Success {
+			fmt.Println("Verification: PASSED")
+		} else {
+			fmt.Println("Verification: FAILED")
+			return fmt.Errorf("verification failed")
+		}
+
+		return nil
+	},
+}
+
+var migrateDBBackupCmd = &cobra.Command{
+	Use:   "backup",
+	Short: "Create a backup of the source database",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := cfg.EnsureDirectories(); err != nil {
+			return err
+		}
+
+		backupDir := filepath.Join(cfg.Storage.DataDir, "backups")
+		backupPath, err := migration.BackupDatabase(cfg.Storage.DatabasePath, backupDir)
+		if err != nil {
+			return fmt.Errorf("backup failed: %w", err)
+		}
+
+		fmt.Printf("Backup created: %s\n", backupPath)
+		return nil
+	},
+}
+
+func maskDSN(dsn string) string {
+	// Mask password in DSN for display
+	// postgres://user:password@host/db -> postgres://user:****@host/db
+	if strings.Contains(dsn, "://") {
+		parts := strings.SplitN(dsn, "://", 2)
+		if len(parts) == 2 {
+			rest := parts[1]
+			if atIdx := strings.Index(rest, "@"); atIdx > 0 {
+				userPass := rest[:atIdx]
+				hostDB := rest[atIdx:]
+				if colonIdx := strings.Index(userPass, ":"); colonIdx > 0 {
+					user := userPass[:colonIdx]
+					return parts[0] + "://" + user + ":****" + hostDB
+				}
+			}
+		}
+	}
+	return dsn
+}
+
+func boolToStatus(b bool) string {
+	if b {
+		return "SUCCESS"
+	}
+	return "FAILED"
+}
+
 func init() {
 	rootCmd.PersistentFlags().StringVarP(&cfgFile, "config", "c", "config.yaml", "config file path")
 
@@ -1889,6 +2310,15 @@ func init() {
 	rootCmd.AddCommand(preflightCmd)
 	rootCmd.AddCommand(setupCmd)
 	rootCmd.AddCommand(doctorCmd)
+
+	// Database migration commands
+	migrateDBAutoCmd.Flags().StringVar(&migrateTargetDSN, "target", "", "Target database DSN (e.g., postgres://user:pass@localhost/mail)")
+	migrateDBAutoCmd.Flags().BoolVar(&migrateAutoBackup, "backup", true, "Create backup before migration")
+	migrateDBVerifyCmd.Flags().StringVar(&migrateTargetDSN, "target", "", "Target database DSN")
+	migrateDBCmd.AddCommand(migrateDBAutoCmd)
+	migrateDBCmd.AddCommand(migrateDBVerifyCmd)
+	migrateDBCmd.AddCommand(migrateDBBackupCmd)
+	rootCmd.AddCommand(migrateDBCmd)
 }
 
 func splitEmail(email string) []string {

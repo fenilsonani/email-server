@@ -17,6 +17,8 @@ type RateLimiter struct {
 	windowSize     time.Duration
 	blockDuration  time.Duration
 	trustedProxies map[string]bool // Only trust proxy headers from these IPs
+	// Cleanup control
+	stopCh chan struct{}
 }
 
 type attemptInfo struct {
@@ -41,10 +43,16 @@ func NewRateLimiter(maxAttempts int, windowSize, blockDuration time.Duration, tr
 		windowSize:     windowSize,
 		blockDuration:  blockDuration,
 		trustedProxies: proxyMap,
+		stopCh:         make(chan struct{}),
 	}
 	// Start cleanup goroutine
 	go rl.cleanup()
 	return rl
+}
+
+// Stop stops the cleanup goroutine
+func (rl *RateLimiter) Stop() {
+	close(rl.stopCh)
 }
 
 // DefaultRateLimiter returns a rate limiter with sensible defaults
@@ -219,17 +227,24 @@ func (rl *RateLimiter) Stats() (total, blocked int) {
 // cleanup periodically removes stale entries
 func (rl *RateLimiter) cleanup() {
 	ticker := time.NewTicker(5 * time.Minute)
-	for range ticker.C {
-		rl.mu.Lock()
-		now := time.Now()
-		for ip, info := range rl.attempts {
-			// Remove entries older than window + block duration
-			maxAge := rl.windowSize + rl.blockDuration
-			if now.Sub(info.firstTime) > maxAge {
-				delete(rl.attempts, ip)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-rl.stopCh:
+			return
+		case <-ticker.C:
+			rl.mu.Lock()
+			now := time.Now()
+			for ip, info := range rl.attempts {
+				// Remove entries older than window + block duration
+				maxAge := rl.windowSize + rl.blockDuration
+				if now.Sub(info.firstTime) > maxAge {
+					delete(rl.attempts, ip)
+				}
 			}
+			rl.mu.Unlock()
 		}
-		rl.mu.Unlock()
 	}
 }
 
@@ -237,6 +252,7 @@ func (rl *RateLimiter) cleanup() {
 type PreviewRateLimiter struct {
 	mu      sync.Mutex
 	buckets map[string]*previewBucket
+	stopCh  chan struct{}
 }
 
 type previewBucket struct {
@@ -248,10 +264,16 @@ type previewBucket struct {
 func NewPreviewRateLimiter() *PreviewRateLimiter {
 	prl := &PreviewRateLimiter{
 		buckets: make(map[string]*previewBucket),
+		stopCh:  make(chan struct{}),
 	}
 	// Start cleanup goroutine
 	go prl.cleanup()
 	return prl
+}
+
+// Stop stops the cleanup goroutine
+func (prl *PreviewRateLimiter) Stop() {
+	close(prl.stopCh)
 }
 
 // Allow checks if a session can preview an email (max 10 per minute)
@@ -281,14 +303,21 @@ func (prl *PreviewRateLimiter) Allow(sessionID string) bool {
 // cleanup removes stale buckets every 5 minutes
 func (prl *PreviewRateLimiter) cleanup() {
 	ticker := time.NewTicker(5 * time.Minute)
-	for range ticker.C {
-		prl.mu.Lock()
-		now := time.Now()
-		for sessionID, bucket := range prl.buckets {
-			if now.After(bucket.resetTime.Add(5 * time.Minute)) {
-				delete(prl.buckets, sessionID)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-prl.stopCh:
+			return
+		case <-ticker.C:
+			prl.mu.Lock()
+			now := time.Now()
+			for sessionID, bucket := range prl.buckets {
+				if now.After(bucket.resetTime.Add(5 * time.Minute)) {
+					delete(prl.buckets, sessionID)
+				}
 			}
+			prl.mu.Unlock()
 		}
-		prl.mu.Unlock()
 	}
 }

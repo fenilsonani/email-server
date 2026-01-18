@@ -1,0 +1,73 @@
+<div class="breadcrumbs">
+    <a href="/admin/">home</a>
+    <span>&gt;</span>
+    <a href="/admin/features">features</a>
+    <span>&gt;</span>
+    <span>aliases</span>
+</div>
+
+<div class="page-header">
+    <h1>email aliases</h1>
+    <a href="/admin/features/aliases/add" class="btn btn-primary">create alias</a>
+</div>
+
+<div class="stats-grid">
+    <div class="card stat-card">
+        <div class="stat-value">{{.TotalCount}}</div>
+        <div class="stat-label">total</div>
+    </div>
+    <div class="card stat-card">
+        <div class="stat-value">{{.ActiveCount}}</div>
+        <div class="stat-label">active</div>
+    </div>
+    <div class="card stat-card">
+        <div class="stat-value">{{.InactiveCount}}</div>
+        <div class="stat-label">disabled</div>
+    </div>
+</div>
+
+<div class="card">
+    {{if .Aliases}}
+    <table>
+        <thead>
+            <tr>
+                <th>alias address</th>
+                <th>description</th>
+                <th>emails</th>
+                <th>status</th>
+                <th>actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {{range .Aliases}}
+            <tr>
+                <td><code>{{.AliasAddress}}</code></td>
+                <td>{{if .Description}}{{.Description}}{{else}}--{{end}}</td>
+                <td>{{.EmailCount}}</td>
+                <td>
+                    {{if .IsActive}}
+                    <span class="badge badge-success">active</span>
+                    {{else}}
+                    <span class="badge badge-secondary">disabled</span>
+                    {{end}}
+                </td>
+                <td>
+                    <form method="POST" action="/admin/features/aliases/toggle/{{.ID}}" style="display: inline;">
+                        <button type="submit" class="btn btn-sm">{{if .IsActive}}disable{{else}}enable{{end}}</button>
+                    </form>
+                    <form method="POST" action="/admin/features/aliases/delete/{{.ID}}" style="display: inline;"
+                          onsubmit="return confirm('Delete this alias?');">
+                        <button type="submit" class="btn btn-sm btn-danger">delete</button>
+                    </form>
+                </td>
+            </tr>
+            {{end}}
+        </tbody>
+    </table>
+    {{else}}
+    <div class="empty-state">
+        <p>no aliases created yet</p>
+        <a href="/admin/features/aliases/add" class="btn btn-primary">create your first alias</a>
+    </div>
+    {{end}}
+</div>

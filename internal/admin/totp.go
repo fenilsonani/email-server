@@ -2,6 +2,7 @@ package admin
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/base64"
@@ -14,6 +15,9 @@ import (
 	"github.com/pquerna/otp"
 	"github.com/pquerna/otp/totp"
 )
+
+// dbQueryTimeout is the timeout for database queries
+const dbQueryTimeout = 5 * time.Second
 
 const (
 	totpIssuer          = "MailServer Admin"
@@ -30,9 +34,12 @@ type TwoFactorStatus struct {
 
 // getTwoFactorStatus gets the 2FA status for a user
 func (s *Server) getTwoFactorStatus(userID int64) (*TwoFactorStatus, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), dbQueryTimeout)
+	defer cancel()
+
 	var secret sql.NullString
 	var enabled int
-	err := s.db.QueryRow(
+	err := s.db.QueryRowContext(ctx,
 		"SELECT COALESCE(totp_secret, ''), COALESCE(totp_enabled, 0) FROM users WHERE id = ?",
 		userID,
 	).Scan(&secret, &enabled)
@@ -46,13 +53,14 @@ func (s *Server) getTwoFactorStatus(userID int64) (*TwoFactorStatus, error) {
 }
 
 // generateTOTPSecret generates a new TOTP secret for a user
+// SECURITY: Uses SHA256 instead of deprecated SHA1
 func (s *Server) generateTOTPSecret(username string) (*otp.Key, error) {
 	return totp.Generate(totp.GenerateOpts{
 		Issuer:      totpIssuer,
 		AccountName: username,
 		Period:      30,
 		Digits:      otp.DigitsSix,
-		Algorithm:   otp.AlgorithmSHA1,
+		Algorithm:   otp.AlgorithmSHA256,
 	})
 }
 
@@ -72,8 +80,25 @@ func generateQRCodeBase64(key *otp.Key) (string, error) {
 }
 
 // validateTOTPCode validates a TOTP code against the user's secret
+// SECURITY: Tries SHA256 first (new), then falls back to SHA1 (legacy) for backward compatibility
 func (s *Server) validateTOTPCode(secret, code string) bool {
-	return totp.Validate(code, secret)
+	// Try SHA256 first (for new enrollments)
+	valid, err := totp.ValidateCustom(code, secret, time.Now().UTC(), totp.ValidateOpts{
+		Period:    30,
+		Digits:    otp.DigitsSix,
+		Algorithm: otp.AlgorithmSHA256,
+	})
+	if err == nil && valid {
+		return true
+	}
+
+	// Fall back to SHA1 for legacy enrollments
+	valid, err = totp.ValidateCustom(code, secret, time.Now().UTC(), totp.ValidateOpts{
+		Period:    30,
+		Digits:    otp.DigitsSix,
+		Algorithm: otp.AlgorithmSHA1,
+	})
+	return err == nil && valid
 }
 
 // generateDeviceToken generates a secure random token for trusted device
@@ -98,7 +123,10 @@ func (s *Server) createTrustedDevice(userID int64, r *http.Request) (string, err
 		deviceName = deviceName[:200]
 	}
 
-	_, err = s.db.Exec(`
+	ctx, cancel := context.WithTimeout(r.Context(), dbQueryTimeout)
+	defer cancel()
+
+	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO totp_trusted_devices (user_id, device_token, device_name, ip_address, user_agent, expires_at)
 		VALUES (?, ?, ?, ?, ?, ?)`,
 		userID, token, deviceName, getIP(r), r.UserAgent(), expiresAt,
@@ -116,8 +144,11 @@ func (s *Server) checkTrustedDevice(userID int64, token string) bool {
 		return false
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), dbQueryTimeout)
+	defer cancel()
+
 	var count int
-	err := s.db.QueryRow(`
+	err := s.db.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM totp_trusted_devices
 		WHERE user_id = ? AND device_token = ? AND expires_at > datetime('now')`,
 		userID, token,
@@ -127,19 +158,27 @@ func (s *Server) checkTrustedDevice(userID int64, token string) bool {
 		return false
 	}
 
-	// Update last used time
-	s.db.Exec(`
+	// Update last used time (non-critical, log errors but don't fail)
+	updateCtx, updateCancel := context.WithTimeout(context.Background(), dbQueryTimeout)
+	defer updateCancel()
+
+	if _, err := s.db.ExecContext(updateCtx, `
 		UPDATE totp_trusted_devices SET last_used_at = datetime('now')
 		WHERE user_id = ? AND device_token = ?`,
 		userID, token,
-	)
+	); err != nil {
+		s.logger.Debug("Failed to update trusted device last_used_at", "error", err.Error())
+	}
 
 	return true
 }
 
 // removeTrustedDevice removes a trusted device
 func (s *Server) removeTrustedDevice(userID int64, token string) error {
-	_, err := s.db.Exec(
+	ctx, cancel := context.WithTimeout(context.Background(), dbQueryTimeout)
+	defer cancel()
+
+	_, err := s.db.ExecContext(ctx,
 		"DELETE FROM totp_trusted_devices WHERE user_id = ? AND device_token = ?",
 		userID, token,
 	)
@@ -148,7 +187,12 @@ func (s *Server) removeTrustedDevice(userID int64, token string) error {
 
 // cleanupExpiredTrustedDevices removes expired trusted devices
 func (s *Server) cleanupExpiredTrustedDevices() {
-	s.db.Exec("DELETE FROM totp_trusted_devices WHERE expires_at < datetime('now')")
+	ctx, cancel := context.WithTimeout(context.Background(), dbQueryTimeout)
+	defer cancel()
+
+	if _, err := s.db.ExecContext(ctx, "DELETE FROM totp_trusted_devices WHERE expires_at < datetime('now')"); err != nil {
+		s.logger.Debug("Failed to cleanup expired trusted devices", "error", err.Error())
+	}
 }
 
 // getSessionUserID gets the user ID from the current session
@@ -169,8 +213,11 @@ func (s *Server) handle2FASetup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get username for this user
+	ctx, cancel := context.WithTimeout(r.Context(), dbQueryTimeout)
+	defer cancel()
+
 	var username string
-	err := s.db.QueryRow("SELECT username FROM users WHERE id = ?", userID).Scan(&username)
+	err := s.db.QueryRowContext(ctx, "SELECT username FROM users WHERE id = ?", userID).Scan(&username)
 	if err != nil {
 		s.renderTemplate(w, "2fa_setup.html", map[string]interface{}{
 			"Title": "Two-Factor Setup",
@@ -220,10 +267,12 @@ func (s *Server) handle2FASetup(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Store secret temporarily (not enabled yet)
-		_, err = s.db.Exec(
+		storeCtx, storeCancel := context.WithTimeout(r.Context(), dbQueryTimeout)
+		_, err = s.db.ExecContext(storeCtx,
 			"UPDATE users SET totp_secret = ? WHERE id = ?",
 			key.Secret(), userID,
 		)
+		storeCancel()
 		if err != nil {
 			s.renderTemplate(w, "2fa_setup.html", map[string]interface{}{
 				"Title": "Two-Factor Setup",
@@ -265,10 +314,12 @@ func (s *Server) handle2FASetup(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Disable 2FA
-		_, err = s.db.Exec(
+		disableCtx, disableCancel := context.WithTimeout(r.Context(), dbQueryTimeout)
+		_, err = s.db.ExecContext(disableCtx,
 			"UPDATE users SET totp_enabled = 0, totp_secret = NULL WHERE id = ?",
 			userID,
 		)
+		disableCancel()
 		if err != nil {
 			s.renderTemplate(w, "2fa_setup.html", map[string]interface{}{
 				"Title":     "Two-Factor Authentication",
@@ -280,7 +331,9 @@ func (s *Server) handle2FASetup(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Remove all trusted devices
-		s.db.Exec("DELETE FROM totp_trusted_devices WHERE user_id = ?", userID)
+		cleanupCtx, cleanupCancel := context.WithTimeout(r.Context(), dbQueryTimeout)
+		s.db.ExecContext(cleanupCtx, "DELETE FROM totp_trusted_devices WHERE user_id = ?", userID)
+		cleanupCancel()
 
 		s.auditLogger.Log(r.Context(), username, audit.EventConfigChange, "2FA disabled", nil, getIP(r))
 		http.Redirect(w, r, "/admin/2fa/setup?disabled=1", http.StatusSeeOther)
@@ -288,8 +341,10 @@ func (s *Server) handle2FASetup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Enable 2FA - verify code first
+	secretCtx, secretCancel := context.WithTimeout(r.Context(), dbQueryTimeout)
 	var secret string
-	err = s.db.QueryRow("SELECT totp_secret FROM users WHERE id = ?", userID).Scan(&secret)
+	err = s.db.QueryRowContext(secretCtx, "SELECT totp_secret FROM users WHERE id = ?", userID).Scan(&secret)
+	secretCancel()
 	if err != nil || secret == "" {
 		s.renderTemplate(w, "2fa_setup.html", map[string]interface{}{
 			"Title": "Two-Factor Setup",
@@ -318,7 +373,9 @@ func (s *Server) handle2FASetup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Enable 2FA
-	_, err = s.db.Exec("UPDATE users SET totp_enabled = 1 WHERE id = ?", userID)
+	enableCtx, enableCancel := context.WithTimeout(r.Context(), dbQueryTimeout)
+	_, err = s.db.ExecContext(enableCtx, "UPDATE users SET totp_enabled = 1 WHERE id = ?", userID)
+	enableCancel()
 	if err != nil {
 		s.renderTemplate(w, "2fa_setup.html", map[string]interface{}{
 			"Title": "Two-Factor Setup",

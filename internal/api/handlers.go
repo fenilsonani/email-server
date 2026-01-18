@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"database/sql"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -68,9 +69,17 @@ func (s *Server) handleSendEmail(w http.ResponseWriter, r *http.Request) {
 	// Get domain ID
 	domainID, _ := s.getDomainID(r.Context())
 	apiKey := getAPIKeyFromContext(r.Context())
+	if apiKey == nil {
+		jsonError(w, "Authentication required", "UNAUTHORIZED", http.StatusUnauthorized)
+		return
+	}
 
 	// Store sent email record
-	tagsJSON, _ := json.Marshal(req.Tags)
+	tagsJSON, err := json.Marshal(req.Tags)
+	if err != nil {
+		s.logger.Error("Failed to marshal tags", "error", err.Error())
+		tagsJSON = []byte("[]")
+	}
 	_, err = s.db.ExecContext(r.Context(), `
 		INSERT INTO sent_emails (domain_id, api_key_id, message_id, tracking_id, from_email, to_email, subject, tags, status)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -82,7 +91,7 @@ func (s *Server) handleSendEmail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Queue the email for delivery
-	err = s.queueEmail(r.Context(), messageID, req.From, req.To, req.Subject, htmlBody, req.Text, req.ReplyTo, req.Headers)
+	err = s.queueEmail(r.Context(), messageID, req.From, req.To, req.Subject, htmlBody, req.Text, req.ReplyTo, req.Headers, req.Attachments)
 	if err != nil {
 		s.logger.Error("Failed to queue email", "error", err.Error())
 		// Update status to failed
@@ -172,7 +181,16 @@ func (s *Server) handleSendTemplate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	apiKey := getAPIKeyFromContext(r.Context())
-	tagsJSON, _ := json.Marshal(req.Tags)
+	if apiKey == nil {
+		jsonError(w, "Authentication required", "UNAUTHORIZED", http.StatusUnauthorized)
+		return
+	}
+
+	tagsJSON, err := json.Marshal(req.Tags)
+	if err != nil {
+		s.logger.Error("Failed to marshal tags", "error", err.Error())
+		tagsJSON = []byte("[]")
+	}
 
 	// Store record
 	_, err = s.db.ExecContext(r.Context(), `
@@ -185,8 +203,8 @@ func (s *Server) handleSendTemplate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Queue email
-	err = s.queueEmail(r.Context(), messageID, req.From, req.To, subject, htmlBody, textBody, req.ReplyTo, nil)
+	// Queue email (templates don't support attachments yet)
+	err = s.queueEmail(r.Context(), messageID, req.From, req.To, subject, htmlBody, textBody, req.ReplyTo, nil, nil)
 	if err != nil {
 		s.db.ExecContext(r.Context(), `UPDATE sent_emails SET status = ? WHERE message_id = ?`, StatusFailed, messageID)
 		jsonError(w, "Failed to queue email", "QUEUE_ERROR", http.StatusInternalServerError)
@@ -244,6 +262,10 @@ func (s *Server) handleSendBatch(w http.ResponseWriter, r *http.Request) {
 
 	domainID, _ := s.getDomainID(r.Context())
 	apiKey := getAPIKeyFromContext(r.Context())
+	if apiKey == nil {
+		jsonError(w, "Authentication required", "UNAUTHORIZED", http.StatusUnauthorized)
+		return
+	}
 
 	// Extract sender domain for Message-ID (multi-domain support)
 	senderDomain := s.config.Server.Hostname // fallback
@@ -263,8 +285,12 @@ func (s *Server) handleSendBatch(w http.ResponseWriter, r *http.Request) {
 		messageID := generateMessageID(senderDomain)
 		trackingID := generateTrackingID()
 
-		tagsJSON, _ := json.Marshal(msg.Tags)
-		_, err := s.db.ExecContext(r.Context(), `
+		tagsJSON, err := json.Marshal(msg.Tags)
+		if err != nil {
+			s.logger.Error("Failed to marshal batch tags", "error", err.Error())
+			tagsJSON = []byte("[]")
+		}
+		_, err = s.db.ExecContext(r.Context(), `
 			INSERT INTO sent_emails (domain_id, api_key_id, message_id, tracking_id, from_email, to_email, subject, tags, status)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`, domainID, apiKey.ID, messageID, trackingID, req.From, msg.To, msg.Subject, string(tagsJSON), StatusQueued)
@@ -273,7 +299,7 @@ func (s *Server) handleSendBatch(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		err = s.queueEmail(r.Context(), messageID, req.From, msg.To, msg.Subject, msg.HTML, msg.Text, "", nil)
+		err = s.queueEmail(r.Context(), messageID, req.From, msg.To, msg.Subject, msg.HTML, msg.Text, "", nil, msg.Attachments)
 		if err != nil {
 			s.db.ExecContext(r.Context(), `UPDATE sent_emails SET status = ? WHERE message_id = ?`, StatusFailed, messageID)
 			errors = append(errors, BatchError{Index: i, To: msg.To, Message: "failed to queue"})
@@ -340,19 +366,26 @@ func (s *Server) handleListEmails(w http.ResponseWriter, r *http.Request) {
 	domainID, _ := s.getDomainID(r.Context())
 
 	// Parse pagination
-	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
-	if page < 1 {
-		page = 1
+	page := 1
+	if pageStr := r.URL.Query().Get("page"); pageStr != "" {
+		if p, err := strconv.Atoi(pageStr); err == nil && p > 0 {
+			page = p
+		}
 	}
-	perPage, _ := strconv.Atoi(r.URL.Query().Get("per_page"))
-	if perPage < 1 || perPage > 100 {
-		perPage = 20
+	perPage := 20
+	if perPageStr := r.URL.Query().Get("per_page"); perPageStr != "" {
+		if pp, err := strconv.Atoi(perPageStr); err == nil && pp > 0 && pp <= 100 {
+			perPage = pp
+		}
 	}
 	offset := (page - 1) * perPage
 
 	// Count total
 	var total int64
-	s.db.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM sent_emails WHERE domain_id = ?`, domainID).Scan(&total)
+	if err := s.db.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM sent_emails WHERE domain_id = ?`, domainID).Scan(&total); err != nil {
+		s.logger.Error("Failed to count sent emails", "error", err.Error())
+		total = 0
+	}
 
 	// Fetch emails
 	rows, err := s.db.QueryContext(r.Context(), `
@@ -395,6 +428,12 @@ func (s *Server) handleListEmails(w http.ResponseWriter, r *http.Request) {
 		}
 
 		emails = append(emails, e)
+	}
+
+	if err := rows.Err(); err != nil {
+		s.logger.Error("Error iterating sent emails", "error", err.Error())
+		jsonError(w, "Internal server error", "INTERNAL_ERROR", http.StatusInternalServerError)
+		return
 	}
 
 	totalPages := int((total + int64(perPage) - 1) / int64(perPage))
@@ -514,12 +553,24 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	stats.EndDate = endDate
 
 	// Count by status
-	s.db.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM sent_emails WHERE domain_id = ? AND created_at >= ? AND status IN ('queued', 'sent')`, domainID, startDate).Scan(&stats.Sent)
-	s.db.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM sent_emails WHERE domain_id = ? AND created_at >= ? AND status = 'delivered'`, domainID, startDate).Scan(&stats.Delivered)
-	s.db.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM sent_emails WHERE domain_id = ? AND created_at >= ? AND opened_count > 0`, domainID, startDate).Scan(&stats.Opened)
-	s.db.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM sent_emails WHERE domain_id = ? AND created_at >= ? AND clicked_count > 0`, domainID, startDate).Scan(&stats.Clicked)
-	s.db.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM sent_emails WHERE domain_id = ? AND created_at >= ? AND status = 'bounced'`, domainID, startDate).Scan(&stats.Bounced)
-	s.db.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM sent_emails WHERE domain_id = ? AND created_at >= ? AND status = 'failed'`, domainID, startDate).Scan(&stats.Failed)
+	if err := s.db.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM sent_emails WHERE domain_id = ? AND created_at >= ? AND status IN ('queued', 'sent')`, domainID, startDate).Scan(&stats.Sent); err != nil {
+		s.logger.Warn("Failed to count sent emails", "error", err.Error())
+	}
+	if err := s.db.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM sent_emails WHERE domain_id = ? AND created_at >= ? AND status = 'delivered'`, domainID, startDate).Scan(&stats.Delivered); err != nil {
+		s.logger.Warn("Failed to count delivered emails", "error", err.Error())
+	}
+	if err := s.db.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM sent_emails WHERE domain_id = ? AND created_at >= ? AND opened_count > 0`, domainID, startDate).Scan(&stats.Opened); err != nil {
+		s.logger.Warn("Failed to count opened emails", "error", err.Error())
+	}
+	if err := s.db.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM sent_emails WHERE domain_id = ? AND created_at >= ? AND clicked_count > 0`, domainID, startDate).Scan(&stats.Clicked); err != nil {
+		s.logger.Warn("Failed to count clicked emails", "error", err.Error())
+	}
+	if err := s.db.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM sent_emails WHERE domain_id = ? AND created_at >= ? AND status = 'bounced'`, domainID, startDate).Scan(&stats.Bounced); err != nil {
+		s.logger.Warn("Failed to count bounced emails", "error", err.Error())
+	}
+	if err := s.db.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM sent_emails WHERE domain_id = ? AND created_at >= ? AND status = 'failed'`, domainID, startDate).Scan(&stats.Failed); err != nil {
+		s.logger.Warn("Failed to count failed emails", "error", err.Error())
+	}
 
 	jsonResponse(w, stats, http.StatusOK)
 }
@@ -547,25 +598,122 @@ func validateSendRequest(req *SendEmailRequest) error {
 	if req.HTML == "" && req.Text == "" {
 		return fmt.Errorf("html or text content is required")
 	}
+
+	// Validate attachments
+	if err := validateAttachments(req.Attachments); err != nil {
+		return err
+	}
+
 	return nil
+}
+
+// Default attachment limits
+const (
+	defaultMaxAttachmentSize       = 10 * 1024 * 1024  // 10MB per attachment
+	defaultMaxTotalAttachmentsSize = 25 * 1024 * 1024  // 25MB total
+	defaultMaxAttachmentCount      = 10
+)
+
+// validateAttachments validates all attachments
+func validateAttachments(attachments []Attachment) error {
+	return validateAttachmentsWithConfig(attachments, nil)
+}
+
+// validateAttachmentsWithConfig validates attachments with optional config for blocked extensions
+func validateAttachmentsWithConfig(attachments []Attachment, blockedExtensions []string) error {
+	if len(attachments) == 0 {
+		return nil
+	}
+
+	if len(attachments) > defaultMaxAttachmentCount {
+		return fmt.Errorf("too many attachments (max %d)", defaultMaxAttachmentCount)
+	}
+
+	// Build blocked extensions map from config
+	blocked := make(map[string]bool)
+	for _, ext := range blockedExtensions {
+		blocked[strings.ToLower(ext)] = true
+	}
+
+	var totalSize int64
+
+	for i, att := range attachments {
+		// Validate filename
+		if att.Filename == "" {
+			return fmt.Errorf("attachment %d: filename is required", i+1)
+		}
+
+		// Check for blocked extensions (only if configured)
+		if len(blocked) > 0 {
+			ext := strings.ToLower(filepath.Ext(att.Filename))
+			if blocked[ext] {
+				return fmt.Errorf("attachment %d: file type %s is not allowed", i+1, ext)
+			}
+		}
+
+		// Validate content is present
+		if att.Content == "" {
+			return fmt.Errorf("attachment %d: content is required", i+1)
+		}
+
+		// Validate base64 encoding
+		decoded, err := base64.StdEncoding.DecodeString(att.Content)
+		if err != nil {
+			return fmt.Errorf("attachment %d: invalid base64 encoding", i+1)
+		}
+
+		// Check individual attachment size
+		if len(decoded) > defaultMaxAttachmentSize {
+			return fmt.Errorf("attachment %d: size exceeds maximum of %d MB", i+1, defaultMaxAttachmentSize/(1024*1024))
+		}
+
+		totalSize += int64(len(decoded))
+
+		// Validate Content-Type format if provided
+		if att.ContentType != "" {
+			if !isValidContentType(att.ContentType) {
+				return fmt.Errorf("attachment %d: invalid content type format", i+1)
+			}
+		}
+	}
+
+	// Check total size
+	if totalSize > defaultMaxTotalAttachmentsSize {
+		return fmt.Errorf("total attachments size exceeds maximum of %d MB", defaultMaxTotalAttachmentsSize/(1024*1024))
+	}
+
+	return nil
+}
+
+// isValidContentType checks if a content type has valid format
+func isValidContentType(ct string) bool {
+	// Basic validation - must have type/subtype format
+	parts := strings.Split(ct, "/")
+	return len(parts) == 2 && parts[0] != "" && parts[1] != ""
 }
 
 func generateMessageID(hostname string) string {
 	b := make([]byte, 16)
-	rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		// Fallback to timestamp if entropy unavailable
+		return fmt.Sprintf("<%d@%s>", time.Now().UnixNano(), hostname)
+	}
 	return fmt.Sprintf("<%s@%s>", hex.EncodeToString(b), hostname)
 }
 
 func generateTrackingID() string {
 	b := make([]byte, 16)
-	rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		// Fallback to timestamp if entropy unavailable
+		return fmt.Sprintf("%d", time.Now().UnixNano())
+	}
 	return hex.EncodeToString(b)
 }
 
 // queueEmail queues an email for delivery
-func (s *Server) queueEmail(ctx context.Context, messageID, from, to, subject, html, text, replyTo string, headers map[string]string) error {
+func (s *Server) queueEmail(ctx context.Context, messageID, from, to, subject, html, text, replyTo string, headers map[string]string, attachments []Attachment) error {
 	// Build the email message
-	msg := buildEmailMessage(messageID, from, to, subject, html, text, replyTo, headers)
+	msg := buildEmailMessage(messageID, from, to, subject, html, text, replyTo, headers, attachments)
 
 	// Save message to disk
 	messagePath, err := s.saveMessageToQueue([]byte(msg))
@@ -612,7 +760,7 @@ func (s *Server) saveMessageToQueue(data []byte) (string, error) {
 }
 
 // buildEmailMessage constructs a MIME email message
-func buildEmailMessage(messageID, from, to, subject, html, text, replyTo string, headers map[string]string) string {
+func buildEmailMessage(messageID, from, to, subject, html, text, replyTo string, headers map[string]string, attachments []Attachment) string {
 	var sb strings.Builder
 
 	// Headers
@@ -631,40 +779,181 @@ func buildEmailMessage(messageID, from, to, subject, html, text, replyTo string,
 		sb.WriteString(fmt.Sprintf("%s: %s\r\n", k, v))
 	}
 
-	// Content
-	if html != "" && text != "" {
-		// Multipart alternative
-		boundary := generateBoundary()
-		sb.WriteString(fmt.Sprintf("Content-Type: multipart/alternative; boundary=\"%s\"\r\n\r\n", boundary))
+	hasAttachments := len(attachments) > 0
+	hasMultipleBodyTypes := html != "" && text != ""
 
-		sb.WriteString(fmt.Sprintf("--%s\r\n", boundary))
-		sb.WriteString("Content-Type: text/plain; charset=utf-8\r\n")
-		sb.WriteString("Content-Transfer-Encoding: quoted-printable\r\n\r\n")
-		sb.WriteString(text)
-		sb.WriteString("\r\n\r\n")
+	if hasAttachments {
+		// Use multipart/mixed as outer container for attachments
+		mixedBoundary := generateBoundary()
+		sb.WriteString(fmt.Sprintf("Content-Type: multipart/mixed; boundary=\"%s\"\r\n\r\n", mixedBoundary))
 
-		sb.WriteString(fmt.Sprintf("--%s\r\n", boundary))
-		sb.WriteString("Content-Type: text/html; charset=utf-8\r\n")
-		sb.WriteString("Content-Transfer-Encoding: quoted-printable\r\n\r\n")
-		sb.WriteString(html)
-		sb.WriteString("\r\n\r\n")
+		// First part: the message body
+		sb.WriteString(fmt.Sprintf("--%s\r\n", mixedBoundary))
 
-		sb.WriteString(fmt.Sprintf("--%s--\r\n", boundary))
-	} else if html != "" {
-		sb.WriteString("Content-Type: text/html; charset=utf-8\r\n")
-		sb.WriteString("Content-Transfer-Encoding: quoted-printable\r\n\r\n")
-		sb.WriteString(html)
+		if hasMultipleBodyTypes {
+			// Nested multipart/alternative for text+HTML
+			altBoundary := generateBoundary()
+			sb.WriteString(fmt.Sprintf("Content-Type: multipart/alternative; boundary=\"%s\"\r\n\r\n", altBoundary))
+
+			sb.WriteString(fmt.Sprintf("--%s\r\n", altBoundary))
+			sb.WriteString("Content-Type: text/plain; charset=utf-8\r\n")
+			sb.WriteString("Content-Transfer-Encoding: quoted-printable\r\n\r\n")
+			sb.WriteString(text)
+			sb.WriteString("\r\n\r\n")
+
+			sb.WriteString(fmt.Sprintf("--%s\r\n", altBoundary))
+			sb.WriteString("Content-Type: text/html; charset=utf-8\r\n")
+			sb.WriteString("Content-Transfer-Encoding: quoted-printable\r\n\r\n")
+			sb.WriteString(html)
+			sb.WriteString("\r\n\r\n")
+
+			sb.WriteString(fmt.Sprintf("--%s--\r\n", altBoundary))
+		} else if html != "" {
+			sb.WriteString("Content-Type: text/html; charset=utf-8\r\n")
+			sb.WriteString("Content-Transfer-Encoding: quoted-printable\r\n\r\n")
+			sb.WriteString(html)
+			sb.WriteString("\r\n")
+		} else {
+			sb.WriteString("Content-Type: text/plain; charset=utf-8\r\n")
+			sb.WriteString("Content-Transfer-Encoding: quoted-printable\r\n\r\n")
+			sb.WriteString(text)
+			sb.WriteString("\r\n")
+		}
+
+		// Attachment parts
+		for _, att := range attachments {
+			sb.WriteString(fmt.Sprintf("\r\n--%s\r\n", mixedBoundary))
+			writeAttachmentPart(&sb, att)
+		}
+
+		sb.WriteString(fmt.Sprintf("\r\n--%s--\r\n", mixedBoundary))
 	} else {
-		sb.WriteString("Content-Type: text/plain; charset=utf-8\r\n")
-		sb.WriteString("Content-Transfer-Encoding: quoted-printable\r\n\r\n")
-		sb.WriteString(text)
+		// No attachments - use existing logic
+		if hasMultipleBodyTypes {
+			// Multipart alternative
+			boundary := generateBoundary()
+			sb.WriteString(fmt.Sprintf("Content-Type: multipart/alternative; boundary=\"%s\"\r\n\r\n", boundary))
+
+			sb.WriteString(fmt.Sprintf("--%s\r\n", boundary))
+			sb.WriteString("Content-Type: text/plain; charset=utf-8\r\n")
+			sb.WriteString("Content-Transfer-Encoding: quoted-printable\r\n\r\n")
+			sb.WriteString(text)
+			sb.WriteString("\r\n\r\n")
+
+			sb.WriteString(fmt.Sprintf("--%s\r\n", boundary))
+			sb.WriteString("Content-Type: text/html; charset=utf-8\r\n")
+			sb.WriteString("Content-Transfer-Encoding: quoted-printable\r\n\r\n")
+			sb.WriteString(html)
+			sb.WriteString("\r\n\r\n")
+
+			sb.WriteString(fmt.Sprintf("--%s--\r\n", boundary))
+		} else if html != "" {
+			sb.WriteString("Content-Type: text/html; charset=utf-8\r\n")
+			sb.WriteString("Content-Transfer-Encoding: quoted-printable\r\n\r\n")
+			sb.WriteString(html)
+		} else {
+			sb.WriteString("Content-Type: text/plain; charset=utf-8\r\n")
+			sb.WriteString("Content-Transfer-Encoding: quoted-printable\r\n\r\n")
+			sb.WriteString(text)
+		}
 	}
 
 	return sb.String()
 }
 
+// writeAttachmentPart writes a single attachment part to the message
+func writeAttachmentPart(sb *strings.Builder, att Attachment) {
+	contentType := att.ContentType
+	if contentType == "" {
+		contentType = detectContentType(att.Filename)
+	}
+
+	// Sanitize filename to prevent header injection
+	safeFilename := sanitizeFilename(att.Filename)
+
+	sb.WriteString(fmt.Sprintf("Content-Type: %s; name=\"%s\"\r\n", contentType, safeFilename))
+	sb.WriteString("Content-Transfer-Encoding: base64\r\n")
+	sb.WriteString(fmt.Sprintf("Content-Disposition: attachment; filename=\"%s\"\r\n", safeFilename))
+	sb.WriteString("\r\n")
+
+	// Write base64 content in 76-char lines per RFC 2045
+	content := att.Content
+	for len(content) > 76 {
+		sb.WriteString(content[:76])
+		sb.WriteString("\r\n")
+		content = content[76:]
+	}
+	if len(content) > 0 {
+		sb.WriteString(content)
+		sb.WriteString("\r\n")
+	}
+}
+
+// detectContentType returns the MIME type based on file extension
+func detectContentType(filename string) string {
+	ext := strings.ToLower(filepath.Ext(filename))
+	switch ext {
+	case ".pdf":
+		return "application/pdf"
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".png":
+		return "image/png"
+	case ".gif":
+		return "image/gif"
+	case ".doc":
+		return "application/msword"
+	case ".docx":
+		return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+	case ".xls":
+		return "application/vnd.ms-excel"
+	case ".xlsx":
+		return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+	case ".ppt":
+		return "application/vnd.ms-powerpoint"
+	case ".pptx":
+		return "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+	case ".zip":
+		return "application/zip"
+	case ".txt":
+		return "text/plain"
+	case ".csv":
+		return "text/csv"
+	case ".html", ".htm":
+		return "text/html"
+	case ".xml":
+		return "application/xml"
+	case ".json":
+		return "application/json"
+	case ".mp3":
+		return "audio/mpeg"
+	case ".mp4":
+		return "video/mp4"
+	case ".wav":
+		return "audio/wav"
+	case ".avi":
+		return "video/x-msvideo"
+	default:
+		return "application/octet-stream"
+	}
+}
+
+// sanitizeFilename removes potentially dangerous characters from filename
+func sanitizeFilename(filename string) string {
+	// Remove path separators and control characters
+	filename = filepath.Base(filename)
+	// Remove quotes and newlines that could break MIME headers
+	filename = strings.ReplaceAll(filename, "\"", "")
+	filename = strings.ReplaceAll(filename, "\r", "")
+	filename = strings.ReplaceAll(filename, "\n", "")
+	return filename
+}
+
 func generateBoundary() string {
 	b := make([]byte, 16)
-	rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		// Fallback to timestamp if entropy unavailable
+		return fmt.Sprintf("=_%d", time.Now().UnixNano())
+	}
 	return fmt.Sprintf("=_%s", hex.EncodeToString(b))
 }

@@ -78,6 +78,9 @@ func NewServer(cfg *config.Config, authenticator *auth.Authenticator, db *sql.DB
 func (s *Server) Start(addr string, tlsConfig *tls.Config) error {
 	mux := http.NewServeMux()
 
+	// Root handler for discovery
+	mux.HandleFunc("/", s.handleRoot)
+
 	// Well-known redirects for auto-discovery
 	mux.HandleFunc("/.well-known/caldav", s.wellKnownCalDAV)
 	mux.HandleFunc("/.well-known/carddav", s.wellKnownCardDAV)
@@ -118,14 +121,23 @@ func (s *Server) Shutdown(ctx context.Context) error {
 // authMiddleware handles HTTP Basic authentication
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Allow unauthenticated access to well-known endpoints and OPTIONS
-		if strings.HasPrefix(r.URL.Path, "/.well-known/") || r.Method == "OPTIONS" {
+		// Allow unauthenticated OPTIONS requests
+		if r.Method == "OPTIONS" {
 			next.ServeHTTP(w, r)
 			return
 		}
 
+		// For well-known endpoints, try to authenticate if credentials provided
+		// but allow pass-through if no credentials (will be handled by the endpoint)
+		isWellKnown := strings.HasPrefix(r.URL.Path, "/.well-known/")
+
 		username, password, ok := r.BasicAuth()
 		if !ok {
+			if isWellKnown {
+				// Allow well-known without auth - handler will request if needed
+				next.ServeHTTP(w, r)
+				return
+			}
 			s.logger.Warn("DAV authentication failed: no credentials provided",
 				"remote_addr", r.RemoteAddr)
 			w.Header().Set("WWW-Authenticate", `Basic realm="Mail Server"`)
@@ -230,12 +242,97 @@ func isValidVCard(data string) bool {
 
 // wellKnownCalDAV handles CalDAV auto-discovery
 func (s *Server) wellKnownCalDAV(w http.ResponseWriter, r *http.Request) {
-	http.Redirect(w, r, "/caldav/", http.StatusMovedPermanently)
+	// For PROPFIND requests (used by clients for discovery), proxy to CalDAV handler
+	if r.Method == "PROPFIND" {
+		user := getUserFromContext(r.Context())
+		if user == nil {
+			w.Header().Set("WWW-Authenticate", `Basic realm="Mail Server"`)
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		s.handleCalDAVPropfind(w, r, user)
+		return
+	}
+	// For other methods, redirect to the CalDAV endpoint
+	http.Redirect(w, r, "/caldav/", http.StatusTemporaryRedirect)
 }
 
 // wellKnownCardDAV handles CardDAV auto-discovery
 func (s *Server) wellKnownCardDAV(w http.ResponseWriter, r *http.Request) {
-	http.Redirect(w, r, "/carddav/", http.StatusMovedPermanently)
+	// For PROPFIND requests (used by clients for discovery), proxy to CardDAV handler
+	if r.Method == "PROPFIND" {
+		user := getUserFromContext(r.Context())
+		if user == nil {
+			w.Header().Set("WWW-Authenticate", `Basic realm="Mail Server"`)
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		s.handleCardDAVPropfind(w, r, user)
+		return
+	}
+	// For other methods, redirect to the CardDAV endpoint
+	http.Redirect(w, r, "/carddav/", http.StatusTemporaryRedirect)
+}
+
+// handleRoot handles requests to the root path for DAV discovery
+func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
+	// Only handle exact root path
+	if r.URL.Path != "/" {
+		http.NotFound(w, r)
+		return
+	}
+
+	switch r.Method {
+	case "OPTIONS":
+		// Return DAV capabilities for discovery
+		w.Header().Set("Allow", "OPTIONS, PROPFIND")
+		w.Header().Set("DAV", "1, 2, 3, addressbook, calendar-access")
+		w.WriteHeader(http.StatusOK)
+
+	case "PROPFIND":
+		user := getUserFromContext(r.Context())
+		if user == nil {
+			w.Header().Set("WWW-Authenticate", `Basic realm="Mail Server"`)
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		// Return principal discovery response
+		principalURL := fmt.Sprintf("/principals/%s/", user.Email)
+		calendarHomeURL := fmt.Sprintf("/calendars/%s/", user.Email)
+		addressbookHomeURL := fmt.Sprintf("/addressbooks/%s/", user.Email)
+
+		response := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav" xmlns:A="urn:ietf:params:xml:ns:carddav">
+  <D:response>
+    <D:href>/</D:href>
+    <D:propstat>
+      <D:prop>
+        <D:current-user-principal>
+          <D:href>%s</D:href>
+        </D:current-user-principal>
+        <C:calendar-home-set>
+          <D:href>%s</D:href>
+        </C:calendar-home-set>
+        <A:addressbook-home-set>
+          <D:href>%s</D:href>
+        </A:addressbook-home-set>
+        <D:resourcetype>
+          <D:collection/>
+        </D:resourcetype>
+      </D:prop>
+      <D:status>HTTP/1.1 200 OK</D:status>
+    </D:propstat>
+  </D:response>
+</D:multistatus>`, principalURL, calendarHomeURL, addressbookHomeURL)
+
+		w.Header().Set("Content-Type", "application/xml; charset=utf-8")
+		w.WriteHeader(http.StatusMultiStatus)
+		w.Write([]byte(response))
+
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
 }
 
 // handlePrincipal handles principal discovery requests
@@ -293,6 +390,10 @@ func (s *Server) handlePrincipalPropfind(w http.ResponseWriter, r *http.Request,
 
 // extractPathUser extracts the user email from a path like /calendars/user@domain/...
 func extractPathUser(path, prefix string) string {
+	// Only extract if the path actually starts with the prefix
+	if !strings.HasPrefix(path, prefix) {
+		return ""
+	}
 	path = strings.TrimPrefix(path, prefix)
 	path = strings.TrimPrefix(path, "/")
 	parts := strings.SplitN(path, "/", 2)

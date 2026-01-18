@@ -2,23 +2,28 @@
 package delivery
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"database/sql"
 	"errors"
 	"fmt"
 	"net"
 	"net/smtp"
+	"net/textproto"
 	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/fenilsonani/email-server/internal/logging"
+	"github.com/fenilsonani/email-server/internal/metrics"
 	"github.com/fenilsonani/email-server/internal/queue"
 	"github.com/fenilsonani/email-server/internal/resilience"
 	"github.com/fenilsonani/email-server/internal/security"
+	"github.com/fenilsonani/email-server/internal/tracing"
 )
 
 // Common errors
@@ -51,6 +56,13 @@ type Config struct {
 	QueuePath string
 	// RelayHost is an optional smarthost for all outbound mail (host:port).
 	RelayHost string
+
+	// MTA-STS configuration
+	MTASTSEnabled bool // Enable MTA-STS policy checking
+
+	// DANE configuration
+	DANEEnabled   bool   // Enable DANE/TLSA checking
+	DANEDNSServer string // DNS server for TLSA lookups
 }
 
 // DefaultConfig returns sensible default configuration.
@@ -77,6 +89,17 @@ type Engine struct {
 	bounceGen      *BounceGenerator
 	db             *sql.DB
 
+	// Security resolvers
+	stsResolver  *STSResolver  // MTA-STS policy resolver
+	daneResolver *DANEResolver // DANE/TLSA resolver
+
+	// Observability
+	tracer      *tracing.Tracer
+	domainStats *metrics.DomainStats
+
+	// Deduplication
+	dedupTracker *queue.DeliveryTracker
+
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -89,11 +112,35 @@ type Engine struct {
 	totalBounced  int64
 }
 
+// EngineOption configures the delivery engine.
+type EngineOption func(*Engine)
+
+// WithTracer sets the tracer for the delivery engine.
+func WithTracer(t *tracing.Tracer) EngineOption {
+	return func(e *Engine) {
+		e.tracer = t
+	}
+}
+
+// WithDomainStats sets the domain stats tracker for the delivery engine.
+func WithDomainStats(ds *metrics.DomainStats) EngineOption {
+	return func(e *Engine) {
+		e.domainStats = ds
+	}
+}
+
+// WithDedupTracker sets the deduplication tracker for the delivery engine.
+func WithDedupTracker(dt *queue.DeliveryTracker) EngineOption {
+	return func(e *Engine) {
+		e.dedupTracker = dt
+	}
+}
+
 // NewEngine creates a new delivery engine.
-func NewEngine(cfg Config, q *queue.RedisQueue, dkim *security.DKIMSignerPool, logger *logging.Logger, db *sql.DB) *Engine {
+func NewEngine(cfg Config, q *queue.RedisQueue, dkim *security.DKIMSignerPool, logger *logging.Logger, db *sql.DB, opts ...EngineOption) *Engine {
 	ctx, cancel := context.WithCancel(context.Background())
 
-	return &Engine{
+	e := &Engine{
 		config:     cfg,
 		queue:      q,
 		mxResolver: NewMXResolver(DefaultMXResolverConfig()),
@@ -114,6 +161,27 @@ func NewEngine(cfg Config, q *queue.RedisQueue, dkim *security.DKIMSignerPool, l
 		ctx:       ctx,
 		cancel:    cancel,
 	}
+
+	// Apply options
+	for _, opt := range opts {
+		opt(e)
+	}
+
+	// Initialize MTA-STS resolver if enabled
+	if cfg.MTASTSEnabled {
+		e.stsResolver = NewSTSResolver(DefaultSTSResolverConfig())
+	}
+
+	// Initialize DANE resolver if enabled
+	if cfg.DANEEnabled {
+		daneCfg := DefaultDANEResolverConfig()
+		if cfg.DANEDNSServer != "" {
+			daneCfg.DNSServer = cfg.DANEDNSServer
+		}
+		e.daneResolver = NewDANEResolver(daneCfg)
+	}
+
+	return e
 }
 
 // Start starts the delivery workers.
@@ -225,6 +293,48 @@ func (e *Engine) deliverMessage(msg *queue.Message) {
 	ctx := logging.WithMessageID(e.ctx, msg.ID)
 	logger := e.logger.WithFields("message_id", msg.ID, "domain", msg.Domain)
 
+	// Start tracing span
+	var span *tracing.Span
+	if e.tracer != nil {
+		ctx, span = e.tracer.StartSpan(ctx, "deliver_message")
+		span.SetTag("message_id", msg.ID)
+		span.SetTag("domain", msg.Domain)
+		span.SetTag("attempt", fmt.Sprintf("%d", msg.Attempts))
+		defer span.Finish()
+	}
+
+	// Track delivery timing for metrics
+	startTime := time.Now()
+	var deliverySuccess bool
+	defer func() {
+		duration := time.Since(startTime)
+		if e.domainStats != nil {
+			e.domainStats.RecordDelivery(msg.Domain, deliverySuccess, duration)
+		}
+	}()
+
+	// Extract SMTP Message-ID for deduplication
+	smtpMessageID := e.extractMessageID(msg.MessagePath)
+	workerID := fmt.Sprintf("worker-%d", time.Now().UnixNano())
+
+	// Check deduplication before delivery
+	if e.dedupTracker != nil && smtpMessageID != "" {
+		if err := e.dedupTracker.StartDelivery(ctx, smtpMessageID, msg.ID, workerID, msg.Recipients); err != nil {
+			if errors.Is(err, queue.ErrAlreadyDelivered) {
+				logger.InfoContext(ctx, "Message already delivered (dedup), skipping",
+					"smtp_message_id", smtpMessageID)
+				e.queue.Complete(ctx, msg.ID)
+				deliverySuccess = true
+				if span != nil {
+					span.SetTag("dedup", "skipped")
+				}
+				return
+			}
+			logger.WarnContext(ctx, "Dedup check failed, continuing delivery",
+				"error", err.Error())
+		}
+	}
+
 	logger.InfoContext(ctx, "Attempting delivery",
 		"attempt", msg.Attempts,
 		"recipients", len(msg.Recipients),
@@ -232,7 +342,32 @@ func (e *Engine) deliverMessage(msg *queue.Message) {
 
 	// Check circuit breaker for this domain
 	breaker := e.breakers.Get(msg.Domain)
-	if breaker.State() == resilience.StateOpen {
+	if breaker == nil {
+		err := fmt.Errorf("invalid domain: %q", msg.Domain)
+		logger.ErrorContext(ctx, "No circuit breaker available (empty domain?), failing delivery", err)
+		e.queue.Fail(ctx, msg.ID, err.Error())
+		e.mu.Lock()
+		e.totalFailed++
+		e.mu.Unlock()
+		for _, rcpt := range msg.Recipients {
+			e.logDeliveryWithTrace(ctx, msg.ID, msg.Sender, rcpt, "rejected", 0, err.Error(), msg.Domain, msg.Attempts, startTime, "")
+		}
+		if e.dedupTracker != nil && smtpMessageID != "" {
+			e.dedupTracker.MarkFailed(ctx, smtpMessageID, err.Error())
+		}
+		if span != nil {
+			span.SetError(err)
+		}
+		return
+	}
+
+	// Record circuit breaker state
+	cbState := breaker.State()
+	if span != nil {
+		span.SetTag("circuit_breaker_state", cbState.String())
+	}
+
+	if cbState == resilience.StateOpen {
 		logger.WarnContext(ctx, "Circuit breaker open, deferring")
 		e.queue.Retry(ctx, msg.ID, ErrCircuitOpen)
 		e.mu.Lock()
@@ -240,7 +375,10 @@ func (e *Engine) deliverMessage(msg *queue.Message) {
 		e.mu.Unlock()
 		// Log deferred status for each recipient
 		for _, rcpt := range msg.Recipients {
-			e.logDelivery(ctx, msg.ID, msg.Sender, rcpt, "deferred", 0, "circuit breaker open")
+			e.logDeliveryWithTrace(ctx, msg.ID, msg.Sender, rcpt, "deferred", 0, "circuit breaker open", msg.Domain, msg.Attempts, startTime, cbState.String())
+		}
+		if span != nil {
+			span.SetTag("result", "deferred_circuit_open")
 		}
 		return
 	}
@@ -262,7 +400,12 @@ func (e *Engine) deliverMessage(msg *queue.Message) {
 
 			// Log rejected status for each recipient
 			for _, rcpt := range msg.Recipients {
-				e.logDelivery(ctx, msg.ID, msg.Sender, rcpt, "rejected", smtpCode, err.Error())
+				e.logDeliveryWithTrace(ctx, msg.ID, msg.Sender, rcpt, "rejected", smtpCode, err.Error(), msg.Domain, msg.Attempts, startTime, cbState.String())
+			}
+
+			// Mark as failed in dedup tracker
+			if e.dedupTracker != nil && smtpMessageID != "" {
+				e.dedupTracker.MarkFailed(ctx, smtpMessageID, err.Error())
 			}
 
 			// Generate and send bounce message
@@ -275,7 +418,7 @@ func (e *Engine) deliverMessage(msg *queue.Message) {
 					e.totalBounced++
 					e.mu.Unlock()
 					// Log bounce status
-					e.logDelivery(ctx, msg.ID, "", msg.Sender, "bounced", 0, "")
+					e.logDeliveryWithTrace(ctx, msg.ID, "", msg.Sender, "bounced", 0, "", msg.Domain, msg.Attempts, startTime, "")
 				}
 			}
 
@@ -285,6 +428,11 @@ func (e *Engine) deliverMessage(msg *queue.Message) {
 					"path", msg.MessagePath,
 					"error", err.Error())
 			}
+
+			if span != nil {
+				span.SetError(err)
+				span.SetTag("result", "permanent_failure")
+			}
 		} else {
 			logger.WarnContext(ctx, "Temporary delivery failure, will retry", "error", err.Error())
 			e.queue.Retry(ctx, msg.ID, err)
@@ -293,22 +441,31 @@ func (e *Engine) deliverMessage(msg *queue.Message) {
 			e.mu.Unlock()
 			// Log deferred status for each recipient
 			for _, rcpt := range msg.Recipients {
-				e.logDelivery(ctx, msg.ID, msg.Sender, rcpt, "deferred", smtpCode, err.Error())
+				e.logDeliveryWithTrace(ctx, msg.ID, msg.Sender, rcpt, "deferred", smtpCode, err.Error(), msg.Domain, msg.Attempts, startTime, cbState.String())
+			}
+			if span != nil {
+				span.SetTag("result", "temporary_failure")
 			}
 		}
 		return
 	}
 
 	// Success!
+	deliverySuccess = true
 	logger.InfoContext(ctx, "Message delivered successfully")
 	e.queue.Complete(ctx, msg.ID)
 	e.mu.Lock()
 	e.totalSent++
 	e.mu.Unlock()
 
+	// Mark as delivered in dedup tracker
+	if e.dedupTracker != nil && smtpMessageID != "" {
+		e.dedupTracker.MarkDelivered(ctx, smtpMessageID, "250 OK")
+	}
+
 	// Log delivered status for each recipient
 	for _, rcpt := range msg.Recipients {
-		e.logDelivery(ctx, msg.ID, msg.Sender, rcpt, "delivered", 250, "")
+		e.logDeliveryWithTrace(ctx, msg.ID, msg.Sender, rcpt, "delivered", 250, "", msg.Domain, msg.Attempts, startTime, cbState.String())
 	}
 
 	// Clean up the message file from disk
@@ -316,6 +473,10 @@ func (e *Engine) deliverMessage(msg *queue.Message) {
 		logger.WarnContext(ctx, "Failed to cleanup message file",
 			"path", msg.MessagePath,
 			"error", err.Error())
+	}
+
+	if span != nil {
+		span.SetTag("result", "success")
 	}
 }
 
@@ -551,6 +712,45 @@ func (e *Engine) deliverToHost(ctx context.Context, addr, hostname string, msg *
 
 // deliverToHostWithTLS delivers to a specific SMTP server with optional TLS.
 func (e *Engine) deliverToHostWithTLS(ctx context.Context, addr, hostname string, msg *queue.Message, data []byte, tryTLS bool) error {
+	// Check MTA-STS policy for target domain
+	var stsPolicy *STSPolicy
+	if e.stsResolver != nil && tryTLS {
+		var err error
+		stsPolicy, err = e.stsResolver.GetPolicy(ctx, msg.Domain)
+		if err != nil {
+			e.logger.WarnContext(ctx, "MTA-STS policy fetch failed",
+				"domain", msg.Domain,
+				"error", err.Error(),
+			)
+			// Continue without MTA-STS - policy fetch failure shouldn't block delivery
+		} else if stsPolicy != nil {
+			e.logger.DebugContext(ctx, "MTA-STS policy found",
+				"domain", msg.Domain,
+				"mode", stsPolicy.Mode,
+			)
+		}
+	}
+
+	// Lookup DANE/TLSA records for this host
+	var tlsaRecords []TLSARecord
+	var tlsaDNSSECValid bool
+	if e.daneResolver != nil && tryTLS {
+		var err error
+		tlsaRecords, tlsaDNSSECValid, err = e.daneResolver.LookupTLSA(ctx, hostname, 25)
+		if err != nil {
+			e.logger.WarnContext(ctx, "DANE TLSA lookup failed",
+				"host", hostname,
+				"error", err.Error(),
+			)
+		} else if len(tlsaRecords) > 0 {
+			e.logger.DebugContext(ctx, "DANE TLSA records found",
+				"host", hostname,
+				"count", len(tlsaRecords),
+				"dnssec_valid", tlsaDNSSECValid,
+			)
+		}
+	}
+
 	// Connect with timeout
 	dialer := &net.Dialer{
 		Timeout: e.config.ConnectTimeout,
@@ -588,18 +788,58 @@ func (e *Engine) deliverToHostWithTLS(ctx context.Context, addr, hostname string
 	if tryTLS {
 		if ok, _ := client.Extension("STARTTLS"); ok {
 			tlsConfig := &tls.Config{
-				ServerName:         hostname,
-				InsecureSkipVerify: !e.config.VerifyTLS,
-				MinVersion:         tls.VersionTLS12,
+				ServerName: hostname,
+				MinVersion: tls.VersionTLS12,
 			}
+
+			// If we have DANE/TLSA records, use custom certificate verification
+			if len(tlsaRecords) > 0 {
+				tlsConfig.InsecureSkipVerify = true // We'll verify manually with DANE
+				tlsConfig.VerifyPeerCertificate = func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
+					if len(rawCerts) == 0 {
+						return fmt.Errorf("no certificates presented")
+					}
+
+					// Parse the certificate chain
+					var chain []*x509.Certificate
+					for _, rawCert := range rawCerts {
+						cert, err := x509.ParseCertificate(rawCert)
+						if err != nil {
+							continue
+						}
+						chain = append(chain, cert)
+					}
+
+					if len(chain) == 0 {
+						return fmt.Errorf("failed to parse any certificates")
+					}
+
+					// Validate with DANE
+					result := ValidateCertificate(chain[0], chain[1:], tlsaRecords)
+					if !result.Valid {
+						return fmt.Errorf("DANE validation failed: %w", result.Error)
+					}
+
+					e.logger.DebugContext(ctx, "DANE validation passed",
+						"host", hostname,
+						"usage", result.UsedRecord.Usage.String(),
+					)
+					return nil
+				}
+			} else {
+				// No DANE, use standard verification
+				tlsConfig.InsecureSkipVerify = !e.config.VerifyTLS
+			}
+
 			if err := client.StartTLS(tlsConfig); err != nil {
+				// Check MTA-STS policy - if enforcing, TLS failure is fatal
+				if stsPolicy != nil && stsPolicy.ShouldEnforceTLS() {
+					return fmt.Errorf("MTA-STS enforced TLS but STARTTLS failed: %w", err)
+				}
 				if e.config.RequireTLS {
 					return fmt.Errorf("STARTTLS required but failed: %w", err)
 				}
 				// SECURITY WARNING: TLS downgrade attack possible here
-				// This allows delivery to servers with invalid/self-signed certificates
-				// but also makes the connection vulnerable to MITM attacks.
-				// Consider setting RequireTLS=true in production for sensitive mail.
 				e.logger.WarnContext(ctx, "SECURITY: STARTTLS failed, falling back to plaintext - potential downgrade attack",
 					"host", hostname,
 					"error", err.Error(),
@@ -611,8 +851,21 @@ func (e *Engine) deliverToHostWithTLS(ctx context.Context, addr, hostname string
 				conn.Close()
 				return e.deliverToHostWithTLS(ctx, addr, hostname, msg, data, false)
 			}
-		} else if e.config.RequireTLS {
-			return fmt.Errorf("STARTTLS required but not supported by server")
+
+			// MTA-STS: Validate that the MX hostname is in the policy's allowed list
+			if stsPolicy != nil && stsPolicy.ShouldEnforceTLS() {
+				if !stsPolicy.ValidateMX(hostname) {
+					return fmt.Errorf("MTA-STS policy violation: MX host %s not in allowed list", hostname)
+				}
+			}
+		} else {
+			// No STARTTLS support
+			if stsPolicy != nil && stsPolicy.ShouldEnforceTLS() {
+				return fmt.Errorf("MTA-STS enforces TLS but server doesn't support STARTTLS")
+			}
+			if e.config.RequireTLS {
+				return fmt.Errorf("STARTTLS required but not supported by server")
+			}
 		}
 	}
 
@@ -812,4 +1065,78 @@ func extractSMTPCode(err error) int {
 		}
 	}
 	return 0
+}
+
+// extractMessageID extracts the Message-ID header from an email file.
+func (e *Engine) extractMessageID(messagePath string) string {
+	if messagePath == "" {
+		return ""
+	}
+
+	file, err := os.Open(messagePath)
+	if err != nil {
+		return ""
+	}
+	defer file.Close()
+
+	reader := textproto.NewReader(bufio.NewReader(file))
+	header, err := reader.ReadMIMEHeader()
+	if err != nil {
+		return ""
+	}
+
+	messageID := header.Get("Message-ID")
+	// Clean up angle brackets if present
+	messageID = strings.TrimPrefix(messageID, "<")
+	messageID = strings.TrimSuffix(messageID, ">")
+	return messageID
+}
+
+// logDeliveryWithTrace logs a delivery event with tracing and observability data.
+func (e *Engine) logDeliveryWithTrace(ctx context.Context, messageID, sender, recipient, status string, smtpCode int, errorMsg, domain string, attempt int, startTime time.Time, cbState string) {
+	if e.db == nil {
+		return // Graceful degradation if no database configured
+	}
+
+	var errMsgPtr *string
+	if errorMsg != "" {
+		errMsgPtr = &errorMsg
+	}
+
+	var smtpCodePtr *int
+	if smtpCode > 0 {
+		smtpCodePtr = &smtpCode
+	}
+
+	// Get trace ID from context
+	traceID := tracing.GetTraceID(ctx)
+	var traceIDPtr *string
+	if traceID != "" {
+		traceIDPtr = &traceID
+	}
+
+	// Calculate duration
+	durationMs := int(time.Since(startTime).Milliseconds())
+
+	var domainPtr *string
+	if domain != "" {
+		domainPtr = &domain
+	}
+
+	var cbStatePtr *string
+	if cbState != "" {
+		cbStatePtr = &cbState
+	}
+
+	_, err := e.db.ExecContext(ctx,
+		`INSERT INTO delivery_log (message_id, sender, recipient, status, smtp_code, error_message, trace_id, domain, attempt_number, delivery_duration_ms, circuit_breaker_state)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		messageID, sender, recipient, status, smtpCodePtr, errMsgPtr, traceIDPtr, domainPtr, attempt, durationMs, cbStatePtr,
+	)
+	if err != nil {
+		e.logger.WarnContext(ctx, "Failed to log delivery event",
+			"error", err.Error(),
+			"message_id", messageID,
+		)
+	}
 }

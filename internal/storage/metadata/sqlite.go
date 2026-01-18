@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -16,15 +17,47 @@ import (
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
 
-// DB wraps the SQLite database connection
-type DB struct {
+// SQLiteDB wraps the SQLite database connection and implements Store interface
+type SQLiteDB struct {
 	*sql.DB
+	path string
 }
 
-// Open opens or creates a SQLite database at the given path
-func Open(path string) (*DB, error) {
+// SQLiteConfig holds SQLite-specific configuration
+type SQLiteConfig struct {
+	Path            string
+	MaxOpenConns    int
+	MaxIdleConns    int
+	ConnMaxLifetime time.Duration
+	ConnMaxIdleTime time.Duration
+}
+
+// DefaultSQLiteConfig returns sensible defaults for SQLite
+func DefaultSQLiteConfig() SQLiteConfig {
+	return SQLiteConfig{
+		MaxOpenConns:    25,
+		MaxIdleConns:    5,
+		ConnMaxLifetime: 0,
+		ConnMaxIdleTime: 5 * time.Minute,
+	}
+}
+
+// OpenSQLite opens or creates a SQLite database at the given path with configuration
+func OpenSQLite(cfg SQLiteConfig) (*SQLiteDB, error) {
+	if cfg.Path == "" {
+		return nil, fmt.Errorf("database path is required")
+	}
+
+	// Apply defaults if not set
+	if cfg.MaxOpenConns == 0 {
+		cfg.MaxOpenConns = 25
+	}
+	if cfg.MaxIdleConns == 0 {
+		cfg.MaxIdleConns = 5
+	}
+
 	// Enable foreign keys and WAL mode for better concurrency
-	dsn := fmt.Sprintf("%s?_foreign_keys=on&_journal_mode=WAL&_busy_timeout=5000", path)
+	dsn := fmt.Sprintf("%s?_foreign_keys=on&_journal_mode=WAL&_busy_timeout=5000", cfg.Path)
 
 	db, err := sql.Open("sqlite3", dsn)
 	if err != nil {
@@ -32,8 +65,14 @@ func Open(path string) (*DB, error) {
 	}
 
 	// Set connection pool settings
-	db.SetMaxOpenConns(25)
-	db.SetMaxIdleConns(5)
+	db.SetMaxOpenConns(cfg.MaxOpenConns)
+	db.SetMaxIdleConns(cfg.MaxIdleConns)
+	if cfg.ConnMaxLifetime > 0 {
+		db.SetConnMaxLifetime(cfg.ConnMaxLifetime)
+	}
+	if cfg.ConnMaxIdleTime > 0 {
+		db.SetConnMaxIdleTime(cfg.ConnMaxIdleTime)
+	}
 
 	// Test connection
 	if err := db.Ping(); err != nil {
@@ -41,11 +80,47 @@ func Open(path string) (*DB, error) {
 		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
 
-	return &DB{DB: db}, nil
+	return &SQLiteDB{DB: db, path: cfg.Path}, nil
+}
+
+// Open opens or creates a SQLite database with default configuration (legacy compatibility)
+func Open(path string) (*SQLiteDB, error) {
+	cfg := DefaultSQLiteConfig()
+	cfg.Path = path
+	return OpenSQLite(cfg)
+}
+
+// DB is an alias for SQLiteDB for backward compatibility
+type DB = SQLiteDB
+
+// Driver returns the database driver name
+func (db *SQLiteDB) Driver() string {
+	return "sqlite3"
+}
+
+// Ping checks database connectivity
+func (db *SQLiteDB) Ping(ctx context.Context) error {
+	return db.DB.PingContext(ctx)
+}
+
+// Stats returns database statistics
+func (db *SQLiteDB) Stats() DBStats {
+	stats := db.DB.Stats()
+	return DBStats{
+		MaxOpenConnections: stats.MaxOpenConnections,
+		OpenConnections:    stats.OpenConnections,
+		InUse:              stats.InUse,
+		Idle:               stats.Idle,
+		WaitCount:          stats.WaitCount,
+		WaitDuration:       stats.WaitDuration,
+		MaxIdleClosed:      stats.MaxIdleClosed,
+		MaxIdleTimeClosed:  stats.MaxIdleTimeClosed,
+		MaxLifetimeClosed:  stats.MaxLifetimeClosed,
+	}
 }
 
 // Migrate runs all pending database migrations
-func (db *DB) Migrate(ctx context.Context) error {
+func (db *SQLiteDB) Migrate(ctx context.Context) error {
 	// Get current schema version
 	currentVersion, err := db.getSchemaVersion(ctx)
 	if err != nil {
@@ -83,7 +158,7 @@ type migration struct {
 	sql     string
 }
 
-func (db *DB) getSchemaVersion(ctx context.Context) (int, error) {
+func (db *SQLiteDB) getSchemaVersion(ctx context.Context) (int, error) {
 	// Check if schema_migrations table exists
 	var exists int
 	err := db.QueryRowContext(ctx,
@@ -108,7 +183,7 @@ func (db *DB) getSchemaVersion(ctx context.Context) (int, error) {
 	return version, nil
 }
 
-func (db *DB) loadMigrations() ([]migration, error) {
+func (db *SQLiteDB) loadMigrations() ([]migration, error) {
 	entries, err := fs.ReadDir(migrationsFS, "migrations")
 	if err != nil {
 		return nil, err
@@ -146,7 +221,7 @@ func (db *DB) loadMigrations() ([]migration, error) {
 	return migrations, nil
 }
 
-func (db *DB) applyMigration(ctx context.Context, m migration) error {
+func (db *SQLiteDB) applyMigration(ctx context.Context, m migration) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -162,6 +237,11 @@ func (db *DB) applyMigration(ctx context.Context, m migration) error {
 }
 
 // Close closes the database connection
-func (db *DB) Close() error {
+func (db *SQLiteDB) Close() error {
 	return db.DB.Close()
+}
+
+// RawDB returns the underlying *sql.DB for backward compatibility
+func (db *SQLiteDB) RawDB() *sql.DB {
+	return db.DB
 }

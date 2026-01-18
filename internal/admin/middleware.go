@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"runtime/debug"
+	"strings"
 	"sync"
 	"time"
 )
@@ -63,8 +64,20 @@ func (s *Server) createSession(userID int64) string {
 		return ""
 	}
 
-	// Cache in memory
+	// Cache in memory with size limit
 	sessionCacheMu.Lock()
+	// Enforce max cache size to prevent memory exhaustion
+	if len(sessionCache) >= maxSessionCache {
+		// Evict expired sessions first
+		for t, sess := range sessionCache {
+			if now.After(sess.expiresAt) || len(sessionCache) >= maxSessionCache {
+				delete(sessionCache, t)
+				if len(sessionCache) < maxSessionCache*9/10 { // Keep 90% capacity
+					break
+				}
+			}
+		}
+	}
 	sessionCache[token] = &session{
 		userID:    userID,
 		createdAt: now,
@@ -89,6 +102,100 @@ func (s *Server) invalidateUserSessions(userID int64) {
 			delete(sessionCache, token)
 		}
 	}
+}
+
+// DomainInfo holds information about the current request's domain
+type DomainInfo struct {
+	ID           int64
+	Name         string
+	MailHostname string
+	IsPrimary    bool
+}
+
+type domainContextKeyType string
+
+const domainContextKey domainContextKeyType = "domain"
+
+// detectDomain detects the domain based on the Host header
+func (s *Server) detectDomain(r *http.Request) *DomainInfo {
+	host := r.Host
+
+	// Strip port if present
+	if idx := strings.Index(host, ":"); idx != -1 {
+		host = host[:idx]
+	}
+
+	// Look up domain by mail_hostname
+	var domain DomainInfo
+	var isPrimaryInt int
+	err := s.db.QueryRowContext(r.Context(),
+		`SELECT id, name, COALESCE(mail_hostname, 'mail.' || name), COALESCE(is_primary, 0)
+		 FROM domains WHERE mail_hostname = ? OR 'mail.' || name = ?`,
+		host, host,
+	).Scan(&domain.ID, &domain.Name, &domain.MailHostname, &isPrimaryInt)
+
+	if err != nil {
+		// Check if this is the primary hostname from config
+		if host == s.config.Server.Hostname {
+			// Return primary domain
+			s.db.QueryRowContext(r.Context(),
+				`SELECT id, name, COALESCE(mail_hostname, 'mail.' || name), 1
+				 FROM domains WHERE is_primary = 1 OR name = ? LIMIT 1`,
+				s.config.Server.Domain,
+			).Scan(&domain.ID, &domain.Name, &domain.MailHostname, &isPrimaryInt)
+			domain.IsPrimary = true
+			return &domain
+		}
+		return nil
+	}
+
+	domain.IsPrimary = isPrimaryInt == 1
+	return &domain
+}
+
+// GetDomainFromContext retrieves the domain from the request context
+func GetDomainFromContext(r *http.Request) *DomainInfo {
+	if domain, ok := r.Context().Value(domainContextKey).(*DomainInfo); ok {
+		return domain
+	}
+	return nil
+}
+
+// withDomainDetection adds domain info to the request context
+func (s *Server) withDomainDetection(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		domain := s.detectDomain(r)
+		if domain != nil {
+			ctx := context.WithValue(r.Context(), domainContextKey, domain)
+			r = r.WithContext(ctx)
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// withPrimaryDomainOnly restricts access to primary domain only
+func (s *Server) withPrimaryDomainOnly(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		domain := s.detectDomain(r)
+
+		// Allow if domain is primary OR if accessing via the configured hostname
+		if domain != nil && domain.IsPrimary {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Also allow if Host matches the configured server hostname
+		host := r.Host
+		if idx := strings.Index(host, ":"); idx != -1 {
+			host = host[:idx]
+		}
+		if host == s.config.Server.Hostname {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		http.Error(w, "Admin access only available on primary domain", http.StatusForbidden)
+	})
 }
 
 // validateSession checks if a session token is valid
@@ -157,6 +264,25 @@ func (s *Server) deleteSession(token string) {
 // withAuth wraps a handler with authentication check
 func (s *Server) withAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Check primary domain access for admin routes
+		host := r.Host
+		if idx := strings.Index(host, ":"); idx != -1 {
+			host = host[:idx]
+		}
+
+		// Allow if Host matches the configured server hostname
+		isPrimary := host == s.config.Server.Hostname
+		if !isPrimary {
+			// Check if this is a primary domain via database
+			domain := s.detectDomain(r)
+			isPrimary = domain != nil && domain.IsPrimary
+		}
+
+		if !isPrimary {
+			http.Error(w, "Admin access only available on primary domain", http.StatusForbidden)
+			return
+		}
+
 		cookie, err := r.Cookie("admin_session")
 		if err != nil {
 			http.Redirect(w, r, "/admin/login", http.StatusSeeOther)
@@ -181,7 +307,12 @@ func (s *Server) withAuth(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// CSRF token handling
+// CSRF token handling with bounded cache
+const (
+	maxCSRFTokens   = 10000 // Maximum CSRF tokens in cache
+	maxSessionCache = 10000 // Maximum sessions in cache
+)
+
 var (
 	csrfTokens   = make(map[string]time.Time)
 	csrfTokensMu sync.RWMutex
@@ -190,11 +321,30 @@ var (
 // withCSRF wraps a handler with CSRF protection
 func (s *Server) withCSRF(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Skip CSRF for user portal (has its own CSRF handling)
+		if strings.HasPrefix(r.URL.Path, "/account/") || r.URL.Path == "/account" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
 		// Skip CSRF for GET/HEAD/OPTIONS
 		if r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodOptions {
 			// Generate token for forms
 			token := generateToken()
 			csrfTokensMu.Lock()
+			// Enforce max cache size to prevent memory exhaustion
+			if len(csrfTokens) >= maxCSRFTokens {
+				// Evict oldest tokens (simple eviction: remove expired first)
+				now := time.Now()
+				for t, exp := range csrfTokens {
+					if now.After(exp) || len(csrfTokens) >= maxCSRFTokens {
+						delete(csrfTokens, t)
+						if len(csrfTokens) < maxCSRFTokens*9/10 { // Keep 90% capacity
+							break
+						}
+					}
+				}
+			}
 			csrfTokens[token] = time.Now().Add(1 * time.Hour)
 			csrfTokensMu.Unlock()
 
@@ -244,37 +394,68 @@ func generateToken() string {
 	return hex.EncodeToString(b)
 }
 
+// sessionCleanupStop is used to stop the session cleanup goroutine
+var (
+	sessionCleanupStop   chan struct{}
+	sessionCleanupStopMu sync.Mutex
+)
+
 // CleanupExpiredSessions removes expired sessions periodically
 func CleanupExpiredSessions(db *sql.DB) {
+	sessionCleanupStopMu.Lock()
+	sessionCleanupStop = make(chan struct{})
+	stopCh := sessionCleanupStop
+	sessionCleanupStopMu.Unlock()
+
 	ticker := time.NewTicker(15 * time.Minute)
+
 	go func() {
-		for range ticker.C {
-			now := time.Now()
+		defer ticker.Stop()
 
-			// Clean expired sessions from database
-			if db != nil {
-				_, _ = db.Exec(`DELETE FROM admin_sessions WHERE expires_at < ?`, now)
-			}
+		for {
+			select {
+			case <-stopCh:
+				return
+			case <-ticker.C:
+				now := time.Now()
 
-			// Clean session cache
-			sessionCacheMu.Lock()
-			for token, sess := range sessionCache {
-				if now.After(sess.expiresAt) {
-					delete(sessionCache, token)
+				// Clean expired sessions from database
+				if db != nil {
+					if _, err := db.Exec(`DELETE FROM admin_sessions WHERE expires_at < ?`, now); err != nil {
+						// Log error but continue - non-critical
+					}
 				}
-			}
-			sessionCacheMu.Unlock()
 
-			// Clean CSRF tokens
-			csrfTokensMu.Lock()
-			for token, expiry := range csrfTokens {
-				if now.After(expiry) {
-					delete(csrfTokens, token)
+				// Clean session cache
+				sessionCacheMu.Lock()
+				for token, sess := range sessionCache {
+					if now.After(sess.expiresAt) {
+						delete(sessionCache, token)
+					}
 				}
+				sessionCacheMu.Unlock()
+
+				// Clean CSRF tokens
+				csrfTokensMu.Lock()
+				for token, expiry := range csrfTokens {
+					if now.After(expiry) {
+						delete(csrfTokens, token)
+					}
+				}
+				csrfTokensMu.Unlock()
 			}
-			csrfTokensMu.Unlock()
 		}
 	}()
+}
+
+// StopSessionCleanup stops the session cleanup goroutine
+func StopSessionCleanup() {
+	sessionCleanupStopMu.Lock()
+	defer sessionCleanupStopMu.Unlock()
+	if sessionCleanupStop != nil {
+		close(sessionCleanupStop)
+		sessionCleanupStop = nil
+	}
 }
 
 // isValidToken validates token format (must be hex and minimum 32 chars)

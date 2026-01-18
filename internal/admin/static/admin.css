@@ -170,6 +170,12 @@ tr:hover td {
     border-color: var(--success);
 }
 
+.btn-warning {
+    border-color: var(--warning);
+    background-color: var(--warning);
+    color: var(--card);
+}
+
 .btn-secondary {
     border-color: var(--border);
     color: var(--text-muted);
@@ -290,6 +296,15 @@ textarea.form-control {
     font-size: 1.5rem;
     font-weight: 700;
     color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.stat-value.wrap {
+    white-space: normal;
+    word-break: break-all;
+    font-size: 1.25rem;
 }
 
 .stat-label {
@@ -297,6 +312,68 @@ textarea.form-control {
     font-size: 11px;
     margin-top: 0.25rem;
     text-transform: lowercase;
+}
+
+/* Feature cards for user portal */
+.feature-card {
+    border: 1px solid var(--border);
+    background: var(--card);
+    padding: 1rem;
+    margin-bottom: 1rem;
+}
+
+.feature-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.5rem;
+}
+
+.feature-card-header h3 {
+    margin: 0;
+    font-size: 1rem;
+    font-weight: 600;
+}
+
+.feature-card-status {
+    font-size: 12px;
+    padding: 0.25rem 0.5rem;
+}
+
+.feature-card-status.active {
+    background: #d4edda;
+    color: #155724;
+}
+
+.feature-card-status.inactive {
+    background: var(--card);
+    color: var(--text-muted);
+    border: 1px solid var(--border);
+}
+
+.feature-card-desc {
+    color: var(--text-muted);
+    font-size: 13px;
+    margin-bottom: 0.75rem;
+}
+
+.feature-card-details {
+    font-size: 13px;
+    margin-bottom: 0.75rem;
+    padding: 0.5rem;
+    background: var(--bg);
+    border: 1px solid var(--border);
+}
+
+.feature-card-details dt {
+    color: var(--text-muted);
+    display: inline;
+}
+
+.feature-card-details dd {
+    display: inline;
+    margin: 0;
+    margin-right: 1rem;
 }
 
 /* Alerts */

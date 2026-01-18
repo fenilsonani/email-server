@@ -1,0 +1,95 @@
+<div class="breadcrumbs">
+    <a href="/admin/">home</a>
+    <span>&gt;</span>
+    <a href="/admin/features">features</a>
+    <span>&gt;</span>
+    <span>screener</span>
+</div>
+
+<div class="page-header">
+    <h1>screener</h1>
+</div>
+
+<div class="stats-grid">
+    <div class="card stat-card">
+        <div class="stat-value">{{.PendingCount}}</div>
+        <div class="stat-label">pending</div>
+    </div>
+    <div class="card stat-card">
+        <div class="stat-value">{{.ApprovedCount}}</div>
+        <div class="stat-label">approved</div>
+    </div>
+    <div class="card stat-card">
+        <div class="stat-value">{{.BlockedCount}}</div>
+        <div class="stat-label">blocked</div>
+    </div>
+</div>
+
+<div class="card">
+    <h2>filter</h2>
+    <div class="filter-form">
+        <a href="/admin/features/screener" class="btn {{if eq .FilterStatus ""}}btn-primary{{else}}btn-secondary{{end}}">all</a>
+        <a href="/admin/features/screener?status=pending" class="btn {{if eq .FilterStatus "pending"}}btn-primary{{else}}btn-secondary{{end}}">pending</a>
+        <a href="/admin/features/screener?status=approved" class="btn {{if eq .FilterStatus "approved"}}btn-primary{{else}}btn-secondary{{end}}">approved</a>
+        <a href="/admin/features/screener?status=blocked" class="btn {{if eq .FilterStatus "blocked"}}btn-primary{{else}}btn-secondary{{end}}">blocked</a>
+    </div>
+</div>
+
+<div class="card">
+    {{if .Contacts}}
+    <table>
+        <thead>
+            <tr>
+                <th>sender</th>
+                <th>status</th>
+                <th>updated</th>
+                <th>actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {{range .Contacts}}
+            <tr>
+                <td>
+                    {{if .Email}}
+                    <code>{{.Email}}</code>
+                    {{else}}
+                    <code>*@{{.Domain}}</code> <span class="badge badge-secondary">domain</span>
+                    {{end}}
+                </td>
+                <td>
+                    {{if eq .Status "pending"}}
+                    <span class="badge badge-warning">pending</span>
+                    {{else if eq .Status "approved"}}
+                    <span class="badge badge-success">approved</span>
+                    {{else if eq .Status "blocked"}}
+                    <span class="badge badge-danger">blocked</span>
+                    {{end}}
+                </td>
+                <td>{{.UpdatedAt.Format "Jan 02 15:04"}}</td>
+                <td>
+                    {{if ne .Status "approved"}}
+                    <form method="POST" action="/admin/features/screener/approve/{{.ID}}" style="display: inline;">
+                        <button type="submit" class="btn btn-sm btn-success">approve</button>
+                    </form>
+                    {{end}}
+                    {{if ne .Status "blocked"}}
+                    <form method="POST" action="/admin/features/screener/block/{{.ID}}" style="display: inline;">
+                        <button type="submit" class="btn btn-sm">block</button>
+                    </form>
+                    {{end}}
+                    <form method="POST" action="/admin/features/screener/delete/{{.ID}}" style="display: inline;"
+                          onsubmit="return confirm('Remove this contact?');">
+                        <button type="submit" class="btn btn-sm btn-danger">delete</button>
+                    </form>
+                </td>
+            </tr>
+            {{end}}
+        </tbody>
+    </table>
+    {{else}}
+    <div class="empty-state">
+        <p>no contacts in the screener yet</p>
+        <p>when new senders email you, they'll appear here for approval</p>
+    </div>
+    {{end}}
+</div>

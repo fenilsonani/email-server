@@ -1,0 +1,52 @@
+<h1>Vacation Responder</h1>
+
+<div class="card">
+    {{if .Error}}
+    <div class="alert alert-error">{{.Error}}</div>
+    {{end}}
+
+    {{if .Success}}
+    <div class="alert alert-success">{{.Success}}</div>
+    {{end}}
+
+    <form method="POST" action="/account/vacation">
+        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+
+        <div class="form-group">
+            <label class="checkbox">
+                <input type="checkbox" name="is_active" {{if .IsActive}}checked{{end}}>
+                Enable vacation auto-reply
+            </label>
+        </div>
+
+        <div class="form-group">
+            <label for="subject">Subject</label>
+            <input type="text" id="subject" name="subject"
+                   value="{{.Subject}}" placeholder="Out of Office">
+        </div>
+
+        <div class="form-group">
+            <label for="message">Message</label>
+            <textarea id="message" name="message" rows="6"
+                      placeholder="I am currently out of the office...">{{.Message}}</textarea>
+            <small class="text-muted">This message will be sent automatically to people who email you</small>
+        </div>
+
+        <div class="form-row">
+            <div class="form-group">
+                <label for="start_date">Start Date (optional)</label>
+                <input type="date" id="start_date" name="start_date" value="{{.StartDate}}">
+            </div>
+
+            <div class="form-group">
+                <label for="end_date">End Date (optional)</label>
+                <input type="date" id="end_date" name="end_date" value="{{.EndDate}}">
+            </div>
+        </div>
+
+        <div class="button-group">
+            <button type="submit" class="btn btn-primary">Save Settings</button>
+            <a href="/account/" class="btn">Cancel</a>
+        </div>
+    </form>
+</div>

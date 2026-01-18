@@ -16,6 +16,7 @@ type Config struct {
 	Server       ServerConfig       `koanf:"server"`
 	TLS          TLSConfig          `koanf:"tls"`
 	Storage      StorageConfig      `koanf:"storage"`
+	Database     DatabaseConfig     `koanf:"database"`
 	Domains      []DomainConfig     `koanf:"domains"`
 	Security     SecurityConfig     `koanf:"security"`
 	Logging      LoggingConfig      `koanf:"logging"`
@@ -53,8 +54,24 @@ type TLSConfig struct {
 // StorageConfig holds storage paths configuration
 type StorageConfig struct {
 	DataDir      string `koanf:"data_dir"`      // Base data directory
-	DatabasePath string `koanf:"database_path"` // SQLite database path
+	DatabasePath string `koanf:"database_path"` // SQLite database path (legacy, use database.path)
 	MaildirPath  string `koanf:"maildir_path"`  // Maildir storage path
+}
+
+// DatabaseConfig holds database configuration
+type DatabaseConfig struct {
+	Driver          string `koanf:"driver"`            // Database driver: sqlite3, postgres
+	Path            string `koanf:"path"`              // SQLite database file path
+	DSN             string `koanf:"dsn"`               // PostgreSQL connection string
+	MaxOpenConns    int    `koanf:"max_open_conns"`    // Maximum open connections
+	MaxIdleConns    int    `koanf:"max_idle_conns"`    // Maximum idle connections
+	ConnMaxLifetime string `koanf:"conn_max_lifetime"` // Maximum connection lifetime
+	ConnMaxIdleTime string `koanf:"conn_max_idle_time"` // Maximum idle time before closing
+
+	// Resilience settings
+	QueryTimeout          string `koanf:"query_timeout"`           // Maximum time for a single query (default: 30s)
+	SlowQueryThreshold    string `koanf:"slow_query_threshold"`    // Duration above which queries are logged as slow (default: 1s)
+	CircuitBreakerEnabled bool   `koanf:"circuit_breaker_enabled"` // Enable circuit breaker protection (default: true)
 }
 
 // DomainConfig holds per-domain configuration
@@ -72,6 +89,11 @@ type SecurityConfig struct {
 	VerifyDMARC    bool `koanf:"verify_dmarc"`     // Verify DMARC on inbound
 	SignOutbound   bool `koanf:"sign_outbound"`    // DKIM sign outbound
 	MaxMessageSize int  `koanf:"max_message_size"` // Max message size in bytes
+
+	// ARC configuration (RFC 8617)
+	ARCEnabled    bool   `koanf:"arc_enabled"`     // Enable ARC signing for forwarded messages
+	ARCSelector   string `koanf:"arc_selector"`    // ARC key selector (default: arc)
+	ARCAuthServID string `koanf:"arc_authserv_id"` // Auth service identifier for A-R headers
 }
 
 // LoggingConfig holds logging configuration
@@ -83,10 +105,21 @@ type LoggingConfig struct {
 
 // QueueConfig holds Redis queue configuration
 type QueueConfig struct {
-	RedisURL    string `koanf:"redis_url"`     // Redis connection URL
-	Prefix      string `koanf:"prefix"`        // Key prefix for queue entries
-	MaxRetries  int    `koanf:"max_retries"`   // Maximum delivery attempts
-	RetryMaxAge string `koanf:"retry_max_age"` // Max time to retry (e.g., "168h")
+	RedisURL       string   `koanf:"redis_url"`       // Redis connection URL (for standalone mode)
+	Mode           string   `koanf:"mode"`            // Connection mode: standalone, sentinel, cluster
+	SentinelMaster string   `koanf:"sentinel_master"` // Master name for Sentinel mode
+	SentinelAddrs  []string `koanf:"sentinel_addrs"`  // Sentinel addresses
+	ClusterAddrs   []string `koanf:"cluster_addrs"`   // Cluster node addresses
+	Password       string   `koanf:"password"`        // Redis password (optional)
+	DB             int      `koanf:"db"`              // Database number (not used in cluster mode)
+	Prefix         string   `koanf:"prefix"`          // Key prefix for queue entries
+	MaxRetries     int      `koanf:"max_retries"`     // Maximum delivery attempts
+	RetryMaxAge    string   `koanf:"retry_max_age"`   // Max time to retry (e.g., "168h")
+	PoolSize       int      `koanf:"pool_size"`       // Connection pool size
+	MinIdleConns   int      `koanf:"min_idle_conns"`  // Minimum idle connections
+	DialTimeout    string   `koanf:"dial_timeout"`    // Connection dial timeout
+	ReadTimeout    string   `koanf:"read_timeout"`    // Read timeout
+	WriteTimeout   string   `koanf:"write_timeout"`   // Write timeout
 }
 
 // DeliveryConfig holds outbound delivery configuration
@@ -97,6 +130,16 @@ type DeliveryConfig struct {
 	RequireTLS     bool   `koanf:"require_tls"`     // Require TLS for outbound
 	VerifyTLS      bool   `koanf:"verify_tls"`      // Verify TLS certificates
 	RelayHost      string `koanf:"relay_host"`      // Optional smarthost (host:port)
+
+	// MTA-STS configuration (RFC 8461)
+	MTASTSEnabled   bool   `koanf:"mta_sts_enabled"`    // Enable MTA-STS policy checking
+	MTASTSCacheTime string `koanf:"mta_sts_cache_time"` // Override cache TTL (e.g., "24h")
+
+	// DANE/TLSA configuration (RFC 6698, RFC 7672)
+	DANEEnabled       bool   `koanf:"dane_enabled"`         // Enable DANE/TLSA checking
+	DANERequireDNSSEC bool   `koanf:"dane_require_dnssec"`  // Require DNSSEC validation
+	DANECacheTTL      string `koanf:"dane_cache_ttl"`       // TLSA cache TTL (e.g., "5m")
+	DANEDNSServer     string `koanf:"dane_dns_server"`      // DNS server for TLSA lookups
 }
 
 // AdminConfig holds admin web panel configuration
@@ -123,12 +166,15 @@ type AutodiscoverConfig struct {
 
 // APIConfig holds transactional email API configuration
 type APIConfig struct {
-	Enabled          bool   `koanf:"enabled"`            // Enable transactional API
-	Port             int    `koanf:"port"`               // API port (default 8082)
-	Listen           string `koanf:"listen"`             // Listen address (default 0.0.0.0)
-	TrackingDomain   string `koanf:"tracking_domain"`    // Domain for open/click tracking
-	RateLimitDefault int    `koanf:"rate_limit_default"` // Default rate limit per hour
-	EnableTracking   bool   `koanf:"enable_tracking"`    // Enable open/click tracking
+	Enabled                   bool     `koanf:"enabled"`                       // Enable transactional API
+	Port                      int      `koanf:"port"`                          // API port (default 8082)
+	Listen                    string   `koanf:"listen"`                        // Listen address (default 0.0.0.0)
+	TrackingDomain            string   `koanf:"tracking_domain"`               // Domain for open/click tracking
+	RateLimitDefault          int      `koanf:"rate_limit_default"`            // Default rate limit per hour
+	EnableTracking            bool     `koanf:"enable_tracking"`               // Enable open/click tracking
+	BlockedAttachmentTypes    []string `koanf:"blocked_attachment_types"`      // Blocked file extensions (e.g., [".exe", ".bat"])
+	MaxAttachmentSizeMB       int      `koanf:"max_attachment_size_mb"`        // Max size per attachment in MB (default 10)
+	MaxTotalAttachmentsSizeMB int      `koanf:"max_total_attachments_size_mb"` // Max total attachments size in MB (default 25)
 }
 
 // DefaultConfig returns a configuration with sensible defaults
@@ -155,6 +201,17 @@ func DefaultConfig() *Config {
 			DatabasePath: "/var/lib/mailserver/mail.db",
 			MaildirPath:  "/var/lib/mailserver/maildir",
 		},
+		Database: DatabaseConfig{
+			Driver:                "sqlite3",
+			Path:                  "/var/lib/mailserver/mail.db",
+			MaxOpenConns:          25,
+			MaxIdleConns:          5,
+			ConnMaxLifetime:       "0",
+			ConnMaxIdleTime:       "5m",
+			QueryTimeout:          "30s",
+			SlowQueryThreshold:    "1s",
+			CircuitBreakerEnabled: true,
+		},
 		Security: SecurityConfig{
 			RequireTLS:     true,
 			VerifySPF:      true,
@@ -162,6 +219,9 @@ func DefaultConfig() *Config {
 			VerifyDMARC:    true,
 			SignOutbound:   true,
 			MaxMessageSize: 26214400, // 25MB
+			ARCEnabled:     false,    // Opt-in for ARC
+			ARCSelector:    "arc",
+			ARCAuthServID:  "",       // Defaults to hostname
 		},
 		Logging: LoggingConfig{
 			Level:  "info",
@@ -169,17 +229,28 @@ func DefaultConfig() *Config {
 			Output: "stdout",
 		},
 		Queue: QueueConfig{
-			RedisURL:    "redis://localhost:6379/0",
-			Prefix:      "mail",
-			MaxRetries:  15,
-			RetryMaxAge: "168h", // 7 days
+			RedisURL:     "redis://localhost:6379/0",
+			Mode:         "standalone",
+			Prefix:       "mail",
+			MaxRetries:   15,
+			RetryMaxAge:  "168h", // 7 days
+			PoolSize:     10,
+			MinIdleConns: 5,
+			DialTimeout:  "5s",
+			ReadTimeout:  "3s",
+			WriteTimeout: "3s",
 		},
 		Delivery: DeliveryConfig{
-			Workers:        4,
-			ConnectTimeout: "30s",
-			CommandTimeout: "5m",
-			RequireTLS:     false,
-			VerifyTLS:      true,
+			Workers:          4,
+			ConnectTimeout:   "30s",
+			CommandTimeout:   "5m",
+			RequireTLS:       false,
+			VerifyTLS:        true,
+			MTASTSEnabled:    true,       // Enable MTA-STS by default
+			MTASTSCacheTime:  "24h",
+			DANEEnabled:      true,       // Enable DANE by default
+			DANERequireDNSSEC: false,     // Don't require DNSSEC (needs special resolver)
+			DANECacheTTL:     "5m",
 		},
 		Admin: AdminConfig{
 			Enabled: true,
@@ -322,8 +393,13 @@ func (c *Config) Validate() error {
 	if c.Delivery.Workers < 1 {
 		return fmt.Errorf("delivery.workers must be at least 1")
 	}
-	if c.Delivery.Workers > 100 {
-		return fmt.Errorf("delivery.workers cannot exceed 100")
+	if c.Delivery.Workers > 500 {
+		return fmt.Errorf("delivery.workers cannot exceed 500")
+	}
+
+	// Database validation
+	if err := c.validateDatabase(); err != nil {
+		return err
 	}
 
 	// Logging validation
@@ -479,6 +555,84 @@ func (c *Config) validateTimeouts() error {
 			if duration > 30*24*time.Hour {
 				return fmt.Errorf("%s is too long, maximum is 30d (got: %s)", name, timeout)
 			}
+		}
+	}
+
+	return nil
+}
+
+// validateDatabase validates database configuration
+func (c *Config) validateDatabase() error {
+	validDrivers := map[string]bool{"sqlite3": true, "postgres": true}
+	if c.Database.Driver != "" && !validDrivers[c.Database.Driver] {
+		return fmt.Errorf("database.driver must be one of: sqlite3, postgres (got: %s)", c.Database.Driver)
+	}
+
+	// Use legacy storage.database_path if database.path is not set
+	if c.Database.Path == "" && c.Storage.DatabasePath != "" {
+		c.Database.Path = c.Storage.DatabasePath
+	}
+
+	switch c.Database.Driver {
+	case "sqlite3", "":
+		if c.Database.Path == "" {
+			return fmt.Errorf("database.path is required for SQLite")
+		}
+		if !filepath.IsAbs(c.Database.Path) {
+			return fmt.Errorf("database.path must be an absolute path (got: %s)", c.Database.Path)
+		}
+	case "postgres":
+		if c.Database.DSN == "" {
+			return fmt.Errorf("database.dsn is required for PostgreSQL")
+		}
+	}
+
+	// Connection pool validation
+	if c.Database.MaxOpenConns < 1 {
+		return fmt.Errorf("database.max_open_conns must be at least 1")
+	}
+	if c.Database.MaxOpenConns > 1000 {
+		return fmt.Errorf("database.max_open_conns cannot exceed 1000")
+	}
+	if c.Database.MaxIdleConns < 0 {
+		return fmt.Errorf("database.max_idle_conns cannot be negative")
+	}
+	if c.Database.MaxIdleConns > c.Database.MaxOpenConns {
+		return fmt.Errorf("database.max_idle_conns cannot exceed max_open_conns")
+	}
+
+	// Validate lifetime durations
+	if c.Database.ConnMaxLifetime != "" && c.Database.ConnMaxLifetime != "0" {
+		if _, err := time.ParseDuration(c.Database.ConnMaxLifetime); err != nil {
+			return fmt.Errorf("database.conn_max_lifetime is invalid: %w", err)
+		}
+	}
+	if c.Database.ConnMaxIdleTime != "" {
+		if _, err := time.ParseDuration(c.Database.ConnMaxIdleTime); err != nil {
+			return fmt.Errorf("database.conn_max_idle_time is invalid: %w", err)
+		}
+	}
+
+	// Validate resilience settings
+	if c.Database.QueryTimeout != "" {
+		d, err := time.ParseDuration(c.Database.QueryTimeout)
+		if err != nil {
+			return fmt.Errorf("database.query_timeout is invalid: %w", err)
+		}
+		if d < time.Second {
+			return fmt.Errorf("database.query_timeout must be at least 1s (got: %s)", c.Database.QueryTimeout)
+		}
+		if d > 5*time.Minute {
+			return fmt.Errorf("database.query_timeout cannot exceed 5m (got: %s)", c.Database.QueryTimeout)
+		}
+	}
+	if c.Database.SlowQueryThreshold != "" {
+		d, err := time.ParseDuration(c.Database.SlowQueryThreshold)
+		if err != nil {
+			return fmt.Errorf("database.slow_query_threshold is invalid: %w", err)
+		}
+		if d < 100*time.Millisecond {
+			return fmt.Errorf("database.slow_query_threshold must be at least 100ms (got: %s)", c.Database.SlowQueryThreshold)
 		}
 	}
 

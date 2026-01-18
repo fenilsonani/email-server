@@ -18,10 +18,13 @@ import (
 	"github.com/fenilsonani/email-server/internal/audit"
 	"github.com/fenilsonani/email-server/internal/auth"
 	"github.com/fenilsonani/email-server/internal/config"
+	"github.com/fenilsonani/email-server/internal/features"
+	"github.com/fenilsonani/email-server/internal/lists"
 	"github.com/fenilsonani/email-server/internal/logging"
 	"github.com/fenilsonani/email-server/internal/queue"
 	"github.com/fenilsonani/email-server/internal/sieve"
 	"github.com/fenilsonani/email-server/internal/storage/maildir"
+	"github.com/fenilsonani/email-server/internal/userportal"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
@@ -38,6 +41,8 @@ type Server struct {
 	authenticator *auth.Authenticator
 	store         *maildir.Store
 	sieveStore    *sieve.Store
+	featuresStore *features.Store
+	listsStore    *lists.Store
 	queue         *queue.RedisQueue
 	logger        *logging.Logger
 	auditLogger   *audit.Logger
@@ -61,8 +66,9 @@ func NewServer(cfg *config.Config, db *sql.DB, authenticator *auth.Authenticator
 
 	// Create template function map
 	funcMap := template.FuncMap{
-		"sub": func(a, b int) int { return a - b },
-		"add": func(a, b int) int { return a + b },
+		"sub":      func(a, b int) int { return a - b },
+		"subtract": func(a, b int) int { return a - b },
+		"add":      func(a, b int) int { return a + b },
 		"untilStep": func(start, stop, step int) []int {
 			result := []int{}
 			for i := start; i < stop; i += step {
@@ -70,7 +76,8 @@ func NewServer(cfg *config.Config, db *sql.DB, authenticator *auth.Authenticator
 			}
 			return result
 		},
-		"safeHTML": func(s string) template.HTML { return template.HTML(s) },
+		// SECURITY: safeHTML function removed - bypasses HTML escaping and could enable XSS
+		// If you need to render trusted HTML, use a proper sanitizer library instead
 	}
 
 	// Create template map
@@ -95,6 +102,21 @@ func NewServer(cfg *config.Config, db *sql.DB, authenticator *auth.Authenticator
 		"system.html",
 		"2fa_setup.html",
 		"email_preview.html",
+		"features.html",
+		"features_screener.html",
+		"features_aliases.html",
+		"features_alias_form.html",
+		"features_vip.html",
+		"features_vip_form.html",
+		"features_preferences.html",
+		"features_scheduled.html",
+		"features_scheduled_form.html",
+		"features_snoozed.html",
+		"lists.html",
+		"list_form.html",
+		"list_members.html",
+		"list_moderation.html",
+		"list_archives.html",
 	}
 
 	for _, page := range pages {
@@ -168,6 +190,16 @@ func NewServer(cfg *config.Config, db *sql.DB, authenticator *auth.Authenticator
 	return s, nil
 }
 
+// SetFeaturesStore sets the features store for unique feature APIs
+func (s *Server) SetFeaturesStore(store *features.Store) {
+	s.featuresStore = store
+}
+
+// SetListsStore sets the lists store for mailing list management
+func (s *Server) SetListsStore(store *lists.Store) {
+	s.listsStore = store
+}
+
 // Start starts the admin server
 func (s *Server) Start(listen string) error {
 	mux := http.NewServeMux()
@@ -204,6 +236,7 @@ func (s *Server) Start(listen string) error {
 	mux.HandleFunc("/admin/domains/dkim/rotate/", s.withAuth(s.handleDKIMRotate))
 	mux.HandleFunc("/admin/domains/dns/verify/", s.withAuth(s.handleDNSVerify))
 	mux.HandleFunc("/admin/domains/dns/", s.withAuth(s.handleDomainDNS))
+	mux.HandleFunc("/admin/domains/verify-ownership/", s.withAuth(s.handleDomainVerifyOwnership))
 	mux.HandleFunc("/admin/sieve/", s.withAuth(s.handleSieve))
 	mux.HandleFunc("/admin/logs", s.withAuth(s.handleLogs))
 	mux.HandleFunc("/admin/logs/auth", s.withAuth(s.handleAuthLogs))
@@ -225,9 +258,52 @@ func (s *Server) Start(listen string) error {
 	mux.HandleFunc("/admin/2fa/setup", s.withAuth(s.handle2FASetup))
 	mux.HandleFunc("/admin/2fa/verify", s.handle2FAVerify) // No auth - used during login
 
+	// Features management routes (Screener, Aliases, etc.)
+	mux.HandleFunc("/admin/features", s.withAuth(s.handleFeatures))
+	mux.HandleFunc("/admin/features/screener", s.withAuth(s.handleScreener))
+	mux.HandleFunc("/admin/features/screener/approve/", s.withAuth(s.handleScreenerAction))
+	mux.HandleFunc("/admin/features/screener/block/", s.withAuth(s.handleScreenerAction))
+	mux.HandleFunc("/admin/features/screener/delete/", s.withAuth(s.handleScreenerAction))
+	mux.HandleFunc("/admin/features/aliases", s.withAuth(s.handleAliases))
+	mux.HandleFunc("/admin/features/aliases/add", s.withAuth(s.handleAliasAdd))
+	mux.HandleFunc("/admin/features/aliases/toggle/", s.withAuth(s.handleAliasToggle))
+	mux.HandleFunc("/admin/features/aliases/delete/", s.withAuth(s.handleAliasDelete))
+	mux.HandleFunc("/admin/features/vip", s.withAuth(s.handleVIP))
+	mux.HandleFunc("/admin/features/vip/add", s.withAuth(s.handleVIPAdd))
+	mux.HandleFunc("/admin/features/vip/delete/", s.withAuth(s.handleVIPRemove))
+	mux.HandleFunc("/admin/features/preferences", s.withAuth(s.handlePreferences))
+	mux.HandleFunc("/admin/features/scheduled", s.withAuth(s.handleScheduled))
+	mux.HandleFunc("/admin/features/scheduled/add", s.withAuth(s.handleScheduledAdd))
+	mux.HandleFunc("/admin/features/scheduled/cancel/", s.withAuth(s.handleScheduledCancel))
+	mux.HandleFunc("/admin/features/snoozed", s.withAuth(s.handleSnoozed))
+	mux.HandleFunc("/admin/features/snoozed/cancel/", s.withAuth(s.handleSnoozeCancel))
+
+	// Mailing lists management routes
+	mux.HandleFunc("/admin/lists", s.withAuth(s.handleLists))
+	mux.HandleFunc("/admin/lists/add", s.withAuth(s.handleListAdd))
+	mux.HandleFunc("/admin/lists/edit/", s.withAuth(s.handleListEdit))
+	mux.HandleFunc("/admin/lists/delete/", s.withAuth(s.handleListDelete))
+	mux.HandleFunc("/admin/lists/members/", s.withAuth(s.handleListMembers))
+	mux.HandleFunc("/admin/lists/members/add/", s.withAuth(s.handleListMemberAdd))
+	mux.HandleFunc("/admin/lists/members/remove/", s.withAuth(s.handleListMemberRemove))
+	mux.HandleFunc("/admin/lists/moderation/", s.withAuth(s.handleListModeration))
+	mux.HandleFunc("/admin/lists/moderation/approve/", s.withAuth(s.handleListModerationAction))
+	mux.HandleFunc("/admin/lists/moderation/reject/", s.withAuth(s.handleListModerationAction))
+	mux.HandleFunc("/admin/lists/archives/", s.withAuth(s.handleListArchives))
+
+	// User portal (separate auth from admin)
+	userPortal, err := userportal.NewServer(s.db, s.authenticator, s.auditLogger, s.logger)
+	if err != nil {
+		s.logger.Error("Failed to initialize user portal", "error", err.Error())
+	} else {
+		userPortal.RegisterRoutes(mux)
+		s.logger.Info("User portal routes registered at /account/")
+	}
+
 	// Build middleware chain (order matters: innermost first, then wrapping outward)
-	// The execution order will be: logging -> security headers -> panic recovery -> CSRF -> routes
+	// The execution order will be: logging -> security headers -> panic recovery -> domain detection -> CSRF -> routes
 	handler := s.withCSRF(mux)
+	handler = s.withDomainDetection(handler)
 	handler = s.withPanicRecovery(handler)
 	handler = s.withSecurityHeaders(handler)
 	handler = s.withRequestLogging(handler)
@@ -324,13 +400,16 @@ func (s *Server) Shutdown(ctx context.Context) error {
 
 // Stats holds dashboard statistics
 type Stats struct {
-	TotalUsers     int
-	TotalDomains   int
-	TotalMessages  int
-	QueuePending   int
-	QueueFailed    int
-	ServerUptime   string
-	RecentActivity []ActivityItem
+	TotalUsers        int
+	TotalDomains      int
+	TotalMessages     int
+	QueuePending      int
+	QueueFailed       int
+	TotalLists        int
+	TotalListMembers  int
+	PendingModeration int
+	ServerUptime      string
+	RecentActivity    []ActivityItem
 }
 
 // ActivityItem represents a recent activity entry
@@ -364,6 +443,17 @@ func (s *Server) getStats(ctx context.Context) (*Stats, error) {
 			stats.QueuePending = int(queueStats.Pending)
 			stats.QueueFailed = int(queueStats.Failed)
 		}
+	}
+
+	// Get mailing list stats (non-critical, log errors but continue)
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mailing_lists WHERE is_active = 1").Scan(&stats.TotalLists); err != nil {
+		s.logger.Debug("Failed to get mailing list count", "error", err.Error())
+	}
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM list_members").Scan(&stats.TotalListMembers); err != nil {
+		s.logger.Debug("Failed to get list members count", "error", err.Error())
+	}
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM list_moderation_queue WHERE status = 'pending'").Scan(&stats.PendingModeration); err != nil {
+		s.logger.Debug("Failed to get pending moderation count", "error", err.Error())
 	}
 
 	// Get recent auth activity
