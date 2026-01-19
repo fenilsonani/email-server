@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"time"
 
 	"github.com/fenilsonani/email-server/internal/config"
@@ -310,4 +311,116 @@ func (f *FixCleanupQueue) Apply(ctx context.Context, cfg *config.Config, q *queu
 	}
 
 	return q.Cleanup(ctx, olderThan)
+}
+
+// FixRestartRedis restarts the Redis service.
+type FixRestartRedis struct{}
+
+func (f *FixRestartRedis) ID() string {
+	return "redis-restart"
+}
+
+func (f *FixRestartRedis) Description() string {
+	return "Restart Redis service"
+}
+
+func (f *FixRestartRedis) CanAutoFix() bool {
+	return true
+}
+
+func (f *FixRestartRedis) DryRun(ctx context.Context, cfg *config.Config, _ *queue.RedisQueue) string {
+	return "Would run: systemctl restart redis"
+}
+
+func (f *FixRestartRedis) Apply(ctx context.Context, cfg *config.Config, _ *queue.RedisQueue) error {
+	cmd := exec.CommandContext(ctx, "systemctl", "restart", "redis")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to restart redis: %w\nOutput: %s", err, string(output))
+	}
+	return nil
+}
+
+// FixStartRedis starts the Redis service if stopped.
+type FixStartRedis struct{}
+
+func (f *FixStartRedis) ID() string {
+	return "redis-down"
+}
+
+func (f *FixStartRedis) Description() string {
+	return "Start Redis service"
+}
+
+func (f *FixStartRedis) CanAutoFix() bool {
+	return true
+}
+
+func (f *FixStartRedis) DryRun(ctx context.Context, cfg *config.Config, _ *queue.RedisQueue) string {
+	return "Would run: systemctl start redis"
+}
+
+func (f *FixStartRedis) Apply(ctx context.Context, cfg *config.Config, _ *queue.RedisQueue) error {
+	cmd := exec.CommandContext(ctx, "systemctl", "start", "redis")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to start redis: %w\nOutput: %s", err, string(output))
+	}
+	return nil
+}
+
+// FixRestartMailserver restarts the mail server service.
+type FixRestartMailserver struct{}
+
+func (f *FixRestartMailserver) ID() string {
+	return "mailserver-restart"
+}
+
+func (f *FixRestartMailserver) Description() string {
+	return "Restart mail server service"
+}
+
+func (f *FixRestartMailserver) CanAutoFix() bool {
+	return true
+}
+
+func (f *FixRestartMailserver) DryRun(ctx context.Context, cfg *config.Config, _ *queue.RedisQueue) string {
+	return "Would run: systemctl restart mailserver"
+}
+
+func (f *FixRestartMailserver) Apply(ctx context.Context, cfg *config.Config, _ *queue.RedisQueue) error {
+	cmd := exec.CommandContext(ctx, "systemctl", "restart", "mailserver")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to restart mailserver: %w\nOutput: %s", err, string(output))
+	}
+	return nil
+}
+
+// FixStartMailserver starts the mail server service if stopped.
+type FixStartMailserver struct{}
+
+func (f *FixStartMailserver) ID() string {
+	return "mailserver-down"
+}
+
+func (f *FixStartMailserver) Description() string {
+	return "Start mail server service"
+}
+
+func (f *FixStartMailserver) CanAutoFix() bool {
+	return true
+}
+
+func (f *FixStartMailserver) DryRun(ctx context.Context, cfg *config.Config, _ *queue.RedisQueue) string {
+	return "Would run: systemctl start mailserver"
+}
+
+func (f *FixStartMailserver) Apply(ctx context.Context, cfg *config.Config, _ *queue.RedisQueue) error {
+	cmd := exec.CommandContext(ctx, "systemctl", "start", "mailserver")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to start mailserver: %w\nOutput: %s", err, string(output))
+	}
+	return nil
 }

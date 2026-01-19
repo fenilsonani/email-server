@@ -223,16 +223,27 @@ func checkMaildirPermissions(ctx context.Context, cfg *config.Config, _ *queue.R
 	mode := info.Mode().Perm()
 	result.Details["mode"] = fmt.Sprintf("%04o", mode)
 
-	if mode&0077 != 0 {
+	// Check for world-readable/writable (security risk)
+	if mode&0007 != 0 {
+		result.Status = StatusFail
+		result.Message = fmt.Sprintf("Maildir is world-accessible (%04o) - security risk!", mode)
+		result.Help = fmt.Sprintf("Fix: chmod 0750 %s", path)
+		result.FixID = "maildir-permissions"
+		return result
+	}
+
+	// 0750 or 0700 are acceptable
+	if mode&0070 != 0 && mode&0020 != 0 {
+		// Group write is risky
 		result.Status = StatusWarn
-		result.Message = fmt.Sprintf("Maildir has permissive permissions (%04o)", mode)
+		result.Message = fmt.Sprintf("Maildir has group-write permission (%04o)", mode)
 		result.Help = fmt.Sprintf("Consider: chmod 0750 %s", path)
 		result.FixID = "maildir-permissions"
 		return result
 	}
 
 	result.Status = StatusPass
-	result.Message = "Maildir is writable"
+	result.Message = fmt.Sprintf("Maildir permissions OK (%04o)", mode)
 	return result
 }
 
@@ -319,6 +330,7 @@ func checkServiceRunning(ctx context.Context, cfg *config.Config, _ *queue.Redis
 	result.Status = StatusFail
 	result.Message = "Mail server is not running"
 	result.Help = "Start with: systemctl start mailserver"
+	result.FixID = "mailserver-down"
 	return result
 }
 
@@ -346,6 +358,7 @@ func checkHealthEndpoint(ctx context.Context, cfg *config.Config, _ *queue.Redis
 		result.Status = StatusFail
 		result.Message = "Cannot reach health endpoint"
 		result.Help = "Check if admin server is running"
+		result.FixID = "mailserver-restart"
 		return result
 	}
 	defer resp.Body.Close()
@@ -386,6 +399,7 @@ func checkRedisConnection(ctx context.Context, cfg *config.Config, q *queue.Redi
 			result.Status = StatusFail
 			result.Message = "Redis not reachable"
 			result.Help = "Check: systemctl status redis"
+			result.FixID = "redis-down"
 			return result
 		}
 		conn.Close()
@@ -406,6 +420,7 @@ func checkRedisConnection(ctx context.Context, cfg *config.Config, q *queue.Redi
 		result.Status = StatusFail
 		result.Message = fmt.Sprintf("Redis ping failed: %v", err)
 		result.Help = "Check Redis connection settings"
+		result.FixID = "redis-restart"
 		return result
 	}
 

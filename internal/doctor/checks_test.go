@@ -118,13 +118,13 @@ func TestCheckMaildirPermissions(t *testing.T) {
 			wantStatus: StatusFail,
 		},
 		{
-			name: "permissive permissions",
+			name: "world-accessible permissions",
 			setupDir: func() string {
 				dir := filepath.Join(tmpDir, "permissive")
 				os.MkdirAll(dir, 0777)
 				return dir
 			},
-			wantStatus: StatusWarn,
+			wantStatus: StatusFail, // World-accessible is a security risk
 		},
 	}
 

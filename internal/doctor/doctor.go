@@ -117,6 +117,10 @@ func (d *Doctor) registerDefaultFixes() {
 	d.RegisterFix(&FixMaildirPermissions{})
 	d.RegisterFix(&FixRunMigrations{})
 	d.RegisterFix(&FixRecoverStaleQueue{})
+	d.RegisterFix(&FixRestartRedis{})
+	d.RegisterFix(&FixStartRedis{})
+	d.RegisterFix(&FixRestartMailserver{})
+	d.RegisterFix(&FixStartMailserver{})
 }
 
 // RegisterCheck adds a health check for a specific category.
