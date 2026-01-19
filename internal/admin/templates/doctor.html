@@ -1,0 +1,482 @@
+<div class="breadcrumbs">
+    <a href="/admin/">home</a>
+    <span>&gt;</span>
+    <a href="/admin/tools/dns">tools</a>
+    <span>&gt;</span>
+    <span>diagnostics</span>
+</div>
+
+<div class="page-header">
+    <h1>Server Diagnostics</h1>
+    <div class="page-actions">
+        <button class="btn btn-secondary" onclick="refreshDiagnostics()">Refresh</button>
+        <button class="btn btn-primary" onclick="showFixModal()" {{if eq (len .Results.FixableIDs) 0}}disabled{{end}}>
+            Fix Issues ({{len .Results.FixableIDs}})
+        </button>
+    </div>
+</div>
+
+<!-- Summary Stats -->
+<div class="stats-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1rem; margin-bottom: 2rem;">
+    <div class="card stat-card {{if gt .Results.Failed 0}}stat-danger{{else}}stat-success{{end}}">
+        <div class="stat-value">{{.Results.Passed}}</div>
+        <div class="stat-label">Passed</div>
+    </div>
+    <div class="card stat-card {{if gt .Results.Failed 0}}stat-danger{{else}}stat-success{{end}}">
+        <div class="stat-value">{{.Results.Failed}}</div>
+        <div class="stat-label">Failed</div>
+    </div>
+    <div class="card stat-card {{if gt .Results.Warned 0}}stat-warning{{else}}stat-success{{end}}">
+        <div class="stat-value">{{.Results.Warned}}</div>
+        <div class="stat-label">Warnings</div>
+    </div>
+    <div class="card stat-card">
+        <div class="stat-value">{{if .Results.Healthy}}Healthy{{else}}Unhealthy{{end}}</div>
+        <div class="stat-label">Status</div>
+    </div>
+</div>
+
+<!-- Health Checks by Category -->
+<div class="card" style="margin-bottom: 1.5rem;">
+    <h2>Health Checks</h2>
+
+    {{range .Categories}}
+    {{$checks := index $.ChecksByCategory .Key}}
+    {{if $checks}}
+    <div class="check-category" style="margin-bottom: 1.5rem;">
+        <h3 style="font-size: 1rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.75rem;">
+            {{.Label}}
+        </h3>
+        <div class="check-list">
+            {{range $checks}}
+            <div class="check-item {{if eq .Status "pass"}}check-pass{{else if eq .Status "fail"}}check-fail{{else}}check-warn{{end}}">
+                <div class="check-status">
+                    {{if eq .Status "pass"}}
+                    <span class="status-icon status-pass">&#10003;</span>
+                    {{else if eq .Status "fail"}}
+                    <span class="status-icon status-fail">&#10007;</span>
+                    {{else}}
+                    <span class="status-icon status-warn">!</span>
+                    {{end}}
+                </div>
+                <div class="check-content">
+                    <div class="check-name">{{.Name}}</div>
+                    <div class="check-message">{{.Message}}</div>
+                    {{if .Help}}
+                    <div class="check-help">{{.Help}}</div>
+                    {{end}}
+                    {{if .FixID}}
+                    <div class="check-fix">
+                        <button class="btn btn-sm btn-secondary" onclick="applyFix('{{.FixID}}', true)">Preview Fix</button>
+                        <button class="btn btn-sm btn-primary" onclick="applyFix('{{.FixID}}', false)">Apply Fix</button>
+                    </div>
+                    {{end}}
+                </div>
+                <div class="check-duration" title="Check duration">
+                    {{if .Duration}}{{.Duration}}{{end}}
+                </div>
+            </div>
+            {{end}}
+        </div>
+    </div>
+    {{end}}
+    {{end}}
+</div>
+
+<!-- Config vs Reality Comparison -->
+<div class="card">
+    <h2>Configuration vs Reality</h2>
+    <p style="color: var(--text-muted); margin-bottom: 1rem;">
+        Compares your configuration file settings against the actual runtime state.
+    </p>
+
+    <div class="comparison-summary" style="display: flex; gap: 1rem; margin-bottom: 1rem;">
+        <span class="badge badge-success">{{.Comparison.Matched}} Matched</span>
+        <span class="badge badge-danger">{{.Comparison.Mismatched}} Mismatched</span>
+        <span class="badge badge-warning">{{.Comparison.Errors}} Errors</span>
+    </div>
+
+    <table class="comparison-table">
+        <thead>
+            <tr>
+                <th style="width: 40px;">Status</th>
+                <th>Item</th>
+                <th>Config Value</th>
+                <th>Actual Value</th>
+                <th>Message</th>
+            </tr>
+        </thead>
+        <tbody>
+            {{range .Comparison.Comparisons}}
+            <tr class="{{if eq .Status "pass"}}row-pass{{else if eq .Status "fail"}}row-fail{{else}}row-warn{{end}}">
+                <td>
+                    {{if eq .Status "pass"}}
+                    <span class="status-icon status-pass">&#10003;</span>
+                    {{else if eq .Status "fail"}}
+                    <span class="status-icon status-fail">&#10007;</span>
+                    {{else}}
+                    <span class="status-icon status-warn">!</span>
+                    {{end}}
+                </td>
+                <td><strong>{{.Name}}</strong></td>
+                <td><code>{{.ConfigValue}}</code></td>
+                <td><code>{{.ActualValue}}</code></td>
+                <td>{{.Message}}</td>
+            </tr>
+            {{end}}
+        </tbody>
+    </table>
+</div>
+
+<!-- Fix Modal -->
+<div id="fixModal" class="modal" style="display: none;">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h3>Apply Fixes</h3>
+            <button class="modal-close" onclick="closeFixModal()">&times;</button>
+        </div>
+        <div class="modal-body">
+            <p>The following issues can be automatically fixed:</p>
+            <ul id="fixableList">
+                {{range .Results.FixableIDs}}
+                <li>{{.}}</li>
+                {{end}}
+            </ul>
+            <div class="form-group">
+                <label>
+                    <input type="checkbox" id="dryRunCheckbox" checked>
+                    Dry run (preview changes without applying)
+                </label>
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-secondary" onclick="closeFixModal()">Cancel</button>
+            <button class="btn btn-primary" onclick="applyAllFixes()">Apply All Fixes</button>
+        </div>
+    </div>
+</div>
+
+<!-- Fix Result Modal -->
+<div id="fixResultModal" class="modal" style="display: none;">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h3>Fix Results</h3>
+            <button class="modal-close" onclick="closeFixResultModal()">&times;</button>
+        </div>
+        <div class="modal-body" id="fixResultContent">
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-primary" onclick="closeFixResultModal(); refreshDiagnostics();">OK</button>
+        </div>
+    </div>
+</div>
+
+<style>
+.stats-grid .stat-card {
+    text-align: center;
+    padding: 1.5rem;
+}
+.stat-value {
+    font-size: 2rem;
+    font-weight: bold;
+}
+.stat-label {
+    color: var(--text-muted);
+    margin-top: 0.25rem;
+}
+.stat-success .stat-value {
+    color: var(--success, #22c55e);
+}
+.stat-danger .stat-value {
+    color: var(--danger, #ef4444);
+}
+.stat-warning .stat-value {
+    color: var(--warning, #f59e0b);
+}
+
+.check-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+.check-item {
+    display: flex;
+    align-items: flex-start;
+    padding: 0.75rem;
+    background: var(--bg);
+    border-radius: 6px;
+    border-left: 3px solid transparent;
+}
+.check-pass {
+    border-left-color: var(--success, #22c55e);
+}
+.check-fail {
+    border-left-color: var(--danger, #ef4444);
+}
+.check-warn {
+    border-left-color: var(--warning, #f59e0b);
+}
+.check-status {
+    margin-right: 0.75rem;
+    font-size: 1.25rem;
+}
+.check-content {
+    flex: 1;
+}
+.check-name {
+    font-weight: 600;
+    margin-bottom: 0.25rem;
+}
+.check-message {
+    color: var(--text-muted);
+    font-size: 0.875rem;
+}
+.check-help {
+    margin-top: 0.5rem;
+    padding: 0.5rem;
+    background: var(--card-bg);
+    border-radius: 4px;
+    font-size: 0.875rem;
+    color: var(--primary);
+}
+.check-fix {
+    margin-top: 0.5rem;
+    display: flex;
+    gap: 0.5rem;
+}
+.check-duration {
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    white-space: nowrap;
+}
+
+.status-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    font-weight: bold;
+}
+.status-pass {
+    background: var(--success, #22c55e);
+    color: white;
+}
+.status-fail {
+    background: var(--danger, #ef4444);
+    color: white;
+}
+.status-warn {
+    background: var(--warning, #f59e0b);
+    color: white;
+}
+
+.comparison-table {
+    width: 100%;
+    border-collapse: collapse;
+}
+.comparison-table th,
+.comparison-table td {
+    padding: 0.75rem;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+}
+.comparison-table th {
+    background: var(--bg);
+    font-weight: 600;
+}
+.row-pass td:first-child {
+    color: var(--success, #22c55e);
+}
+.row-fail {
+    background: rgba(239, 68, 68, 0.05);
+}
+.row-fail td:first-child {
+    color: var(--danger, #ef4444);
+}
+.row-warn {
+    background: rgba(245, 158, 11, 0.05);
+}
+.row-warn td:first-child {
+    color: var(--warning, #f59e0b);
+}
+
+.badge {
+    display: inline-block;
+    padding: 0.25rem 0.5rem;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    font-weight: 600;
+}
+.badge-success {
+    background: var(--success, #22c55e);
+    color: white;
+}
+.badge-danger {
+    background: var(--danger, #ef4444);
+    color: white;
+}
+.badge-warning {
+    background: var(--warning, #f59e0b);
+    color: white;
+}
+
+.page-actions {
+    display: flex;
+    gap: 0.5rem;
+}
+
+.modal {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+}
+.modal-content {
+    background: var(--card-bg);
+    border-radius: 8px;
+    max-width: 500px;
+    width: 90%;
+    max-height: 80vh;
+    overflow-y: auto;
+}
+.modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 1rem;
+    border-bottom: 1px solid var(--border);
+}
+.modal-header h3 {
+    margin: 0;
+}
+.modal-close {
+    background: none;
+    border: none;
+    font-size: 1.5rem;
+    cursor: pointer;
+    color: var(--text-muted);
+}
+.modal-body {
+    padding: 1rem;
+}
+.modal-footer {
+    padding: 1rem;
+    border-top: 1px solid var(--border);
+    display: flex;
+    gap: 0.5rem;
+    justify-content: flex-end;
+}
+
+.btn-sm {
+    padding: 0.25rem 0.5rem;
+    font-size: 0.75rem;
+}
+</style>
+
+<script>
+function refreshDiagnostics() {
+    window.location.reload();
+}
+
+function showFixModal() {
+    document.getElementById('fixModal').style.display = 'flex';
+}
+
+function closeFixModal() {
+    document.getElementById('fixModal').style.display = 'none';
+}
+
+function closeFixResultModal() {
+    document.getElementById('fixResultModal').style.display = 'none';
+}
+
+function showFixResult(html) {
+    document.getElementById('fixResultContent').innerHTML = html;
+    document.getElementById('fixResultModal').style.display = 'flex';
+}
+
+function applyFix(fixId, dryRun) {
+    fetch('/admin/tools/doctor/api/fix', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRF-Token': '{{.CSRFToken}}'
+        },
+        body: JSON.stringify({
+            fix_id: fixId,
+            dry_run: dryRun
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        var html = '<div class="fix-result">';
+        if (data.success) {
+            html += '<div class="alert alert-success">';
+            html += '<strong>' + (data.dry_run ? 'Dry Run Result:' : 'Fix Applied:') + '</strong><br>';
+            html += data.message || 'Success';
+            html += '</div>';
+        } else {
+            html += '<div class="alert alert-danger">';
+            html += '<strong>Error:</strong><br>';
+            html += data.error || 'Unknown error';
+            html += '</div>';
+        }
+        html += '</div>';
+        showFixResult(html);
+    })
+    .catch(err => {
+        showFixResult('<div class="alert alert-danger">Request failed: ' + err + '</div>');
+    });
+}
+
+function applyAllFixes() {
+    var dryRun = document.getElementById('dryRunCheckbox').checked;
+    closeFixModal();
+
+    fetch('/admin/tools/doctor/api/fix-all', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRF-Token': '{{.CSRFToken}}'
+        },
+        body: JSON.stringify({
+            dry_run: dryRun
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        var html = '<div class="fix-results">';
+        html += '<h4>' + (data.dry_run ? 'Dry Run Results' : 'Fix Results') + '</h4>';
+
+        if (data.results && data.results.length > 0) {
+            data.results.forEach(function(result) {
+                var cls = result.success ? 'alert-success' : 'alert-danger';
+                html += '<div class="alert ' + cls + '" style="margin-bottom: 0.5rem;">';
+                html += '<strong>' + result.description + '</strong><br>';
+                html += result.message;
+                html += '</div>';
+            });
+        } else {
+            html += '<div class="alert alert-info">No fixes were applied.</div>';
+        }
+
+        if (data.error) {
+            html += '<div class="alert alert-danger">' + data.error + '</div>';
+        }
+
+        html += '</div>';
+        showFixResult(html);
+    })
+    .catch(err => {
+        showFixResult('<div class="alert alert-danger">Request failed: ' + err + '</div>');
+    });
+}
+</script>

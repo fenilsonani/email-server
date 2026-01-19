@@ -117,6 +117,7 @@ func NewServer(cfg *config.Config, db *sql.DB, authenticator *auth.Authenticator
 		"list_members.html",
 		"list_moderation.html",
 		"list_archives.html",
+		"doctor.html",
 	}
 
 	for _, page := range pages {
@@ -249,6 +250,12 @@ func (s *Server) Start(listen string) error {
 	mux.HandleFunc("/admin/api/stats", s.withAuth(s.handleAPIStats))
 	mux.HandleFunc("/admin/tools/dns", s.withAuth(s.handleDNSCheck))
 	mux.HandleFunc("/admin/tools/test-email", s.withAuth(s.handleTestEmail))
+	mux.HandleFunc("/admin/tools/doctor", s.withAuth(s.handleDoctor))
+	mux.HandleFunc("/admin/tools/doctor/api/check", s.withAuth(s.handleDoctorAPI))
+	mux.HandleFunc("/admin/tools/doctor/api/compare", s.withAuth(s.handleDoctorCompareAPI))
+	mux.HandleFunc("/admin/tools/doctor/api/fix", s.withAuth(s.handleDoctorFixAPI))
+	mux.HandleFunc("/admin/tools/doctor/api/fix-all", s.withAuth(s.handleDoctorFixAllAPI))
+	mux.HandleFunc("/admin/tools/doctor/api/category", s.withAuth(s.handleDoctorCategoryAPI))
 	mux.HandleFunc("/admin/system", s.withAuth(s.handleSystem))
 	mux.HandleFunc("/admin/system/backup", s.withAuth(s.handleBackup))
 	mux.HandleFunc("/admin/system/restore", s.withAuth(s.handleRestore))

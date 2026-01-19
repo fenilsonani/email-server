@@ -29,6 +29,7 @@ import (
 	"github.com/fenilsonani/email-server/internal/metrics"
 	"github.com/fenilsonani/email-server/internal/migration"
 	"github.com/fenilsonani/email-server/internal/queue"
+	"github.com/fenilsonani/email-server/internal/doctor"
 	"github.com/fenilsonani/email-server/internal/security"
 	"github.com/fenilsonani/email-server/internal/setup"
 	"github.com/fenilsonani/email-server/internal/sieve"
@@ -1965,18 +1966,360 @@ Use --force to skip non-critical checks (root, OS, systemd) for development/test
 	},
 }
 
+// Doctor command flags
+var (
+	doctorFormat   string
+	doctorVerbose  bool
+	doctorCategory []string
+	doctorDryRun   bool
+	doctorYes      bool
+	doctorNoColor  bool
+	doctorFixID    string
+)
+
 var doctorCmd = &cobra.Command{
 	Use:   "doctor",
-	Short: "Check health of running mail server",
-	Long:  `Runs health checks to diagnose issues with your mail server.`,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		results := setup.RunDoctor(cfg)
-		results.Print()
-		if !results.Healthy {
+	Short: "Diagnose server health and configuration",
+	Long: `Run comprehensive health checks on your mail server.
+
+Examples:
+  mailserver doctor              # Run all checks
+  mailserver doctor --format json  # JSON output
+  mailserver doctor check --category dns  # Check DNS only
+  mailserver doctor fix --dry-run  # Preview fixes
+  mailserver doctor fix --yes      # Apply all fixes`,
+	RunE: runDoctor,
+}
+
+var doctorCheckCmd = &cobra.Command{
+	Use:   "check",
+	Short: "Run specific health checks",
+	Long: `Run health checks for specific categories.
+
+Categories:
+  infrastructure (infra)  - Database, disk, memory
+  network (net)           - Ports, connectivity
+  security (sec)          - TLS, DKIM
+  dns                     - MX, SPF, DMARC
+  config                  - Configuration validation
+  queue                   - Message queue health`,
+	RunE: runDoctorCheck,
+}
+
+var doctorFixCmd = &cobra.Command{
+	Use:   "fix",
+	Short: "Auto-fix detected issues",
+	Long: `Automatically fix issues detected by the doctor.
+
+Use --dry-run to preview what would be fixed without making changes.
+Use --fix to apply a specific fix by ID.
+Use --yes to apply all fixable issues without confirmation.`,
+	RunE: runDoctorFix,
+}
+
+var doctorReportCmd = &cobra.Command{
+	Use:   "report",
+	Short: "Generate detailed diagnostic report",
+	Long:  `Generate a comprehensive report including health checks, config vs reality comparison, and recommendations.`,
+	RunE:  runDoctorReport,
+}
+
+var doctorCompareCmd = &cobra.Command{
+	Use:   "compare",
+	Short: "Compare configuration to actual state",
+	Long:  `Compare configured values against actual runtime state to identify mismatches.`,
+	RunE:  runDoctorCompare,
+}
+
+func runDoctor(cmd *cobra.Command, args []string) error {
+	// Initialize queue connection if possible (for queue checks)
+	var q *queue.RedisQueue
+	if cfg.Queue.RedisURL != "" {
+		retryMaxAge, _ := time.ParseDuration(cfg.Queue.RetryMaxAge)
+		if retryMaxAge == 0 {
+			retryMaxAge = 7 * 24 * time.Hour
+		}
+		dialTimeout, _ := time.ParseDuration(cfg.Queue.DialTimeout)
+		readTimeout, _ := time.ParseDuration(cfg.Queue.ReadTimeout)
+		writeTimeout, _ := time.ParseDuration(cfg.Queue.WriteTimeout)
+		q, _ = queue.NewRedisQueue(queue.Config{
+			RedisURL:       cfg.Queue.RedisURL,
+			Mode:           cfg.Queue.Mode,
+			SentinelMaster: cfg.Queue.SentinelMaster,
+			SentinelAddrs:  cfg.Queue.SentinelAddrs,
+			ClusterAddrs:   cfg.Queue.ClusterAddrs,
+			Password:       cfg.Queue.Password,
+			DB:             cfg.Queue.DB,
+			Prefix:         cfg.Queue.Prefix,
+			MaxRetries:     cfg.Queue.MaxRetries,
+			RetryMaxAge:    retryMaxAge,
+			PoolSize:       cfg.Queue.PoolSize,
+			MinIdleConns:   cfg.Queue.MinIdleConns,
+			DialTimeout:    dialTimeout,
+			ReadTimeout:    readTimeout,
+			WriteTimeout:   writeTimeout,
+		})
+		if q != nil {
+			defer q.Close()
+		}
+	}
+
+	d := doctor.New(cfg, q)
+	results := d.Run(context.Background())
+
+	doctor.PrintResults(results, doctorFormat, doctorVerbose, doctorNoColor)
+
+	if !results.Healthy {
+		os.Exit(1)
+	}
+	return nil
+}
+
+func runDoctorCheck(cmd *cobra.Command, args []string) error {
+	// Initialize queue connection if possible
+	var q *queue.RedisQueue
+	if cfg.Queue.RedisURL != "" {
+		retryMaxAge, _ := time.ParseDuration(cfg.Queue.RetryMaxAge)
+		if retryMaxAge == 0 {
+			retryMaxAge = 7 * 24 * time.Hour
+		}
+		dialTimeout, _ := time.ParseDuration(cfg.Queue.DialTimeout)
+		readTimeout, _ := time.ParseDuration(cfg.Queue.ReadTimeout)
+		writeTimeout, _ := time.ParseDuration(cfg.Queue.WriteTimeout)
+		q, _ = queue.NewRedisQueue(queue.Config{
+			RedisURL:       cfg.Queue.RedisURL,
+			Mode:           cfg.Queue.Mode,
+			SentinelMaster: cfg.Queue.SentinelMaster,
+			SentinelAddrs:  cfg.Queue.SentinelAddrs,
+			ClusterAddrs:   cfg.Queue.ClusterAddrs,
+			Password:       cfg.Queue.Password,
+			DB:             cfg.Queue.DB,
+			Prefix:         cfg.Queue.Prefix,
+			MaxRetries:     cfg.Queue.MaxRetries,
+			RetryMaxAge:    retryMaxAge,
+			PoolSize:       cfg.Queue.PoolSize,
+			MinIdleConns:   cfg.Queue.MinIdleConns,
+			DialTimeout:    dialTimeout,
+			ReadTimeout:    readTimeout,
+			WriteTimeout:   writeTimeout,
+		})
+		if q != nil {
+			defer q.Close()
+		}
+	}
+
+	d := doctor.New(cfg, q)
+
+	// If specific categories requested
+	if len(doctorCategory) > 0 {
+		allResults := &doctor.Results{
+			StartTime: time.Now(),
+			Checks:    make([]doctor.CheckResult, 0),
+		}
+
+		for _, catStr := range doctorCategory {
+			cat, ok := doctor.ParseCategory(catStr)
+			if !ok {
+				return fmt.Errorf("unknown category: %s", catStr)
+			}
+
+			results := d.RunCategory(context.Background(), cat)
+			allResults.Checks = append(allResults.Checks, results.Checks...)
+			allResults.Passed += results.Passed
+			allResults.Failed += results.Failed
+			allResults.Warned += results.Warned
+			allResults.FixableIDs = append(allResults.FixableIDs, results.FixableIDs...)
+		}
+
+		allResults.Healthy = allResults.Failed == 0
+		allResults.Duration = time.Since(allResults.StartTime)
+
+		doctor.PrintResults(allResults, doctorFormat, doctorVerbose, doctorNoColor)
+
+		if !allResults.Healthy {
 			os.Exit(1)
 		}
 		return nil
-	},
+	}
+
+	// Run all checks
+	results := d.Run(context.Background())
+	doctor.PrintResults(results, doctorFormat, doctorVerbose, doctorNoColor)
+
+	if !results.Healthy {
+		os.Exit(1)
+	}
+	return nil
+}
+
+func runDoctorFix(cmd *cobra.Command, args []string) error {
+	// Initialize queue connection if possible
+	var q *queue.RedisQueue
+	if cfg.Queue.RedisURL != "" {
+		retryMaxAge, _ := time.ParseDuration(cfg.Queue.RetryMaxAge)
+		if retryMaxAge == 0 {
+			retryMaxAge = 7 * 24 * time.Hour
+		}
+		dialTimeout, _ := time.ParseDuration(cfg.Queue.DialTimeout)
+		readTimeout, _ := time.ParseDuration(cfg.Queue.ReadTimeout)
+		writeTimeout, _ := time.ParseDuration(cfg.Queue.WriteTimeout)
+		q, _ = queue.NewRedisQueue(queue.Config{
+			RedisURL:       cfg.Queue.RedisURL,
+			Mode:           cfg.Queue.Mode,
+			SentinelMaster: cfg.Queue.SentinelMaster,
+			SentinelAddrs:  cfg.Queue.SentinelAddrs,
+			ClusterAddrs:   cfg.Queue.ClusterAddrs,
+			Password:       cfg.Queue.Password,
+			DB:             cfg.Queue.DB,
+			Prefix:         cfg.Queue.Prefix,
+			MaxRetries:     cfg.Queue.MaxRetries,
+			RetryMaxAge:    retryMaxAge,
+			PoolSize:       cfg.Queue.PoolSize,
+			MinIdleConns:   cfg.Queue.MinIdleConns,
+			DialTimeout:    dialTimeout,
+			ReadTimeout:    readTimeout,
+			WriteTimeout:   writeTimeout,
+		})
+		if q != nil {
+			defer q.Close()
+		}
+	}
+
+	d := doctor.New(cfg, q)
+
+	// Apply specific fix
+	if doctorFixID != "" {
+		message, err := d.ApplyFix(context.Background(), doctorFixID, doctorDryRun)
+		if err != nil {
+			return fmt.Errorf("failed to apply fix %s: %w", doctorFixID, err)
+		}
+		if doctorDryRun {
+			fmt.Printf("Dry run for %s:\n  %s\n", doctorFixID, message)
+		} else {
+			fmt.Printf("Fix %s applied successfully\n", doctorFixID)
+		}
+		return nil
+	}
+
+	// Run checks first to find fixable issues
+	results := d.Run(context.Background())
+
+	if len(results.FixableIDs) == 0 {
+		fmt.Println("No fixable issues found.")
+		return nil
+	}
+
+	// Apply all fixes
+	if !doctorYes && !doctorDryRun {
+		fmt.Printf("Found %d fixable issue(s). Apply fixes? [y/N] ", len(results.FixableIDs))
+		var response string
+		fmt.Scanln(&response)
+		if response != "y" && response != "Y" {
+			fmt.Println("Aborted.")
+			return nil
+		}
+	}
+
+	fixResults, err := d.ApplyAllFixable(context.Background(), results, doctorDryRun)
+	if err != nil {
+		return fmt.Errorf("failed to apply fixes: %w", err)
+	}
+
+	doctor.PrintFixResults(fixResults, doctorFormat, doctorVerbose, doctorNoColor)
+	return nil
+}
+
+func runDoctorReport(cmd *cobra.Command, args []string) error {
+	// Initialize queue connection if possible
+	var q *queue.RedisQueue
+	if cfg.Queue.RedisURL != "" {
+		retryMaxAge, _ := time.ParseDuration(cfg.Queue.RetryMaxAge)
+		if retryMaxAge == 0 {
+			retryMaxAge = 7 * 24 * time.Hour
+		}
+		dialTimeout, _ := time.ParseDuration(cfg.Queue.DialTimeout)
+		readTimeout, _ := time.ParseDuration(cfg.Queue.ReadTimeout)
+		writeTimeout, _ := time.ParseDuration(cfg.Queue.WriteTimeout)
+		q, _ = queue.NewRedisQueue(queue.Config{
+			RedisURL:       cfg.Queue.RedisURL,
+			Mode:           cfg.Queue.Mode,
+			SentinelMaster: cfg.Queue.SentinelMaster,
+			SentinelAddrs:  cfg.Queue.SentinelAddrs,
+			ClusterAddrs:   cfg.Queue.ClusterAddrs,
+			Password:       cfg.Queue.Password,
+			DB:             cfg.Queue.DB,
+			Prefix:         cfg.Queue.Prefix,
+			MaxRetries:     cfg.Queue.MaxRetries,
+			RetryMaxAge:    retryMaxAge,
+			PoolSize:       cfg.Queue.PoolSize,
+			MinIdleConns:   cfg.Queue.MinIdleConns,
+			DialTimeout:    dialTimeout,
+			ReadTimeout:    readTimeout,
+			WriteTimeout:   writeTimeout,
+		})
+		if q != nil {
+			defer q.Close()
+		}
+	}
+
+	d := doctor.New(cfg, q)
+
+	// Run all checks
+	results := d.Run(context.Background())
+
+	// Run config comparison
+	comparison := doctor.CompareConfigToReality(context.Background(), cfg, q)
+
+	// Print results
+	doctor.PrintResults(results, doctorFormat, doctorVerbose, doctorNoColor)
+	doctor.PrintComparison(comparison, doctorFormat, doctorVerbose, doctorNoColor)
+
+	if !results.Healthy {
+		os.Exit(1)
+	}
+	return nil
+}
+
+func runDoctorCompare(cmd *cobra.Command, args []string) error {
+	// Initialize queue connection if possible
+	var q *queue.RedisQueue
+	if cfg.Queue.RedisURL != "" {
+		retryMaxAge, _ := time.ParseDuration(cfg.Queue.RetryMaxAge)
+		if retryMaxAge == 0 {
+			retryMaxAge = 7 * 24 * time.Hour
+		}
+		dialTimeout, _ := time.ParseDuration(cfg.Queue.DialTimeout)
+		readTimeout, _ := time.ParseDuration(cfg.Queue.ReadTimeout)
+		writeTimeout, _ := time.ParseDuration(cfg.Queue.WriteTimeout)
+		q, _ = queue.NewRedisQueue(queue.Config{
+			RedisURL:       cfg.Queue.RedisURL,
+			Mode:           cfg.Queue.Mode,
+			SentinelMaster: cfg.Queue.SentinelMaster,
+			SentinelAddrs:  cfg.Queue.SentinelAddrs,
+			ClusterAddrs:   cfg.Queue.ClusterAddrs,
+			Password:       cfg.Queue.Password,
+			DB:             cfg.Queue.DB,
+			Prefix:         cfg.Queue.Prefix,
+			MaxRetries:     cfg.Queue.MaxRetries,
+			RetryMaxAge:    retryMaxAge,
+			PoolSize:       cfg.Queue.PoolSize,
+			MinIdleConns:   cfg.Queue.MinIdleConns,
+			DialTimeout:    dialTimeout,
+			ReadTimeout:    readTimeout,
+			WriteTimeout:   writeTimeout,
+		})
+		if q != nil {
+			defer q.Close()
+		}
+	}
+
+	comparison := doctor.CompareConfigToReality(context.Background(), cfg, q)
+	doctor.PrintComparison(comparison, doctorFormat, doctorVerbose, doctorNoColor)
+
+	if comparison.Mismatched > 0 {
+		os.Exit(1)
+	}
+	return nil
 }
 
 // Database migration commands
@@ -2309,6 +2652,23 @@ func init() {
 	setupCmd.Flags().BoolVarP(&forceSetup, "force", "f", false, "Skip non-critical checks (root, OS, systemd)")
 	rootCmd.AddCommand(preflightCmd)
 	rootCmd.AddCommand(setupCmd)
+
+	// Doctor commands with subcommands and flags
+	doctorCmd.PersistentFlags().StringVarP(&doctorFormat, "format", "f", "text", "Output format (text, json, markdown)")
+	doctorCmd.PersistentFlags().BoolVarP(&doctorVerbose, "verbose", "v", false, "Show detailed output")
+	doctorCmd.PersistentFlags().BoolVar(&doctorNoColor, "no-color", false, "Disable colored output")
+
+	doctorCheckCmd.Flags().StringSliceVar(&doctorCategory, "category", nil, "Check specific categories (infra, network, security, dns, config, queue)")
+	doctorCmd.AddCommand(doctorCheckCmd)
+
+	doctorFixCmd.Flags().BoolVar(&doctorDryRun, "dry-run", false, "Preview fixes without applying")
+	doctorFixCmd.Flags().BoolVarP(&doctorYes, "yes", "y", false, "Apply all fixes without confirmation")
+	doctorFixCmd.Flags().StringVar(&doctorFixID, "fix", "", "Apply specific fix by ID")
+	doctorCmd.AddCommand(doctorFixCmd)
+
+	doctorCmd.AddCommand(doctorReportCmd)
+	doctorCmd.AddCommand(doctorCompareCmd)
+
 	rootCmd.AddCommand(doctorCmd)
 
 	// Database migration commands
