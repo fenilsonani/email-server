@@ -30,14 +30,6 @@ type Config struct {
 	Updater      UpdaterConfig      `koanf:"updater"`
 }
 
-// IMAPConfig holds IMAP-specific configuration
-type IMAPConfig struct {
-	IdleKeepaliveInterval string `koanf:"idle_keepalive_interval"` // IDLE keepalive interval
-	TCPKeepalivePeriod    string `koanf:"tcp_keepalive_period"`     // TCP keepalive period
-	MaxConnections        int    `koanf:"max_connections"`          // Maximum concurrent connections
-	MaxConnectionsPerIP   int    `koanf:"max_connections_per_ip"`   // Maximum connections per IP
-}
-
 // ServerConfig holds server-related configuration
 type ServerConfig struct {
 	Hostname        string     `koanf:"hostname"`         // mail.example.com

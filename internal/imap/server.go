@@ -187,6 +187,9 @@ type Server struct {
 	// Search engine for full-text search (optional)
 	searchEngine search.SearchEngine
 
+	// Search engine for full-text search (optional)
+	searchEngine search.SearchEngine
+
 	// Mailbox trackers for IDLE notifications with LRU eviction
 	trackersMu sync.RWMutex
 	trackers   map[int64]*trackerEntry
