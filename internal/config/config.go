@@ -26,6 +26,7 @@ type Config struct {
 	Sieve        SieveConfig        `koanf:"sieve"`
 	Autodiscover AutodiscoverConfig `koanf:"autodiscover"`
 	API          APIConfig          `koanf:"api"`
+	Search       SearchConfig       `koanf:"search"`
 }
 
 // ServerConfig holds server-related configuration
@@ -177,6 +178,22 @@ type APIConfig struct {
 	MaxTotalAttachmentsSizeMB int      `koanf:"max_total_attachments_size_mb"` // Max total attachments size in MB (default 25)
 }
 
+// SearchConfig holds full-text search configuration
+type SearchConfig struct {
+	Enabled          bool   `koanf:"enabled"`           // Enable full-text search
+	Engine           string `koanf:"engine"`            // Search engine: bleve, sqlite, postgres, auto
+	IndexPath        string `koanf:"index_path"`        // Path for Bleve index
+	Realtime         bool   `koanf:"realtime"`          // Enable real-time indexing
+	BatchSize        int    `koanf:"batch_size"`        // Batch size for indexing
+	FlushInterval    string `koanf:"flush_interval"`    // Flush interval for batches
+	Timeout          string `koanf:"timeout"`           // Search timeout
+	FuzzyEnabled     bool   `koanf:"fuzzy_enabled"`     // Enable fuzzy matching
+	FuzzyDistance    int    `koanf:"fuzzy_distance"`    // Fuzzy edit distance
+	HighlightEnabled bool   `koanf:"highlight_enabled"` // Enable result highlighting
+	MaxResults       int    `koanf:"max_results"`       // Maximum search results
+	Workers          int    `koanf:"workers"`           // Number of indexing workers
+}
+
 // DefaultConfig returns a configuration with sensible defaults
 func DefaultConfig() *Config {
 	return &Config{
@@ -273,6 +290,20 @@ func DefaultConfig() *Config {
 			Listen:           "0.0.0.0",
 			RateLimitDefault: 1000,
 			EnableTracking:   true,
+		},
+		Search: SearchConfig{
+			Enabled:          true,
+			Engine:           "auto",
+			IndexPath:        "/var/lib/mailserver/search.bleve",
+			Realtime:         true,
+			BatchSize:        100,
+			FlushInterval:    "100ms",
+			Timeout:          "5s",
+			FuzzyEnabled:     true,
+			FuzzyDistance:    2,
+			HighlightEnabled: true,
+			MaxResults:       1000,
+			Workers:          2,
 		},
 	}
 }

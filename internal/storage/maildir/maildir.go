@@ -432,6 +432,9 @@ func (s *Store) AppendMessage(ctx context.Context, mailboxID int64, flags []stor
 	// Notify IDLE listeners via the maildir
 	dir.Unseen()
 
+	// Trigger search indexing hook (async)
+	go triggerSearchAppend(ctx, mailboxID, uid)
+
 	return &storage.Message{
 		ID:           msgID,
 		MailboxID:    mailboxID,
@@ -795,6 +798,11 @@ func (s *Store) ExpungeMailbox(ctx context.Context, mailboxID int64) ([]uint32, 
 			"DELETE FROM messages WHERE mailbox_id = ? AND flags LIKE '%\\Deleted%'",
 			mailboxID,
 		)
+
+		// Trigger search deletion hooks (async)
+		for _, uid := range expunged {
+			go triggerSearchExpunge(ctx, mailboxID, uid)
+		}
 	}
 
 	return expunged, err
@@ -1030,4 +1038,34 @@ func stringToFlags(s string) []storage.Flag {
 		}
 	}
 	return flags
+}
+
+// Search hook variables - can be set by the search package
+var (
+	searchAppendHook  func(ctx context.Context, mailboxID int64, uid uint32)
+	searchExpungeHook func(ctx context.Context, mailboxID int64, uid uint32)
+)
+
+// SetSearchAppendHook sets the hook called when a message is appended.
+func SetSearchAppendHook(hook func(ctx context.Context, mailboxID int64, uid uint32)) {
+	searchAppendHook = hook
+}
+
+// SetSearchExpungeHook sets the hook called when a message is expunged.
+func SetSearchExpungeHook(hook func(ctx context.Context, mailboxID int64, uid uint32)) {
+	searchExpungeHook = hook
+}
+
+// triggerSearchAppend calls the search append hook if set.
+func triggerSearchAppend(ctx context.Context, mailboxID int64, uid uint32) {
+	if searchAppendHook != nil {
+		searchAppendHook(ctx, mailboxID, uid)
+	}
+}
+
+// triggerSearchExpunge calls the search expunge hook if set.
+func triggerSearchExpunge(ctx context.Context, mailboxID int64, uid uint32) {
+	if searchExpungeHook != nil {
+		searchExpungeHook(ctx, mailboxID, uid)
+	}
 }

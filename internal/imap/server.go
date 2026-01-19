@@ -12,6 +12,7 @@ import (
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapserver"
 	"github.com/fenilsonani/email-server/internal/auth"
+	"github.com/fenilsonani/email-server/internal/search"
 	"github.com/fenilsonani/email-server/internal/storage/maildir"
 )
 
@@ -133,6 +134,9 @@ type Server struct {
 	listener      net.Listener
 	tlsListener   net.Listener
 
+	// Search engine for full-text search (optional)
+	searchEngine search.SearchEngine
+
 	// Mailbox trackers for IDLE notifications with LRU eviction
 	trackersMu sync.RWMutex
 	trackers   map[int64]*trackerEntry
@@ -173,6 +177,11 @@ func NewServer(authenticator *auth.Authenticator, store *maildir.Store, addr, tl
 
 	log.Printf("IMAP v2 server created with IDLE support")
 	return s
+}
+
+// SetSearchEngine sets the search engine for full-text search.
+func (s *Server) SetSearchEngine(engine search.SearchEngine) {
+	s.searchEngine = engine
 }
 
 // GetMailboxTracker returns or creates a tracker for a mailbox
