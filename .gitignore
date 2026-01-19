@@ -40,3 +40,4 @@ config.yaml
 .obsidian/
 tmp.zip
 mailserver-linux-amd64
+CLAUDE.md
