@@ -69,8 +69,20 @@ go test ./...
    golangci-lint run
    ```
 
-4. **Commit your changes**:
-   - Use clear, descriptive commit messages
+4. **Commit your changes** using [Conventional Commits](https://www.conventionalcommits.org/):
+   ```
+   <type>(<scope>): <description>
+   ```
+
+   **Types:** `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `chore`, `ci`
+
+   **Examples:**
+   ```bash
+   git commit -m "feat(smtp): add STARTTLS support"
+   git commit -m "fix(imap): resolve connection timeout"
+   git commit -m "docs(readme): update installation steps"
+   ```
+
    - Reference related issues: `Fixes #123`
 
 5. **Push and create a Pull Request**:
