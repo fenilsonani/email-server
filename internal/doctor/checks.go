@@ -610,18 +610,25 @@ func base64Decode(dst, src []byte) int {
 
 	di := 0
 	for len(src) >= 4 {
+		// Check for padding before processing
+		pad := 0
+		if src[3] == '=' {
+			pad++
+		}
+		if src[2] == '=' {
+			pad++
+		}
+
 		v := uint32(decode[src[0]])<<18 | uint32(decode[src[1]])<<12 | uint32(decode[src[2]])<<6 | uint32(decode[src[3]])
 		dst[di+0] = byte(v >> 16)
-		dst[di+1] = byte(v >> 8)
-		dst[di+2] = byte(v)
-		di += 3
+		if pad < 2 {
+			dst[di+1] = byte(v >> 8)
+		}
+		if pad < 1 {
+			dst[di+2] = byte(v)
+		}
+		di += 3 - pad
 		src = src[4:]
-		if src[0] == '=' {
-			di--
-		}
-		if len(src) > 1 && src[1] == '=' {
-			di--
-		}
 	}
 	return di
 }
