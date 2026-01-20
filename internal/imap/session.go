@@ -500,11 +500,18 @@ func (s *Session) Poll(w *imapserver.UpdateWriter, allowExpunge bool) error {
 	return nil
 }
 
+// idleKeepaliveInterval is how often to send keepalives during IDLE.
+// Apple Mail and other clients expect periodic responses to detect dead connections.
+// NAT/firewall timeouts are typically 5-30 minutes, so 4 minutes is safe.
+const idleKeepaliveInterval = 4 * time.Minute
+
 // Idle handles IDLE command - the key to instant notifications!
+// Includes keepalive mechanism to prevent connection drops from NAT/firewall timeouts.
 func (s *Session) Idle(w *imapserver.UpdateWriter, stop <-chan struct{}) error {
 	s.mu.RLock()
 	tracker := s.tracker
 	user := s.user
+	selected := s.selected
 	s.mu.RUnlock()
 
 	if tracker == nil {
@@ -521,7 +528,46 @@ func (s *Session) Idle(w *imapserver.UpdateWriter, stop <-chan struct{}) error {
 	log.Printf("IMAP v2: IDLE started for %s", userEmail)
 	defer log.Printf("IMAP v2: IDLE ended for %s", userEmail)
 
-	return tracker.Idle(w, stop)
+	// Create a done channel for the tracker goroutine
+	done := make(chan error, 1)
+	trackerStop := make(chan struct{})
+
+	// Run tracker.Idle in a goroutine
+	go func() {
+		done <- tracker.Idle(w, trackerStop)
+	}()
+
+	// Keepalive ticker to prevent NAT/firewall timeouts
+	keepaliveTicker := time.NewTicker(idleKeepaliveInterval)
+	defer keepaliveTicker.Stop()
+
+	for {
+		select {
+		case <-stop:
+			// Client sent DONE, stop the tracker
+			close(trackerStop)
+			return <-done
+
+		case err := <-done:
+			// Tracker finished (shouldn't happen normally during IDLE)
+			return err
+
+		case <-keepaliveTicker.C:
+			// Send keepalive by triggering a mailbox status update
+			// This causes the server to send an EXISTS response with current count
+			if selected != nil {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				stats, err := s.server.store.GetMailboxStats(ctx, selected.ID)
+				cancel()
+				if err == nil {
+					// Queue the current message count - this triggers an untagged response
+					// even if the count hasn't changed, keeping the connection alive
+					s.server.GetMailboxTracker(selected.ID).QueueNumMessages(uint32(stats.Messages))
+					log.Printf("IMAP v2: Keepalive sent for %s (messages: %d)", userEmail, stats.Messages)
+				}
+			}
+		}
+	}
 }
 
 // Fetch retrieves messages
