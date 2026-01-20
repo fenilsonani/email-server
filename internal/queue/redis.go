@@ -30,6 +30,15 @@ var (
 	ErrQueueClosed     = errors.New("queue is closed")
 )
 
+// Priority represents message priority level.
+type Priority string
+
+const (
+	PriorityHigh   Priority = "high"
+	PriorityNormal Priority = "normal"
+	PriorityLow    Priority = "low"
+)
+
 // Message represents a queued email message.
 type Message struct {
 	ID          string    `json:"id"`
@@ -44,7 +53,8 @@ type Message struct {
 	LastError   string    `json:"last_error,omitempty"`
 	Status      Status    `json:"status"`
 	CreatedAt   time.Time `json:"created_at"`
-	Domain      string    `json:"domain"` // Recipient domain for circuit breaker
+	Domain      string    `json:"domain"`   // Recipient domain for circuit breaker
+	Priority    Priority  `json:"priority"` // Message priority (high, normal, low)
 }
 
 // Status represents the message delivery status.
@@ -120,12 +130,15 @@ type RedisQueue struct {
 	mu sync.RWMutex
 
 	// Cached keys to avoid repeated string concatenation
-	cachedPendingKey    string
-	cachedProcessingKey string
-	cachedFailedKey     string
-	cachedSentKey       string
-	cachedStatsKey      string
-	cachedMessagePrefix string
+	cachedPendingKey       string
+	cachedPendingKeyHigh   string // Priority: high
+	cachedPendingKeyNormal string // Priority: normal
+	cachedPendingKeyLow    string // Priority: low
+	cachedProcessingKey    string
+	cachedFailedKey        string
+	cachedSentKey          string
+	cachedStatsKey         string
+	cachedMessagePrefix    string
 }
 
 // NewRedisQueue creates a new Redis-backed message queue.
@@ -191,12 +204,15 @@ func NewRedisQueue(cfg Config) (*RedisQueue, error) {
 		config: cfg,
 		closed: 0,
 		// Pre-compute cached keys to avoid repeated string concatenation
-		cachedPendingKey:    cfg.Prefix + ":queue:pending",
-		cachedProcessingKey: cfg.Prefix + ":queue:processing",
-		cachedFailedKey:     cfg.Prefix + ":queue:failed",
-		cachedSentKey:       cfg.Prefix + ":queue:sent",
-		cachedStatsKey:      cfg.Prefix + ":stats",
-		cachedMessagePrefix: cfg.Prefix + ":message:",
+		cachedPendingKey:       cfg.Prefix + ":queue:pending",
+		cachedPendingKeyHigh:   cfg.Prefix + ":queue:pending:high",
+		cachedPendingKeyNormal: cfg.Prefix + ":queue:pending:normal",
+		cachedPendingKeyLow:    cfg.Prefix + ":queue:pending:low",
+		cachedProcessingKey:    cfg.Prefix + ":queue:processing",
+		cachedFailedKey:        cfg.Prefix + ":queue:failed",
+		cachedSentKey:          cfg.Prefix + ":queue:sent",
+		cachedStatsKey:         cfg.Prefix + ":stats",
+		cachedMessagePrefix:    cfg.Prefix + ":message:",
 	}
 
 	// Start connection health monitor
@@ -307,6 +323,36 @@ func (q *RedisQueue) pendingKey() string {
 	}
 	return q.config.Prefix + ":queue:pending"
 }
+
+// pendingKeyForPriority returns the pending queue key for a specific priority.
+func (q *RedisQueue) pendingKeyForPriority(priority Priority) string {
+	switch priority {
+	case PriorityHigh:
+		if q.cachedPendingKeyHigh != "" {
+			return q.cachedPendingKeyHigh
+		}
+		return q.config.Prefix + ":queue:pending:high"
+	case PriorityLow:
+		if q.cachedPendingKeyLow != "" {
+			return q.cachedPendingKeyLow
+		}
+		return q.config.Prefix + ":queue:pending:low"
+	default: // Normal and fallback
+		if q.cachedPendingKeyNormal != "" {
+			return q.cachedPendingKeyNormal
+		}
+		return q.config.Prefix + ":queue:pending:normal"
+	}
+}
+
+// allPendingKeys returns all priority queue keys in order of priority (high first).
+func (q *RedisQueue) allPendingKeys() []string {
+	return []string{
+		q.pendingKeyForPriority(PriorityHigh),
+		q.pendingKeyForPriority(PriorityNormal),
+		q.pendingKeyForPriority(PriorityLow),
+	}
+}
 func (q *RedisQueue) processingKey() string {
 	if q.cachedProcessingKey != "" {
 		return q.cachedProcessingKey
@@ -403,6 +449,9 @@ func (q *RedisQueue) Enqueue(ctx context.Context, msg *Message) error {
 	if msg.MaxAttempts == 0 {
 		msg.MaxAttempts = q.config.MaxRetries
 	}
+	if msg.Priority == "" {
+		msg.Priority = PriorityNormal
+	}
 	msg.Status = StatusPending
 
 	// Store message data
@@ -411,16 +460,20 @@ func (q *RedisQueue) Enqueue(ctx context.Context, msg *Message) error {
 		return fmt.Errorf("failed to marshal message: %w", err)
 	}
 
+	// Determine which queue to use based on priority
+	queueKey := q.pendingKeyForPriority(msg.Priority)
+
 	// Use transaction to ensure atomicity with retry on transient errors
 	maxRetries := 3
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		pipe := q.client.TxPipeline()
 		pipe.Set(ctx, q.messageKey(msg.ID), data, 0)
-		pipe.ZAdd(ctx, q.pendingKey(), redis.Z{
+		pipe.ZAdd(ctx, queueKey, redis.Z{
 			Score:  float64(msg.NextAttempt.UnixNano()),
 			Member: msg.ID,
 		})
 		pipe.HIncrBy(ctx, q.statsKey(), "enqueued", 1)
+		pipe.HIncrBy(ctx, q.statsKey(), "enqueued:"+string(msg.Priority), 1)
 
 		_, err = pipe.Exec(ctx)
 		if err == nil {
@@ -442,6 +495,7 @@ func (q *RedisQueue) Enqueue(ctx context.Context, msg *Message) error {
 
 // Dequeue retrieves the next message ready for delivery.
 // Returns nil if no messages are ready.
+// Checks priority queues in order: high, normal, low.
 func (q *RedisQueue) Dequeue(ctx context.Context) (*Message, error) {
 	if err := q.validateContext(ctx); err != nil {
 		return nil, err
@@ -452,14 +506,41 @@ func (q *RedisQueue) Dequeue(ctx context.Context) (*Message, error) {
 
 	now := float64(time.Now().UnixNano())
 
-	// Get messages that are ready (score <= now)
-	results, err := q.client.ZRangeByScoreWithScores(ctx, q.pendingKey(), &redis.ZRangeBy{
-		Min:   "-inf",
-		Max:   fmt.Sprintf("%f", now),
-		Count: 1,
-	}).Result()
-	if err != nil {
-		return nil, fmt.Errorf("failed to query pending queue: %w", err)
+	// Check priority queues in order: high, normal, low
+	var results []redis.Z
+	var sourceQueue string
+
+	for _, queueKey := range q.allPendingKeys() {
+		qResults, err := q.client.ZRangeByScoreWithScores(ctx, queueKey, &redis.ZRangeBy{
+			Min:   "-inf",
+			Max:   fmt.Sprintf("%f", now),
+			Count: 1,
+		}).Result()
+		if err != nil {
+			return nil, fmt.Errorf("failed to query pending queue %s: %w", queueKey, err)
+		}
+
+		if len(qResults) > 0 {
+			results = qResults
+			sourceQueue = queueKey
+			break
+		}
+	}
+
+	// Also check the legacy pending queue for backward compatibility
+	if len(results) == 0 {
+		legacyResults, err := q.client.ZRangeByScoreWithScores(ctx, q.pendingKey(), &redis.ZRangeBy{
+			Min:   "-inf",
+			Max:   fmt.Sprintf("%f", now),
+			Count: 1,
+		}).Result()
+		if err != nil {
+			return nil, fmt.Errorf("failed to query pending queue: %w", err)
+		}
+		if len(legacyResults) > 0 {
+			results = legacyResults
+			sourceQueue = q.pendingKey()
+		}
 	}
 
 	if len(results) == 0 {
@@ -473,10 +554,10 @@ func (q *RedisQueue) Dequeue(ctx context.Context) (*Message, error) {
 
 	// Atomically move to processing queue
 	pipe := q.client.TxPipeline()
-	pipe.ZRem(ctx, q.pendingKey(), msgID)
+	pipe.ZRem(ctx, sourceQueue, msgID)
 	pipe.SAdd(ctx, q.processingKey(), msgID)
 
-	_, err = pipe.Exec(ctx)
+	_, err := pipe.Exec(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to move message to processing: %w", err)
 	}
@@ -487,7 +568,7 @@ func (q *RedisQueue) Dequeue(ctx context.Context) (*Message, error) {
 		// Put it back atomically if we can't get the data
 		rollbackPipe := q.client.TxPipeline()
 		rollbackPipe.SRem(ctx, q.processingKey(), msgID)
-		rollbackPipe.ZAdd(ctx, q.pendingKey(), redis.Z{
+		rollbackPipe.ZAdd(ctx, sourceQueue, redis.Z{
 			Score:  results[0].Score,
 			Member: msgID,
 		})
@@ -507,7 +588,7 @@ func (q *RedisQueue) Dequeue(ctx context.Context) (*Message, error) {
 		// Attempt rollback
 		rollbackPipe := q.client.TxPipeline()
 		rollbackPipe.SRem(ctx, q.processingKey(), msgID)
-		rollbackPipe.ZAdd(ctx, q.pendingKey(), redis.Z{
+		rollbackPipe.ZAdd(ctx, sourceQueue, redis.Z{
 			Score:  results[0].Score,
 			Member: msgID,
 		})
@@ -655,6 +736,9 @@ func (q *RedisQueue) updateMessage(ctx context.Context, msg *Message) error {
 func (q *RedisQueue) Stats(ctx context.Context) (*QueueStats, error) {
 	pipe := q.client.TxPipeline()
 	pendingCmd := pipe.ZCard(ctx, q.pendingKey())
+	pendingHighCmd := pipe.ZCard(ctx, q.pendingKeyForPriority(PriorityHigh))
+	pendingNormalCmd := pipe.ZCard(ctx, q.pendingKeyForPriority(PriorityNormal))
+	pendingLowCmd := pipe.ZCard(ctx, q.pendingKeyForPriority(PriorityLow))
 	processingCmd := pipe.SCard(ctx, q.processingKey())
 	sentCmd := pipe.ZCard(ctx, q.sentKey())
 	failedCmd := pipe.ZCard(ctx, q.failedKey())
@@ -666,10 +750,13 @@ func (q *RedisQueue) Stats(ctx context.Context) (*QueueStats, error) {
 	}
 
 	stats := &QueueStats{
-		Pending:    pendingCmd.Val(),
-		Processing: processingCmd.Val(),
-		Sent:       sentCmd.Val(),
-		Failed:     failedCmd.Val(),
+		Pending:       pendingCmd.Val() + pendingHighCmd.Val() + pendingNormalCmd.Val() + pendingLowCmd.Val(),
+		PendingHigh:   pendingHighCmd.Val(),
+		PendingNormal: pendingNormalCmd.Val(),
+		PendingLow:    pendingLowCmd.Val(),
+		Processing:    processingCmd.Val(),
+		Sent:          sentCmd.Val(),
+		Failed:        failedCmd.Val(),
 	}
 
 	counters := statsCmd.Val()
@@ -692,6 +779,9 @@ func (q *RedisQueue) Stats(ctx context.Context) (*QueueStats, error) {
 // QueueStats contains queue statistics.
 type QueueStats struct {
 	Pending       int64
+	PendingHigh   int64 // Messages in high priority queue
+	PendingNormal int64 // Messages in normal priority queue
+	PendingLow    int64 // Messages in low priority queue
 	Processing    int64
 	Sent          int64
 	Failed        int64
@@ -701,9 +791,20 @@ type QueueStats struct {
 	TotalRetried  int64
 }
 
-// PendingCount returns the number of messages waiting for delivery.
+// PendingCount returns the number of messages waiting for delivery (across all priority queues).
 func (q *RedisQueue) PendingCount(ctx context.Context) (int64, error) {
-	return q.client.ZCard(ctx, q.pendingKey()).Result()
+	pipe := q.client.TxPipeline()
+	legacyCmd := pipe.ZCard(ctx, q.pendingKey())
+	highCmd := pipe.ZCard(ctx, q.pendingKeyForPriority(PriorityHigh))
+	normalCmd := pipe.ZCard(ctx, q.pendingKeyForPriority(PriorityNormal))
+	lowCmd := pipe.ZCard(ctx, q.pendingKeyForPriority(PriorityLow))
+
+	_, err := pipe.Exec(ctx)
+	if err != nil {
+		return 0, err
+	}
+
+	return legacyCmd.Val() + highCmd.Val() + normalCmd.Val() + lowCmd.Val(), nil
 }
 
 // ProcessingCount returns the number of messages being processed.
