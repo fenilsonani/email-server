@@ -463,7 +463,7 @@ var serveCmd = &cobra.Command{
 		// Create IMAP server
 		imapAddr := fmt.Sprintf("%s:%d", cfg.Server.BindAddress, cfg.Server.IMAPPort)
 		imapsAddr := fmt.Sprintf("%s:%d", cfg.Server.BindAddress, cfg.Server.IMAPSPort)
-		imapSrv := imapserver.NewServer(authenticator, store, imapAddr, imapsAddr, tlsManager.TLSConfig())
+		imapSrv := imapserver.NewServer(authenticator, store, imapAddr, imapsAddr, tlsManager.TLSConfigForProtocol("imap"))
 		resources.imapSrv = imapSrv
 
 		// Create SMTP backend and server
@@ -500,7 +500,7 @@ var serveCmd = &cobra.Command{
 		featuresStore := features.NewStore(db.RawDB())
 		smtpBackend.SetFeaturesStore(featuresStore)
 
-		smtpSrv := smtpserver.NewServer(smtpBackend, cfg, tlsManager.TLSConfig())
+		smtpSrv := smtpserver.NewServer(smtpBackend, cfg, tlsManager.TLSConfigForProtocol("smtp"))
 		resources.smtpSrv = smtpSrv
 
 		// Start all servers with error handling
@@ -517,7 +517,7 @@ var serveCmd = &cobra.Command{
 		logger.Info("IMAP server started", "port", cfg.Server.IMAPPort)
 
 		if tlsManager.HasTLS() {
-			if err := imapSrv.ListenAndServeTLS(tlsManager.TLSConfig()); err != nil {
+			if err := imapSrv.ListenAndServeTLS(tlsManager.TLSConfigForProtocol("imap")); err != nil {
 				cleanup()
 				return fmt.Errorf("failed to start IMAPS server: %w", err)
 			}
