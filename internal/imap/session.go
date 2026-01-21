@@ -13,6 +13,7 @@ import (
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapserver"
 	"github.com/fenilsonani/email-server/internal/auth"
+	"github.com/fenilsonani/email-server/internal/metrics"
 	"github.com/fenilsonani/email-server/internal/storage"
 )
 
@@ -500,10 +501,19 @@ func (s *Session) Poll(w *imapserver.UpdateWriter, allowExpunge bool) error {
 	return nil
 }
 
-// idleKeepaliveInterval is how often to send keepalives during IDLE.
+// defaultIdleKeepaliveInterval is the default keepalive interval during IDLE.
 // Apple Mail and other clients expect periodic responses to detect dead connections.
-// NAT/firewall timeouts are typically 5-30 minutes, so 4 minutes is safe.
-const idleKeepaliveInterval = 4 * time.Minute
+// NAT/firewall timeouts are typically 5-30 minutes. Using 3 minutes provides better
+// compatibility with strict NAT environments and Apple Mail.
+const defaultIdleKeepaliveInterval = 3 * time.Minute
+
+// getIdleKeepaliveInterval returns the configured IDLE keepalive interval
+func (s *Session) getIdleKeepaliveInterval() time.Duration {
+	if s.server != nil && s.server.config != nil && s.server.config.IdleKeepaliveInterval > 0 {
+		return s.server.config.IdleKeepaliveInterval
+	}
+	return defaultIdleKeepaliveInterval
+}
 
 // Idle handles IDLE command - the key to instant notifications!
 // Includes keepalive mechanism to prevent connection drops from NAT/firewall timeouts.
@@ -526,7 +536,11 @@ func (s *Session) Idle(w *imapserver.UpdateWriter, stop <-chan struct{}) error {
 	}
 
 	log.Printf("IMAP v2: IDLE started for %s", userEmail)
-	defer log.Printf("IMAP v2: IDLE ended for %s", userEmail)
+	metrics.RecordIMAPIdleStart()
+	defer func() {
+		metrics.RecordIMAPIdleEnd()
+		log.Printf("IMAP v2: IDLE ended for %s", userEmail)
+	}()
 
 	// Create a done channel for the tracker goroutine
 	done := make(chan error, 1)
@@ -538,7 +552,8 @@ func (s *Session) Idle(w *imapserver.UpdateWriter, stop <-chan struct{}) error {
 	}()
 
 	// Keepalive ticker to prevent NAT/firewall timeouts
-	keepaliveTicker := time.NewTicker(idleKeepaliveInterval)
+	keepaliveInterval := s.getIdleKeepaliveInterval()
+	keepaliveTicker := time.NewTicker(keepaliveInterval)
 	defer keepaliveTicker.Stop()
 
 	for {
@@ -563,6 +578,7 @@ func (s *Session) Idle(w *imapserver.UpdateWriter, stop <-chan struct{}) error {
 					// Queue the current message count - this triggers an untagged response
 					// even if the count hasn't changed, keeping the connection alive
 					s.server.GetMailboxTracker(selected.ID).QueueNumMessages(uint32(stats.Messages))
+					metrics.RecordIMAPKeepalive()
 					log.Printf("IMAP v2: Keepalive sent for %s (messages: %d)", userEmail, stats.Messages)
 				}
 			}
@@ -877,6 +893,120 @@ func (s *Session) Copy(numSet imap.NumSet, dest string) (*imap.CopyData, error) 
 		UIDValidity: destMb.UIDValidity,
 		SourceUIDs:  imap.UIDSetNum(srcUIDs...),
 		DestUIDs:    imap.UIDSetNum(destUIDs...),
+	}, nil
+}
+
+// Move moves messages to another mailbox (RFC 6851)
+// This is more efficient than COPY + STORE \Deleted + EXPUNGE
+func (s *Session) Move(w *imapserver.MoveWriter, numSet imap.NumSet, dest string) error {
+	s.mu.RLock()
+	selected := s.selected
+	user := s.user
+	s.mu.RUnlock()
+
+	if selected == nil {
+		return fmt.Errorf("no mailbox selected")
+	}
+
+	if user == nil {
+		return fmt.Errorf("not authenticated")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Get destination mailbox
+	destMb, err := s.server.store.GetMailbox(ctx, user.ID, dest)
+	if err != nil {
+		return &imap.Error{
+			Type: imap.StatusResponseTypeNo,
+			Code: imap.ResponseCodeTryCreate,
+			Text: "Destination mailbox not found",
+		}
+	}
+
+	// Get messages
+	messages, err := s.server.store.ListMessages(ctx, selected.ID, 0, 0)
+	if err != nil {
+		return fmt.Errorf("failed to list messages: %w", err)
+	}
+
+	var srcUIDs, destUIDs []imap.UID
+	var expungeSeqs []uint32
+
+	for i, msg := range messages {
+		seqNum := uint32(i + 1)
+		var shouldMove bool
+		switch set := numSet.(type) {
+		case imap.UIDSet:
+			shouldMove = set.Contains(imap.UID(msg.UID))
+		case imap.SeqSet:
+			shouldMove = set.Contains(seqNum)
+		}
+
+		if shouldMove {
+			// Copy message to destination
+			newMsg, err := s.server.store.CopyMessage(ctx, selected.ID, msg.UID, destMb.ID)
+			if err != nil {
+				log.Printf("IMAP: Failed to move message UID %d: %v", msg.UID, err)
+				continue
+			}
+
+			srcUIDs = append(srcUIDs, imap.UID(msg.UID))
+			destUIDs = append(destUIDs, imap.UID(newMsg.UID))
+			expungeSeqs = append(expungeSeqs, seqNum)
+
+			// Delete from source
+			if err := s.server.store.DeleteMessage(ctx, selected.ID, msg.UID); err != nil {
+				log.Printf("IMAP: Failed to delete moved message UID %d: %v", msg.UID, err)
+			}
+		}
+	}
+
+	// Write COPYUID response
+	if len(srcUIDs) > 0 {
+		w.WriteCopyData(&imap.CopyData{
+			UIDValidity: destMb.UIDValidity,
+			SourceUIDs:  imap.UIDSetNum(srcUIDs...),
+			DestUIDs:    imap.UIDSetNum(destUIDs...),
+		})
+
+		// Write EXPUNGE responses (in reverse order for correct sequence numbers)
+		for i := len(expungeSeqs) - 1; i >= 0; i-- {
+			w.WriteExpunge(expungeSeqs[i])
+		}
+	}
+
+	// Notify both mailboxes
+	s.server.NotifyMailboxUpdate(selected.ID)
+	s.server.NotifyMailboxUpdate(destMb.ID)
+
+	return nil
+}
+
+// Namespace returns the namespace hierarchy (RFC 2342)
+// Thunderbird and other clients use this to understand mailbox organization
+func (s *Session) Namespace() (*imap.NamespaceData, error) {
+	s.mu.RLock()
+	user := s.user
+	s.mu.RUnlock()
+
+	if user == nil {
+		return nil, fmt.Errorf("not authenticated")
+	}
+
+	// Return standard personal namespace with "/" as delimiter
+	// Most email clients expect this format
+	return &imap.NamespaceData{
+		Personal: []imap.NamespaceDescriptor{
+			{
+				Prefix: "",
+				Delim:  '/',
+			},
+		},
+		// No shared or other namespaces (single-user mailboxes)
+		Other:  nil,
+		Shared: nil,
 	}, nil
 }
 
