@@ -40,6 +40,17 @@ type ServerConfig struct {
 	IMAPSPort       int    `koanf:"imaps_port"`       // 993 for implicit TLS
 	DAVPort         int    `koanf:"dav_port"`         // 443 for CalDAV/CardDAV
 	ShutdownTimeout string `koanf:"shutdown_timeout"` // Graceful shutdown timeout
+	IMAP            IMAPConfig `koanf:"imap"`         // IMAP-specific settings
+}
+
+// IMAPConfig holds IMAP-specific configuration for connection management
+type IMAPConfig struct {
+	IdleKeepaliveInterval string `koanf:"idle_keepalive_interval"` // Keepalive interval during IDLE (default "3m")
+	TCPKeepalivePeriod    string `koanf:"tcp_keepalive_period"`    // TCP SO_KEEPALIVE period (default "60s")
+	ReadTimeout           string `koanf:"read_timeout"`            // Read timeout for stale connections (default "30m")
+	WriteTimeout          string `koanf:"write_timeout"`           // Write timeout for stale connections (default "5m")
+	MaxConnections        int    `koanf:"max_connections"`         // Maximum global IMAP connections (default 2000)
+	MaxConnectionsPerIP   int    `koanf:"max_connections_per_ip"`  // Maximum connections per IP (default 100)
 }
 
 // TLSConfig holds TLS/ACME configuration
@@ -191,6 +202,14 @@ func DefaultConfig() *Config {
 			IMAPSPort:       993,
 			DAVPort:         443,
 			ShutdownTimeout: "30s",
+			IMAP: IMAPConfig{
+				IdleKeepaliveInterval: "3m",
+				TCPKeepalivePeriod:    "60s",
+				ReadTimeout:           "30m",
+				WriteTimeout:          "5m",
+				MaxConnections:        2000,
+				MaxConnectionsPerIP:   100,
+			},
 		},
 		TLS: TLSConfig{
 			AutoTLS:  false,
@@ -321,6 +340,11 @@ func (c *Config) Validate() error {
 
 	// Timeout validation
 	if err := c.validateTimeouts(); err != nil {
+		return err
+	}
+
+	// IMAP configuration validation
+	if err := c.validateIMAP(); err != nil {
 		return err
 	}
 
@@ -556,6 +580,67 @@ func (c *Config) validateTimeouts() error {
 				return fmt.Errorf("%s is too long, maximum is 30d (got: %s)", name, timeout)
 			}
 		}
+	}
+
+	return nil
+}
+
+// validateIMAP validates IMAP configuration
+func (c *Config) validateIMAP() error {
+	imap := &c.Server.IMAP
+
+	// Validate timeouts
+	imapTimeouts := map[string]string{
+		"server.imap.idle_keepalive_interval": imap.IdleKeepaliveInterval,
+		"server.imap.tcp_keepalive_period":    imap.TCPKeepalivePeriod,
+		"server.imap.read_timeout":            imap.ReadTimeout,
+		"server.imap.write_timeout":           imap.WriteTimeout,
+	}
+
+	for name, timeout := range imapTimeouts {
+		if timeout == "" {
+			continue // Use default
+		}
+		d, err := time.ParseDuration(timeout)
+		if err != nil {
+			return fmt.Errorf("%s is invalid: %w", name, err)
+		}
+		if d < 0 {
+			return fmt.Errorf("%s cannot be negative (got: %s)", name, timeout)
+		}
+	}
+
+	// Validate specific constraints
+	if imap.IdleKeepaliveInterval != "" {
+		d, _ := time.ParseDuration(imap.IdleKeepaliveInterval)
+		if d > 0 && d < 30*time.Second {
+			return fmt.Errorf("server.imap.idle_keepalive_interval must be at least 30s (got: %s)", imap.IdleKeepaliveInterval)
+		}
+		if d > 10*time.Minute {
+			return fmt.Errorf("server.imap.idle_keepalive_interval cannot exceed 10m (got: %s)", imap.IdleKeepaliveInterval)
+		}
+	}
+
+	if imap.TCPKeepalivePeriod != "" {
+		d, _ := time.ParseDuration(imap.TCPKeepalivePeriod)
+		if d > 0 && d < 10*time.Second {
+			return fmt.Errorf("server.imap.tcp_keepalive_period must be at least 10s (got: %s)", imap.TCPKeepalivePeriod)
+		}
+	}
+
+	// Validate connection limits
+	if imap.MaxConnections < 0 {
+		return fmt.Errorf("server.imap.max_connections cannot be negative (got: %d)", imap.MaxConnections)
+	}
+	if imap.MaxConnections > 100000 {
+		return fmt.Errorf("server.imap.max_connections cannot exceed 100000 (got: %d)", imap.MaxConnections)
+	}
+
+	if imap.MaxConnectionsPerIP < 0 {
+		return fmt.Errorf("server.imap.max_connections_per_ip cannot be negative (got: %d)", imap.MaxConnectionsPerIP)
+	}
+	if imap.MaxConnectionsPerIP > 10000 {
+		return fmt.Errorf("server.imap.max_connections_per_ip cannot exceed 10000 (got: %d)", imap.MaxConnectionsPerIP)
 	}
 
 	return nil
