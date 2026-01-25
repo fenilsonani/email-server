@@ -17,11 +17,8 @@ import (
 
 // Default connection limits and keepalive settings for IMAP
 const (
-	defaultIMAPMaxConnections      = 2000
+	defaultIMAPMaxConnections = 2000
 	defaultIMAPMaxConnectionsPerIP = 100
-	defaultTCPKeepalivePeriod      = 60 * time.Second
-	defaultReadTimeout             = 30 * time.Minute
-	defaultWriteTimeout            = 5 * time.Minute
 )
 
 // limitedListener wraps a net.Listener with connection limits and keepalive settings
@@ -34,8 +31,6 @@ type limitedListener struct {
 	perIPMu            sync.Mutex
 	sem                chan struct{}
 	tcpKeepalivePeriod time.Duration
-	readTimeout        time.Duration
-	writeTimeout       time.Duration
 }
 
 // newLimitedListener creates a connection-limiting listener with keepalive settings
@@ -50,8 +45,6 @@ func newLimitedListener(l net.Listener, config *IMAPConfig) *limitedListener {
 		perIPConns:         make(map[string]int),
 		sem:                make(chan struct{}, config.MaxConnections),
 		tcpKeepalivePeriod: config.TCPKeepalivePeriod,
-		readTimeout:        config.ReadTimeout,
-		writeTimeout:       config.WriteTimeout,
 	}
 }
 
@@ -83,15 +76,8 @@ func (l *limitedListener) Accept() (net.Conn, error) {
 
 	atomic.AddInt64(&l.currentConns, 1)
 
-	// Wrap with deadline management for stale connection detection
-	wrappedConn := &deadlineConn{
-		Conn:         conn,
-		readTimeout:  l.readTimeout,
-		writeTimeout: l.writeTimeout,
-	}
-
 	return &limitedConn{
-		Conn:     wrappedConn,
+		Conn:     conn,
 		listener: l,
 		ip:       ip,
 	}, nil
@@ -156,27 +142,6 @@ func enableTCPKeepalive(conn net.Conn, period time.Duration) {
 	}
 }
 
-// deadlineConn wraps a net.Conn with automatic read/write deadline management.
-// This helps detect stale connections that stop responding.
-type deadlineConn struct {
-	net.Conn
-	readTimeout  time.Duration
-	writeTimeout time.Duration
-}
-
-func (c *deadlineConn) Read(b []byte) (int, error) {
-	if c.readTimeout > 0 {
-		c.Conn.SetReadDeadline(time.Now().Add(c.readTimeout))
-	}
-	return c.Conn.Read(b)
-}
-
-func (c *deadlineConn) Write(b []byte) (int, error) {
-	if c.writeTimeout > 0 {
-		c.Conn.SetWriteDeadline(time.Now().Add(c.writeTimeout))
-	}
-	return c.Conn.Write(b)
-}
 
 // Maximum number of mailbox trackers to cache (prevents unbounded memory growth)
 const maxTrackerCacheSize = 5000
@@ -191,8 +156,6 @@ type trackerEntry struct {
 type IMAPConfig struct {
 	IdleKeepaliveInterval time.Duration
 	TCPKeepalivePeriod    time.Duration
-	ReadTimeout           time.Duration
-	WriteTimeout          time.Duration
 	MaxConnections        int
 	MaxConnectionsPerIP   int
 }
@@ -202,8 +165,6 @@ func DefaultIMAPConfig() *IMAPConfig {
 	return &IMAPConfig{
 		IdleKeepaliveInterval: 3 * time.Minute,
 		TCPKeepalivePeriod:    60 * time.Second,
-		ReadTimeout:           30 * time.Minute,
-		WriteTimeout:          5 * time.Minute,
 		MaxConnections:        2000,
 		MaxConnectionsPerIP:   100,
 	}
