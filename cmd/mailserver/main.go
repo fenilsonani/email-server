@@ -476,16 +476,6 @@ var serveCmd = &cobra.Command{
 				imapConfig.TCPKeepalivePeriod = d
 			}
 		}
-		if cfg.Server.IMAP.ReadTimeout != "" {
-			if d, err := time.ParseDuration(cfg.Server.IMAP.ReadTimeout); err == nil {
-				imapConfig.ReadTimeout = d
-			}
-		}
-		if cfg.Server.IMAP.WriteTimeout != "" {
-			if d, err := time.ParseDuration(cfg.Server.IMAP.WriteTimeout); err == nil {
-				imapConfig.WriteTimeout = d
-			}
-		}
 		if cfg.Server.IMAP.MaxConnections > 0 {
 			imapConfig.MaxConnections = cfg.Server.IMAP.MaxConnections
 		}

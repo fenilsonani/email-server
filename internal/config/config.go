@@ -47,8 +47,6 @@ type ServerConfig struct {
 type IMAPConfig struct {
 	IdleKeepaliveInterval string `koanf:"idle_keepalive_interval"` // Keepalive interval during IDLE (default "3m")
 	TCPKeepalivePeriod    string `koanf:"tcp_keepalive_period"`    // TCP SO_KEEPALIVE period (default "60s")
-	ReadTimeout           string `koanf:"read_timeout"`            // Read timeout for stale connections (default "30m")
-	WriteTimeout          string `koanf:"write_timeout"`           // Write timeout for stale connections (default "5m")
 	MaxConnections        int    `koanf:"max_connections"`         // Maximum global IMAP connections (default 2000)
 	MaxConnectionsPerIP   int    `koanf:"max_connections_per_ip"`  // Maximum connections per IP (default 100)
 }
@@ -205,8 +203,6 @@ func DefaultConfig() *Config {
 			IMAP: IMAPConfig{
 				IdleKeepaliveInterval: "3m",
 				TCPKeepalivePeriod:    "60s",
-				ReadTimeout:           "30m",
-				WriteTimeout:          "5m",
 				MaxConnections:        2000,
 				MaxConnectionsPerIP:   100,
 			},
@@ -593,8 +589,6 @@ func (c *Config) validateIMAP() error {
 	imapTimeouts := map[string]string{
 		"server.imap.idle_keepalive_interval": imap.IdleKeepaliveInterval,
 		"server.imap.tcp_keepalive_period":    imap.TCPKeepalivePeriod,
-		"server.imap.read_timeout":            imap.ReadTimeout,
-		"server.imap.write_timeout":           imap.WriteTimeout,
 	}
 
 	for name, timeout := range imapTimeouts {
