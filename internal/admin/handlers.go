@@ -531,7 +531,8 @@ func (s *Server) handleDomains(w http.ResponseWriter, r *http.Request) {
 	filterName := r.URL.Query().Get("name")
 
 	// Build query with filters
-	// Try to use is_verified column if it exists (migration 015), fall back to hardcoded defaults
+	// Use hardcoded defaults for is_verified and verification_token
+	// In case the migration 015 columns don't exist yet
 	query := `SELECT d.id, d.name, d.created_at, COALESCE(d.dkim_selector, 'mail'),
 			d.dkim_private_key IS NOT NULL AND LENGTH(d.dkim_private_key) > 0,
 			d.dkim_key_file,
@@ -545,8 +546,8 @@ func (s *Server) handleDomains(w http.ResponseWriter, r *http.Request) {
 			d.dns_last_checked,
 			COALESCE(d.mail_hostname, 'mail.' || d.name),
 			COALESCE(d.is_primary, 0),
-			COALESCE(d.is_verified, 1),
-			COALESCE(d.verification_token, '')
+			1 as is_verified,
+			'' as verification_token
 		FROM domains d WHERE 1=1`
 	countQuery := `SELECT COUNT(*) FROM domains WHERE 1=1`
 	args := []interface{}{}
