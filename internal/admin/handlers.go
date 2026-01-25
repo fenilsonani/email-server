@@ -531,6 +531,7 @@ func (s *Server) handleDomains(w http.ResponseWriter, r *http.Request) {
 	filterName := r.URL.Query().Get("name")
 
 	// Build query with filters
+	// Try to use is_verified column if it exists (migration 015), fall back to hardcoded defaults
 	query := `SELECT d.id, d.name, d.created_at, COALESCE(d.dkim_selector, 'mail'),
 			d.dkim_private_key IS NOT NULL AND LENGTH(d.dkim_private_key) > 0,
 			d.dkim_key_file,
@@ -544,8 +545,8 @@ func (s *Server) handleDomains(w http.ResponseWriter, r *http.Request) {
 			d.dns_last_checked,
 			COALESCE(d.mail_hostname, 'mail.' || d.name),
 			COALESCE(d.is_primary, 0),
-			1,
-			''
+			COALESCE(d.is_verified, 1),
+			COALESCE(d.verification_token, '')
 		FROM domains d WHERE 1=1`
 	countQuery := `SELECT COUNT(*) FROM domains WHERE 1=1`
 	args := []interface{}{}
@@ -568,10 +569,40 @@ func (s *Server) handleDomains(w http.ResponseWriter, r *http.Request) {
 
 	// Add order and pagination
 	query += " ORDER BY d.name LIMIT ? OFFSET ?"
-	args = append(args, pagination.PageSize, pagination.Offset)
+	paginationArgs := []interface{}{pagination.PageSize, pagination.Offset}
 
-	rows, err := s.db.QueryContext(r.Context(), query, args...)
-	if err != nil {
+	rows, err := s.db.QueryContext(r.Context(), query, append(args, paginationArgs...)...)
+	if err != nil && strings.Contains(err.Error(), "no such column") {
+		// Fall back to query without is_verified and verification_token columns
+		query := `SELECT d.id, d.name, d.created_at, COALESCE(d.dkim_selector, 'mail'),
+			d.dkim_private_key IS NOT NULL AND LENGTH(d.dkim_private_key) > 0,
+			d.dkim_key_file,
+			(SELECT COUNT(*) FROM users WHERE domain_id = d.id) as user_count,
+			COALESCE(d.dns_status, 'pending'),
+			COALESCE(d.dns_mx_verified, 0),
+			COALESCE(d.dns_spf_verified, 0),
+			COALESCE(d.dns_dkim_verified, 0),
+			COALESCE(d.dns_dmarc_verified, 0),
+			COALESCE(d.dns_mail_hostname_verified, 0),
+			d.dns_last_checked,
+			COALESCE(d.mail_hostname, 'mail.' || d.name),
+			COALESCE(d.is_primary, 0),
+			1,
+			''
+		FROM domains d WHERE 1=1`
+
+		if filterName != "" {
+			query += " AND d.name LIKE ?"
+		}
+		query += " ORDER BY d.name LIMIT ? OFFSET ?"
+
+		rows, err = s.db.QueryContext(r.Context(), query, append(args, paginationArgs...)...)
+		if err != nil {
+			s.logger.ErrorContext(r.Context(), "Failed to get domains", err)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
+	} else if err != nil {
 		s.logger.ErrorContext(r.Context(), "Failed to get domains", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
