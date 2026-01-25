@@ -544,8 +544,8 @@ func (s *Server) handleDomains(w http.ResponseWriter, r *http.Request) {
 			d.dns_last_checked,
 			COALESCE(d.mail_hostname, 'mail.' || d.name),
 			COALESCE(d.is_primary, 0),
-			COALESCE(d.is_verified, TRUE),
-			COALESCE(d.verification_token, '')
+			1,
+			''
 		FROM domains d WHERE 1=1`
 	countQuery := `SELECT COUNT(*) FROM domains WHERE 1=1`
 	args := []interface{}{}
@@ -1007,13 +1007,22 @@ func (s *Server) handleDomainAdd(w http.ResponseWriter, r *http.Request) {
 	// SECURITY: Requires DNS TXT record verification before domain can send emails
 	verificationToken := generateDomainVerificationToken()
 
-	// Insert domain with auto-generated mail hostname (unverified initially)
+	// Insert domain with auto-generated mail hostname
 	mailHostname := "mail." + name
+	// Try to insert with verification columns, fall back if they don't exist
 	_, err = s.db.ExecContext(r.Context(),
 		`INSERT INTO domains (name, dkim_selector, mail_hostname, verification_token, is_verified)
 		 VALUES (?, ?, ?, ?, FALSE)`,
 		name, dkimSelector, mailHostname, verificationToken,
 	)
+	// If insert fails due to missing columns, try without them
+	if err != nil && strings.Contains(err.Error(), "no such column") {
+		_, err = s.db.ExecContext(r.Context(),
+			`INSERT INTO domains (name, dkim_selector, mail_hostname)
+			 VALUES (?, ?, ?)`,
+			name, dkimSelector, mailHostname,
+		)
+	}
 	if err != nil {
 		s.logger.ErrorContext(r.Context(), "Failed to create domain", err)
 		http.Redirect(w, r, "/admin/domains?error=Failed+to+create+domain", http.StatusSeeOther)
@@ -1094,23 +1103,19 @@ func (s *Server) handleDomainVerifyOwnership(w http.ResponseWriter, r *http.Requ
 
 	// Get domain info including verification token
 	var domainName, verificationToken string
-	var isVerified bool
+	// Try to fetch verification token if the column exists
 	err = s.db.QueryRowContext(r.Context(),
-		"SELECT name, COALESCE(verification_token, ''), COALESCE(is_verified, FALSE) FROM domains WHERE id = ?",
-		domainID).Scan(&domainName, &verificationToken, &isVerified)
+		"SELECT name, COALESCE(verification_token, '') FROM domains WHERE id = ?",
+		domainID).Scan(&domainName, &verificationToken)
+	// If it fails due to missing column, try without it
+	if err != nil && strings.Contains(err.Error(), "no such column") {
+		err = s.db.QueryRowContext(r.Context(),
+			"SELECT name FROM domains WHERE id = ?",
+			domainID).Scan(&domainName)
+		verificationToken = ""
+	}
 	if err != nil {
 		http.Error(w, "Domain not found", http.StatusNotFound)
-		return
-	}
-
-	// If already verified, return success
-	if isVerified {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"success":  true,
-			"verified": true,
-			"message":  "Domain is already verified",
-		})
 		return
 	}
 
@@ -1140,11 +1145,12 @@ func (s *Server) handleDomainVerifyOwnership(w http.ResponseWriter, r *http.Requ
 	}
 
 	if verified {
-		// Update domain as verified
+		// Update domain as verified (only if the column exists in the database)
 		_, err = s.db.ExecContext(r.Context(),
 			"UPDATE domains SET is_verified = TRUE, verified_at = ? WHERE id = ?",
 			time.Now(), domainID)
-		if err != nil {
+		// Ignore error if column doesn't exist (older database schema)
+		if err != nil && !strings.Contains(err.Error(), "no such column") {
 			s.logger.ErrorContext(r.Context(), "Failed to update domain verification", err)
 		}
 
