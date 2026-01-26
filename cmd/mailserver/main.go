@@ -779,19 +779,36 @@ var serveCmd = &cobra.Command{
 		fmt.Println("\nServer is running. Press Ctrl+C to stop.")
 		logger.Info("All services started successfully")
 
-		// Setup signal handling for graceful shutdown
+		// Setup signal handling for graceful shutdown and certificate reload
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 
-		// Wait for shutdown signal
-		sig := <-sigCh
-		logger.Info("Received shutdown signal", "signal", sig.String())
-		fmt.Printf("\nReceived signal %s, shutting down...\n", sig)
+		// Handle signals in a loop to support hot reload
+		for sig := range sigCh {
+			switch sig {
+			case syscall.SIGHUP:
+				// Reload certificates without shutdown
+				logger.Info("Received SIGHUP signal, reloading certificates")
+				if err := tlsManager.ReloadCertificates(); err != nil {
+					logger.Error("Failed to reload certificates", "error", err)
+				} else {
+					logger.Info("Certificates reloaded successfully")
+				}
 
-		// Perform graceful shutdown
-		cleanup()
+			case syscall.SIGINT, syscall.SIGTERM:
+				// Shutdown
+				logger.Info("Received shutdown signal", "signal", sig.String())
+				fmt.Printf("\nReceived signal %s, shutting down...\n", sig)
 
-		logger.Info("Server stopped")
+				// Perform graceful shutdown
+				cleanup()
+
+				logger.Info("Server stopped")
+				return nil
+			}
+		}
+
+		// This should never be reached unless the signal channel is closed
 		return nil
 	},
 }

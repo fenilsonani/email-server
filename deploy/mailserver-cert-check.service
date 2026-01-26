@@ -1,0 +1,20 @@
+[Unit]
+Description=Run mailserver certificate health checks
+After=network-online.target mailserver.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/bin/mailserver doctor --category security
+
+# Set a timeout to prevent hanging
+TimeoutStartSec=60s
+
+# Don't start if mailserver is already running a check
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mailserver-cert-check
+
+# Set nice priority to not impact mail server
+Nice=10
