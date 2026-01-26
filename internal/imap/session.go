@@ -194,6 +194,13 @@ func (s *Session) Login(username, password string) error {
 	log.Printf("IMAP v2: Login successful for %s", username)
 	// Log successful auth attempt
 	s.server.authenticator.LogAuthAttempt(ctx, &user.ID, username, s.remoteAddr, "imap", true, "")
+
+	// Ensure all default mailboxes exist for this user (handles existing users that may not have new mailboxes like Screener)
+	if err := s.server.store.EnsureDefaultMailboxes(ctx, user.ID); err != nil {
+		log.Printf("IMAP v2: Warning - failed to ensure default mailboxes for user %d: %v", user.ID, err)
+		// Log warning but don't fail the login - user can still access existing mailboxes
+	}
+
 	return nil
 }
 

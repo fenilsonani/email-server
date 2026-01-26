@@ -160,6 +160,39 @@ func (s *Store) InitializeUserMailboxes(ctx context.Context, userID int64) error
 	return nil
 }
 
+// EnsureDefaultMailboxes ensures all default mailboxes exist for a user, creating any that are missing
+func (s *Store) EnsureDefaultMailboxes(ctx context.Context, userID int64) error {
+	defaultMailboxes := []struct {
+		name       string
+		specialUse storage.SpecialUse
+	}{
+		{"INBOX", ""},
+		{"Drafts", storage.SpecialUseDrafts},
+		{"Sent", storage.SpecialUseSent},
+		{"Junk", storage.SpecialUseJunk},
+		{"Trash", storage.SpecialUseTrash},
+		{"Archive", storage.SpecialUseArchive},
+		{"Screener", ""}, // For first-contact filtering feature
+	}
+
+	for _, mb := range defaultMailboxes {
+		// Check if mailbox already exists
+		existing, err := s.GetMailbox(ctx, userID, mb.name)
+		if err == nil && existing != nil {
+			// Mailbox already exists, skip
+			continue
+		}
+
+		// Create missing mailbox
+		_, err = s.CreateMailbox(ctx, userID, mb.name, mb.specialUse)
+		if err != nil {
+			return fmt.Errorf("failed to create %s mailbox: %w", mb.name, err)
+		}
+	}
+
+	return nil
+}
+
 // GetMailbox retrieves a mailbox by name
 func (s *Store) GetMailbox(ctx context.Context, userID int64, name string) (*storage.Mailbox, error) {
 	var mb storage.Mailbox

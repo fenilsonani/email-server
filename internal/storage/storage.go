@@ -144,6 +144,8 @@ type MessageStore interface {
 	RenameMailbox(ctx context.Context, userID int64, oldName, newName string) error
 	DeleteMailbox(ctx context.Context, userID int64, name string) error
 	SubscribeMailbox(ctx context.Context, userID int64, name string, subscribed bool) error
+	InitializeUserMailboxes(ctx context.Context, userID int64) error
+	EnsureDefaultMailboxes(ctx context.Context, userID int64) error
 
 	// Message operations
 	AppendMessage(ctx context.Context, mailboxID int64, flags []Flag, date time.Time, body io.Reader) (*Message, error)
