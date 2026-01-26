@@ -1,47 +1,48 @@
 # CodeRabbit Configuration
 # https://docs.coderabbit.ai/guides/configure-coderabbit
 
-reviews:
-  # Enable automatic reviews on all PRs
-  auto_review: true
-
 language: "en-US"
 
-# Path-based instructions for specific file types
-path_instructions:
-  - path: "tests/**/*.go"
-    instructions: |
-      Focus on test quality, coverage, and best practices.
-      - Verify tests are independent and properly isolated
-      - Check for proper cleanup and resource management
-      - Validate test data and fixtures are appropriate
-      - Ensure thread-safe concurrent testing patterns
+reviews:
+  # Enable automatic reviews on all PRs
+  auto_review:
+    enabled: true
 
-  - path: "internal/**/*_test.go"
-    instructions: |
-      Review unit test quality and coverage.
-      - Check for comprehensive test cases
-      - Verify edge cases and error handling
-      - Validate mocking strategy
+  # Path-based instructions for specific file types
+  path_instructions:
+    - path: "tests/**/*.go"
+      instructions: |
+        Focus on test quality, coverage, and best practices.
+        - Verify tests are independent and properly isolated
+        - Check for proper cleanup and resource management
+        - Validate test data and fixtures are appropriate
+        - Ensure thread-safe concurrent testing patterns
 
-  - path: ".github/workflows/*.yml"
-    instructions: |
-      Review CI/CD workflow configuration.
-      - Verify jobs are properly configured
-      - Check for security scanning integration
-      - Validate test execution strategy
+    - path: "internal/**/*_test.go"
+      instructions: |
+        Review unit test quality and coverage.
+        - Check for comprehensive test cases
+        - Verify edge cases and error handling
+        - Validate mocking strategy
 
-  - path: "Makefile"
-    instructions: |
-      Review build and test orchestration.
-      - Verify targets are well-organized
-      - Check for proper dependency management
-      - Validate test categories (unit, integration, e2e)
+    - path: ".github/workflows/*.yml"
+      instructions: |
+        Review CI/CD workflow configuration.
+        - Verify jobs are properly configured
+        - Check for security scanning integration
+        - Validate test execution strategy
 
-  - path: "**/*.go"
-    instructions: |
-      Check Go code quality, security, and best practices.
-      - Look for potential vulnerabilities
-      - Check for performance issues
-      - Validate error handling
-      - Ensure Go idioms are followed
+    - path: "Makefile"
+      instructions: |
+        Review build and test orchestration.
+        - Verify targets are well-organized
+        - Check for proper dependency management
+        - Validate test categories (unit, integration, e2e)
+
+    - path: "**/*.go"
+      instructions: |
+        Check Go code quality, security, and best practices.
+        - Look for potential vulnerabilities
+        - Check for performance issues
+        - Validate error handling
+        - Ensure Go idioms are followed
