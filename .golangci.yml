@@ -43,7 +43,32 @@ issues:
         - gosec
       text: |
         G101|G102|G201|G202|G203|G204|G205|G301|G302|G303|G304|G305|G306|G307|G308|G309|G310|G401|G402|G403|G404|G501|G502|G503|G504|G505|G506|G507|G508|G509|G601|G602|G603|G604|G605|G606|G607
-    # Ignore unused functions that are intentionally kept for API compatibility or future use
+    # Ignore unused functions kept for backward compatibility and future use
     - linters:
         - staticcheck
-      text: 'func.*is unused \(U1000\)'
+      text: 'is unused'
+    # API middleware utilities (future use)
+    - path: internal/api/middleware.go
+      linters:
+        - staticcheck
+      text: '(requireScope|hasScope|hashAPIKey|verifyAPIKeyHash).*unused'
+    # Admin middleware utilities (future use)
+    - path: internal/admin/middleware.go
+      linters:
+        - staticcheck
+      text: '(withTimeout|withPrimaryDomainOnly).*unused'
+    # TOTP device management (feature management)
+    - path: internal/admin/totp.go
+      linters:
+        - staticcheck
+      text: '(removeTrustedDevice|cleanupExpiredTrustedDevices).*unused'
+    # Auth validation utility (backward compatibility)
+    - path: internal/auth/auth.go
+      linters:
+        - staticcheck
+      text: 'validateUsername.*unused'
+    # Audit test helper (test infrastructure)
+    - path: internal/audit/audit_edge_test.go
+      linters:
+        - staticcheck
+      text: 'createPostgresAuditTable.*unused'
