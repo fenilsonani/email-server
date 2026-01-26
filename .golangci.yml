@@ -43,3 +43,7 @@ issues:
         - gosec
       text: |
         G101|G102|G201|G202|G203|G204|G205|G301|G302|G303|G304|G305|G306|G307|G308|G309|G310|G401|G402|G403|G404|G501|G502|G503|G504|G505|G506|G507|G508|G509|G601|G602|G603|G604|G605|G606|G607
+    # Ignore unused functions that are intentionally kept for API compatibility or future use
+    - linters:
+        - staticcheck
+      text: 'func.*is unused \(U1000\)'
