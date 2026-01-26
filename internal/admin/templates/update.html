@@ -1,0 +1,604 @@
+<div class="breadcrumbs">
+    <a href="/admin/">home</a>
+    <span>&gt;</span>
+    <span>system update</span>
+</div>
+
+<div class="page-header">
+    <h1>System Updates</h1>
+    <p style="color: var(--text-muted); margin-top: 0.5rem;">Manage and deploy system updates</p>
+</div>
+
+<!-- Mode Selector -->
+<div class="card" style="margin-bottom: 1.5rem;">
+    <h2>Update Mode</h2>
+    <p style="color: var(--text-muted); margin-bottom: 1rem;">
+        Choose your update experience: Easy one-click updates or advanced control with branches and PRs.
+    </p>
+
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1rem;">
+        <!-- Normal Mode Card -->
+        <div class="mode-card" id="normalModeCard" style="border: 2px solid var(--primary); padding: 1.5rem; border-radius: 8px; cursor: pointer; background: var(--bg);">
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 1rem;">
+                <h3 style="margin: 0;">Normal Mode</h3>
+                <input type="radio" name="mode" value="normal" id="modeNormal" checked style="width: 20px; height: 20px;">
+            </div>
+            <p style="color: var(--text-muted); margin: 0;">One-click stable release updates with automatic backups and health checks.</p>
+            <ul style="margin: 1rem 0; color: var(--text-muted); font-size: 0.9rem;">
+                <li>✓ Automatic backups before update</li>
+                <li>✓ One-click deployment</li>
+                <li>✓ Health checks after update</li>
+                <li>✓ Automatic rollback on failure</li>
+            </ul>
+        </div>
+
+        <!-- Power Mode Card -->
+        <div class="mode-card" id="powerModeCard" style="border: 2px solid var(--border); padding: 1.5rem; border-radius: 8px; cursor: pointer; background: var(--bg); opacity: 0.7;">
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 1rem;">
+                <h3 style="margin: 0;">Power User Mode</h3>
+                <input type="radio" name="mode" value="power" id="modePower" style="width: 20px; height: 20px;">
+            </div>
+            <p style="color: var(--text-muted); margin: 0;">Deploy from PRs, branches, and commits with dry-run capability.</p>
+            <ul style="margin: 1rem 0; color: var(--text-muted); font-size: 0.9rem;">
+                <li>✓ Deploy from releases, PRs, branches</li>
+                <li>✓ Custom commit deployment</li>
+                <li>✓ Dry-run testing</li>
+                <li>✓ Full control and flexibility</li>
+            </ul>
+        </div>
+    </div>
+</div>
+
+<!-- Current Status -->
+<div class="card" style="margin-bottom: 1.5rem;">
+    <h2>Current Status</h2>
+    <div id="currentStatus" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem;">
+        <div style="padding: 1rem; background: var(--bg); border-radius: 6px;">
+            <div style="color: var(--text-muted); font-size: 0.875rem;">Current Version</div>
+            <div style="font-size: 1.25rem; font-weight: bold; margin-top: 0.25rem;" id="currentVersion">Loading...</div>
+        </div>
+        <div style="padding: 1rem; background: var(--bg); border-radius: 6px;">
+            <div style="color: var(--text-muted); font-size: 0.875rem;">Current Commit</div>
+            <div style="font-size: 0.875rem; font-family: monospace; margin-top: 0.25rem;" id="currentCommit">Loading...</div>
+        </div>
+        <div style="padding: 1rem; background: var(--bg); border-radius: 6px;">
+            <div style="color: var(--text-muted); font-size: 0.875rem;">Available Update</div>
+            <div style="font-size: 1rem; font-weight: bold; margin-top: 0.25rem;" id="availableUpdate">
+                <span id="availableUpdateText">Checking...</span>
+                <button id="checkUpdatesBtn" class="btn btn-sm btn-secondary" style="margin-left: 0.5rem; display: none;">Check Now</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Normal Mode View -->
+<div id="normalModeView" style="display: block;">
+    <div class="card" style="margin-bottom: 1.5rem;">
+        <h2>Available Updates</h2>
+        <div id="releasesList" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); gap: 1rem;">
+            <div style="padding: 2rem; text-align: center; color: var(--text-muted);">Loading releases...</div>
+        </div>
+    </div>
+</div>
+
+<!-- Power Mode View -->
+<div id="powerModeView" style="display: none;">
+    <div class="card" style="margin-bottom: 1.5rem;">
+        <h2>Deploy From</h2>
+
+        <!-- Tabs -->
+        <div style="display: flex; gap: 0; border-bottom: 1px solid var(--border); margin-bottom: 1.5rem;">
+            <button class="tab-btn active" data-tab="releases">Releases</button>
+            <button class="tab-btn" data-tab="branches">Branches</button>
+            <button class="tab-btn" data-tab="prs">Pull Requests</button>
+            <button class="tab-btn" data-tab="commits">Commits</button>
+        </div>
+
+        <!-- Releases Tab -->
+        <div class="tab-content active" id="tab-releases">
+            <div id="releasesList" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); gap: 1rem;">
+                <div style="padding: 2rem; text-align: center; color: var(--text-muted);">Loading releases...</div>
+            </div>
+        </div>
+
+        <!-- Branches Tab -->
+        <div class="tab-content" id="tab-branches" style="display: none;">
+            <div class="form-group">
+                <label for="branchInput">Branch Name</label>
+                <input type="text" id="branchInput" class="form-control" placeholder="e.g., main, develop, feature/xyz" style="margin-bottom: 1rem;">
+                <button class="btn btn-secondary" onclick="deployFromBranch();">Deploy from Branch</button>
+            </div>
+        </div>
+
+        <!-- PRs Tab -->
+        <div class="tab-content" id="tab-prs" style="display: none;">
+            <div class="form-group">
+                <label for="prInput">PR Number</label>
+                <input type="number" id="prInput" class="form-control" placeholder="e.g., 123" style="margin-bottom: 1rem;">
+                <button class="btn btn-secondary" onclick="deployFromPR();">Deploy from PR</button>
+            </div>
+        </div>
+
+        <!-- Commits Tab -->
+        <div class="tab-content" id="tab-commits" style="display: none;">
+            <div class="form-group">
+                <label for="commitInput">Commit SHA</label>
+                <input type="text" id="commitInput" class="form-control" placeholder="e.g., a1b2c3d4..." style="margin-bottom: 1rem;">
+                <button class="btn btn-secondary" onclick="deployFromCommit();">Deploy from Commit</button>
+            </div>
+        </div>
+
+        <!-- Advanced Options -->
+        <div style="margin-top: 1.5rem; padding: 1rem; background: var(--bg); border-radius: 6px;">
+            <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 1rem;">
+                <input type="checkbox" id="dryRunCheckbox">
+                <label for="dryRunCheckbox" style="margin: 0;">Dry-run (preview without applying)</label>
+            </div>
+            <div style="display: flex; align-items: center; gap: 0.5rem;">
+                <input type="checkbox" id="skipHealthCheckCheckbox">
+                <label for="skipHealthCheckCheckbox" style="margin: 0;">Skip health check (not recommended)</label>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Update History -->
+<div class="card">
+    <h2>Update History</h2>
+    <div style="overflow-x: auto;">
+        <table style="width: 100%; border-collapse: collapse;">
+            <thead>
+                <tr style="border-bottom: 2px solid var(--border);">
+                    <th style="text-align: left; padding: 0.75rem;">Date</th>
+                    <th style="text-align: left; padding: 0.75rem;">Type</th>
+                    <th style="text-align: left; padding: 0.75rem;">From → To</th>
+                    <th style="text-align: left; padding: 0.75rem;">Duration</th>
+                    <th style="text-align: left; padding: 0.75rem;">Status</th>
+                    <th style="text-align: left; padding: 0.75rem;">Admin</th>
+                    <th style="text-align: left; padding: 0.75rem;">Actions</th>
+                </tr>
+            </thead>
+            <tbody id="updateHistoryTable">
+                <tr>
+                    <td colspan="7" style="text-align: center; padding: 2rem; color: var(--text-muted);">Loading history...</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Progress Modal -->
+<div id="progressModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 1000; justify-content: center; align-items: center;">
+    <div class="card" style="width: 90%; max-width: 600px; max-height: 90vh; overflow-y: auto;">
+        <h2 style="margin-top: 0;">Update in Progress</h2>
+
+        <div style="margin-bottom: 1.5rem;">
+            <div style="display: flex; justify-content: space-between; margin-bottom: 0.5rem;">
+                <span>Overall Progress</span>
+                <span id="progressPercent">0%</span>
+            </div>
+            <div style="width: 100%; height: 24px; background: var(--bg); border-radius: 4px; overflow: hidden;">
+                <div id="progressBar" style="width: 0%; height: 100%; background: var(--primary); transition: width 0.3s ease;"></div>
+            </div>
+        </div>
+
+        <div id="stepsList" style="display: flex; flex-direction: column; gap: 0.75rem; margin-bottom: 1.5rem;">
+            <!-- Steps will be populated here -->
+        </div>
+
+        <div style="display: flex; gap: 0.5rem; justify-content: flex-end;">
+            <button class="btn btn-secondary" id="cancelUpdateBtn" onclick="cancelUpdate();">Cancel</button>
+            <button class="btn btn-warning" id="rollbackBtn" onclick="rollbackUpdate();" style="display: none;">Rollback</button>
+        </div>
+    </div>
+</div>
+
+<style>
+.mode-card {
+    transition: all 0.3s ease;
+}
+.mode-card:hover {
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+.mode-card input[type="radio"] {
+    cursor: pointer;
+}
+
+.tab-btn {
+    padding: 0.75rem 1.5rem;
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-weight: 500;
+    border-bottom: 2px solid transparent;
+    transition: all 0.3s ease;
+}
+.tab-btn:hover {
+    color: var(--text);
+}
+.tab-btn.active {
+    color: var(--primary);
+    border-bottom-color: var(--primary);
+}
+
+.tab-content {
+    display: none;
+}
+.tab-content.active {
+    display: block;
+}
+
+.release-card {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 1rem;
+    background: var(--card-bg);
+    display: flex;
+    flex-direction: column;
+}
+.release-card h3 {
+    margin: 0 0 0.5rem 0;
+}
+.release-card .release-info {
+    color: var(--text-muted);
+    font-size: 0.875rem;
+    margin-bottom: 0.75rem;
+}
+.release-card .release-changelog {
+    color: var(--text-muted);
+    font-size: 0.875rem;
+    max-height: 100px;
+    overflow-y: auto;
+    padding: 0.75rem;
+    background: var(--bg);
+    border-radius: 4px;
+    margin-bottom: 0.75rem;
+    flex-grow: 1;
+}
+.release-card .btn {
+    margin-top: auto;
+}
+
+.step-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.75rem;
+    padding: 0.75rem;
+    background: var(--bg);
+    border-radius: 4px;
+}
+.step-icon {
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: bold;
+    font-size: 0.75rem;
+    flex-shrink: 0;
+}
+.step-icon.pending {
+    background: var(--border);
+    color: var(--text-muted);
+}
+.step-icon.in-progress {
+    background: var(--primary);
+    color: white;
+}
+.step-icon.completed {
+    background: #28a745;
+    color: white;
+}
+.step-icon.failed {
+    background: #dc3545;
+    color: white;
+}
+.step-content {
+    flex-grow: 1;
+}
+.step-name {
+    font-weight: 500;
+    margin-bottom: 0.25rem;
+}
+.step-message {
+    color: var(--text-muted);
+    font-size: 0.875rem;
+}
+</style>
+
+<script>
+let currentUpdateId = null;
+let updateStatusPoll = null;
+
+// Mode selector
+document.querySelectorAll('.mode-card').forEach(card => {
+    card.addEventListener('click', function() {
+        const radio = this.querySelector('input[type="radio"]');
+        radio.checked = true;
+        updateModeView();
+    });
+});
+
+document.querySelectorAll('input[name="mode"]').forEach(radio => {
+    radio.addEventListener('change', updateModeView);
+});
+
+function updateModeView() {
+    const mode = document.querySelector('input[name="mode"]:checked').value;
+    const normalView = document.getElementById('normalModeView');
+    const powerView = document.getElementById('powerModeView');
+    const normalCard = document.getElementById('normalModeCard');
+    const powerCard = document.getElementById('powerModeCard');
+
+    if (mode === 'normal') {
+        normalView.style.display = 'block';
+        powerView.style.display = 'none';
+        normalCard.style.borderColor = 'var(--primary)';
+        normalCard.style.opacity = '1';
+        powerCard.style.borderColor = 'var(--border)';
+        powerCard.style.opacity = '0.7';
+        loadReleases();
+    } else {
+        normalView.style.display = 'none';
+        powerView.style.display = 'block';
+        normalCard.style.borderColor = 'var(--border)';
+        normalCard.style.opacity = '0.7';
+        powerCard.style.borderColor = 'var(--primary)';
+        powerCard.style.opacity = '1';
+    }
+}
+
+// Tab switching
+document.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.addEventListener('click', function() {
+        const tabName = this.dataset.tab;
+        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+        document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+        this.classList.add('active');
+        document.getElementById(`tab-${tabName}`).classList.add('active');
+    });
+});
+
+// Load current status
+function loadCurrentStatus() {
+    fetch('/admin/system/update/status')
+        .then(r => r.json())
+        .then(data => {
+            document.getElementById('currentVersion').textContent = data.current_version || 'Unknown';
+            document.getElementById('currentCommit').textContent = data.current_commit ? data.current_commit.substring(0, 8) : 'Unknown';
+
+            if (data.available_update) {
+                document.getElementById('availableUpdateText').textContent =
+                    `Update available: ${data.available_update.version}`;
+            } else {
+                document.getElementById('availableUpdateText').textContent = 'No updates available';
+            }
+        })
+        .catch(err => console.error('Failed to load status:', err));
+}
+
+// Load releases
+function loadReleases() {
+    fetch('/admin/system/update/available')
+        .then(r => r.json())
+        .then(releases => {
+            const container = document.getElementById('releasesList');
+            if (!releases || releases.length === 0) {
+                container.innerHTML = '<div style="grid-column: 1/-1; text-align: center; padding: 2rem; color: var(--text-muted);">No releases available</div>';
+                return;
+            }
+
+            container.innerHTML = releases.map(rel => `
+                <div class="release-card">
+                    <h3>${rel.version}</h3>
+                    <div class="release-info">
+                        Published: ${new Date(rel.published_at).toLocaleDateString()}
+                    </div>
+                    ${rel.changelog ? `<div class="release-changelog">${rel.changelog}</div>` : ''}
+                    <button class="btn btn-primary" onclick="startUpdate('release', '${rel.version}');">
+                        Deploy Version ${rel.version}
+                    </button>
+                </div>
+            `).join('');
+        })
+        .catch(err => console.error('Failed to load releases:', err));
+}
+
+// Load update history
+function loadUpdateHistory() {
+    fetch('/admin/system/update/history')
+        .then(r => r.json())
+        .then(history => {
+            const tbody = document.getElementById('updateHistoryTable');
+            if (!history || history.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; padding: 2rem; color: var(--text-muted);">No updates yet</td></tr>';
+                return;
+            }
+
+            tbody.innerHTML = history.map(h => `
+                <tr style="border-bottom: 1px solid var(--border);">
+                    <td style="padding: 0.75rem;">${new Date(h.started_at).toLocaleDateString()}</td>
+                    <td style="padding: 0.75rem;">${h.update_type}</td>
+                    <td style="padding: 0.75rem; font-size: 0.875rem;">${h.from_version} → ${h.to_version}</td>
+                    <td style="padding: 0.75rem;">${h.duration_seconds ? h.duration_seconds + 's' : '-'}</td>
+                    <td style="padding: 0.75rem;">
+                        <span style="padding: 0.25rem 0.75rem; border-radius: 4px; background: ${getStatusColor(h.status)}; color: white; font-size: 0.75rem;">
+                            ${h.status}
+                        </span>
+                    </td>
+                    <td style="padding: 0.75rem;">${h.started_by}</td>
+                    <td style="padding: 0.75rem;">
+                        ${h.rollback_available ? `<button class="btn btn-sm btn-warning" onclick="rollbackToUpdate(${h.id});">Rollback</button>` : '-'}
+                    </td>
+                </tr>
+            `).join('');
+        })
+        .catch(err => console.error('Failed to load history:', err));
+}
+
+function getStatusColor(status) {
+    switch(status) {
+        case 'completed': return '#28a745';
+        case 'failed': return '#dc3545';
+        case 'in_progress': return '#007bff';
+        case 'rolled_back': return '#ffc107';
+        default: return '#6c757d';
+    }
+}
+
+function startUpdate(targetType, target) {
+    const mode = document.querySelector('input[name="mode"]:checked').value;
+    const dryRun = document.getElementById('dryRunCheckbox')?.checked || false;
+    const skipHealthCheck = document.getElementById('skipHealthCheckCheckbox')?.checked || false;
+
+    const formData = new FormData();
+    formData.append('target_type', targetType);
+    formData.append('target', target);
+    formData.append('mode', mode);
+    formData.append('dry_run', dryRun);
+    formData.append('skip_health_check', skipHealthCheck);
+
+    fetch('/admin/system/update/start', {
+        method: 'POST',
+        body: formData
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success || data.update_id) {
+            currentUpdateId = data.update_id;
+            showProgressModal();
+            pollUpdateStatus();
+        } else {
+            alert('Failed to start update: ' + (data.message || 'Unknown error'));
+        }
+    })
+    .catch(err => alert('Error: ' + err));
+}
+
+function deployFromBranch() {
+    const branch = document.getElementById('branchInput').value.trim();
+    if (!branch) {
+        alert('Please enter a branch name');
+        return;
+    }
+    startUpdate('branch', branch);
+}
+
+function deployFromPR() {
+    const pr = document.getElementById('prInput').value.trim();
+    if (!pr) {
+        alert('Please enter a PR number');
+        return;
+    }
+    startUpdate('pr', pr);
+}
+
+function deployFromCommit() {
+    const commit = document.getElementById('commitInput').value.trim();
+    if (!commit) {
+        alert('Please enter a commit SHA');
+        return;
+    }
+    startUpdate('commit', commit);
+}
+
+function showProgressModal() {
+    document.getElementById('progressModal').style.display = 'flex';
+}
+
+function hideProgressModal() {
+    document.getElementById('progressModal').style.display = 'none';
+}
+
+function cancelUpdate() {
+    if (confirm('Are you sure you want to cancel this update?')) {
+        // TODO: Implement cancel endpoint
+        alert('Cancel not yet implemented');
+    }
+}
+
+function rollbackUpdate() {
+    if (confirm('Are you sure you want to rollback to the previous version?')) {
+        fetch(`/admin/system/update/rollback/${currentUpdateId}`, { method: 'POST' })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    alert('Rollback initiated');
+                    pollUpdateStatus();
+                } else {
+                    alert('Rollback failed: ' + (data.message || 'Unknown error'));
+                }
+            })
+            .catch(err => alert('Error: ' + err));
+    }
+}
+
+function rollbackToUpdate(updateId) {
+    if (confirm('Are you sure you want to rollback to this version?')) {
+        fetch(`/admin/system/update/rollback/${updateId}`, { method: 'POST' })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    alert('Rollback initiated');
+                    loadUpdateHistory();
+                } else {
+                    alert('Rollback failed: ' + (data.message || 'Unknown error'));
+                }
+            })
+            .catch(err => alert('Error: ' + err));
+    }
+}
+
+function pollUpdateStatus() {
+    if (!currentUpdateId) return;
+
+    fetch(`/admin/system/update/progress?id=${currentUpdateId}`)
+        .then(r => r.json())
+        .then(data => {
+            document.getElementById('progressPercent').textContent = data.progress + '%';
+            document.getElementById('progressBar').style.width = data.progress + '%';
+
+            // Update steps
+            const stepsList = document.getElementById('stepsList');
+            stepsList.innerHTML = (data.steps || []).map(step => `
+                <div class="step-item">
+                    <div class="step-icon ${step.status}">
+                        ${step.status === 'completed' ? '✓' : step.status === 'failed' ? '✗' : step.number}
+                    </div>
+                    <div class="step-content">
+                        <div class="step-name">${step.name}</div>
+                        ${step.message ? `<div class="step-message">${step.message}</div>` : ''}
+                    </div>
+                </div>
+            `).join('');
+
+            // Show/hide rollback button based on status
+            document.getElementById('rollbackBtn').style.display =
+                (data.status === 'failed' || data.status === 'completed') ? 'block' : 'none';
+
+            if (data.status === 'completed' || data.status === 'failed') {
+                if (updateStatusPoll) clearInterval(updateStatusPoll);
+                setTimeout(() => {
+                    hideProgressModal();
+                    loadCurrentStatus();
+                    loadUpdateHistory();
+                }, 2000);
+            } else if (data.status !== 'in_progress') {
+                if (updateStatusPoll) clearInterval(updateStatusPoll);
+                hideProgressModal();
+            }
+        })
+        .catch(err => console.error('Failed to poll status:', err));
+
+    if (!updateStatusPoll) {
+        updateStatusPoll = setInterval(pollUpdateStatus, 1000);
+    }
+}
+
+// Initial load
+loadCurrentStatus();
+loadUpdateHistory();
+updateModeView();
+</script>

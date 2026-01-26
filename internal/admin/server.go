@@ -100,6 +100,7 @@ func NewServer(cfg *config.Config, db *sql.DB, authenticator *auth.Authenticator
 		"dns_check.html",
 		"test_email.html",
 		"system.html",
+		"update.html",
 		"2fa_setup.html",
 		"email_preview.html",
 		"features.html",
@@ -260,6 +261,17 @@ func (s *Server) Start(listen string) error {
 	mux.HandleFunc("/admin/system/backup", s.withAuth(s.handleBackup))
 	mux.HandleFunc("/admin/system/restore", s.withAuth(s.handleRestore))
 	mux.HandleFunc("/admin/system/dkim-autorotate", s.withAuth(s.handleDKIMAutoRotate))
+
+	// Update system routes
+	mux.HandleFunc("/admin/system/update", s.withAuth(s.handleUpdate))
+	mux.HandleFunc("/admin/system/update/status", s.withAuth(s.HandleGetUpdateStatus))
+	mux.HandleFunc("/admin/system/update/available", s.withAuth(s.HandleGetAvailableUpdates))
+	mux.HandleFunc("/admin/system/update/start", s.withAuth(s.HandleStartUpdate))
+	mux.HandleFunc("/admin/system/update/progress", s.withAuth(s.HandleGetUpdateProgress))
+	mux.HandleFunc("/admin/system/update/history", s.withAuth(s.HandleGetUpdateHistory))
+	mux.HandleFunc("/admin/system/update/rollback/", s.withAuth(s.HandleRollbackUpdate))
+	mux.HandleFunc("/admin/system/update/settings", s.withAuth(s.HandleGetUpdateSettings))
+	mux.HandleFunc("/admin/system/update/settings/update", s.withAuth(s.HandleUpdateSettings))
 
 	// Two-Factor Authentication routes
 	mux.HandleFunc("/admin/2fa/setup", s.withAuth(s.handle2FASetup))

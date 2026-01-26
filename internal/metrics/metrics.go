@@ -73,6 +73,28 @@ var (
 		Help: "Total IMAP commands executed",
 	}, []string{"command"})
 
+	// IMAP Connection Health Metrics
+	IMAPDisconnectReasons = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "mailserver_imap_disconnects_total",
+		Help: "Total IMAP disconnects by reason (timeout, client_close, error, idle_timeout)",
+	}, []string{"reason"})
+
+	IMAPKeepalivesSent = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "mailserver_imap_keepalives_sent_total",
+		Help: "Total IDLE keepalives sent to maintain connections",
+	})
+
+	IMAPConnectionDuration = promauto.NewHistogram(prometheus.HistogramOpts{
+		Name:    "mailserver_imap_connection_duration_seconds",
+		Help:    "Duration of IMAP connections",
+		Buckets: prometheus.ExponentialBuckets(60, 2, 15), // 1min to ~22 days
+	})
+
+	IMAPIdleSessions = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "mailserver_imap_idle_sessions",
+		Help: "Number of currently active IMAP IDLE sessions",
+	})
+
 	// DAV Metrics
 	DAVRequests = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "mailserver_dav_requests_total",
@@ -140,4 +162,29 @@ func ReleaseConnection(protocol string) {
 // RecordError records an error
 func RecordError(component, errorType string) {
 	Errors.WithLabelValues(component, errorType).Inc()
+}
+
+// RecordIMAPDisconnect records an IMAP disconnection with reason
+func RecordIMAPDisconnect(reason string) {
+	IMAPDisconnectReasons.WithLabelValues(reason).Inc()
+}
+
+// RecordIMAPKeepalive records an IMAP keepalive sent
+func RecordIMAPKeepalive() {
+	IMAPKeepalivesSent.Inc()
+}
+
+// RecordIMAPConnectionDuration records the duration of an IMAP connection
+func RecordIMAPConnectionDuration(durationSeconds float64) {
+	IMAPConnectionDuration.Observe(durationSeconds)
+}
+
+// RecordIMAPIdleStart records the start of an IDLE session
+func RecordIMAPIdleStart() {
+	IMAPIdleSessions.Inc()
+}
+
+// RecordIMAPIdleEnd records the end of an IDLE session
+func RecordIMAPIdleEnd() {
+	IMAPIdleSessions.Dec()
 }

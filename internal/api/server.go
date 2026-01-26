@@ -81,6 +81,9 @@ func (s *Server) Start(listen string) error {
 	// Stats
 	mux.Handle("/api/v1/stats", s.authMiddleware(http.HandlerFunc(s.handleStats)))
 
+	// Webhooks
+	mux.Handle("/api/v1/webhooks", s.authMiddleware(http.HandlerFunc(s.handleWebhooks)))
+
 	// Tracking endpoints (no auth - public tracking pixels/links)
 	mux.HandleFunc("/t/o/", s.handleTrackOpen)
 	mux.HandleFunc("/t/c/", s.handleTrackClick)

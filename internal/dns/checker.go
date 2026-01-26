@@ -45,6 +45,11 @@ var (
 	domainRegex = regexp.MustCompile(`^([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)*[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?$`)
 )
 
+// isIPAddress checks if the given string is an IP address
+func isIPAddress(s string) bool {
+	return net.ParseIP(s) != nil
+}
+
 // NewChecker creates a new DNS checker for the given domain
 func NewChecker(domain, mailServer string) (*Checker, error) {
 	// Validate inputs
@@ -53,6 +58,14 @@ func NewChecker(domain, mailServer string) (*Checker, error) {
 	}
 	if mailServer == "" {
 		return nil, fmt.Errorf("%w: mail server cannot be empty", ErrInvalidMailServer)
+	}
+
+	// Reject localhost and IP addresses
+	if strings.ToLower(domain) == "localhost" {
+		return nil, fmt.Errorf("%w: localhost is not a valid domain", ErrInvalidDomain)
+	}
+	if isIPAddress(domain) {
+		return nil, fmt.Errorf("%w: IP addresses are not valid domains", ErrInvalidDomain)
 	}
 
 	// Validate domain format

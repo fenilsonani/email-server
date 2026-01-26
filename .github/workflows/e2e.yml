@@ -1,0 +1,99 @@
+name: End-to-End Tests
+
+on:
+  push:
+    branches: [ main ]
+  schedule:
+    - cron: '0 3 * * *'  # Run daily at 3 AM UTC
+
+jobs:
+  e2e:
+    name: E2E Tests
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        go-version: ['1.25.x']
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: testpass
+          POSTGRES_DB: testdb
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+      redis:
+        image: redis:7
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: ${{ matrix.go-version }}
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Wait for PostgreSQL
+        run: |
+          until pg_isready -h localhost -p 5432 -U postgres; do
+            echo 'Waiting for PostgreSQL...'
+            sleep 1
+          done
+
+      - name: Wait for Redis
+        run: |
+          until redis-cli -h localhost ping; do
+            echo 'Waiting for Redis...'
+            sleep 1
+          done
+
+      - name: Run E2E tests
+        run: make test-e2e
+        timeout-minutes: 15
+        env:
+          TEST_POSTGRES_DSN: postgres://postgres:testpass@localhost:5432/testdb?sslmode=disable
+          TEST_REDIS_URL: redis://localhost:6379
+
+      - name: Upload E2E test results
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: e2e-test-results
+          path: |
+            test-results/
+            *.log
+
+  e2e-summary:
+    name: E2E Tests Summary
+    runs-on: ubuntu-latest
+    needs: e2e
+    if: always()
+    steps:
+      - name: Check E2E tests status
+        run: |
+          if [ "${{ needs.e2e.result }}" == "success" ]; then
+            echo "✓ All E2E tests passed"
+            exit 0
+          else
+            echo "✗ Some E2E tests failed"
+            exit 1
+          fi

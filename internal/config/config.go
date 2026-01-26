@@ -26,6 +26,7 @@ type Config struct {
 	Sieve        SieveConfig        `koanf:"sieve"`
 	Autodiscover AutodiscoverConfig `koanf:"autodiscover"`
 	API          APIConfig          `koanf:"api"`
+	Updater      UpdaterConfig      `koanf:"updater"`
 }
 
 // ServerConfig holds server-related configuration
@@ -40,6 +41,15 @@ type ServerConfig struct {
 	IMAPSPort       int    `koanf:"imaps_port"`       // 993 for implicit TLS
 	DAVPort         int    `koanf:"dav_port"`         // 443 for CalDAV/CardDAV
 	ShutdownTimeout string `koanf:"shutdown_timeout"` // Graceful shutdown timeout
+	IMAP            IMAPConfig `koanf:"imap"`         // IMAP-specific settings
+}
+
+// IMAPConfig holds IMAP-specific configuration for connection management
+type IMAPConfig struct {
+	IdleKeepaliveInterval string `koanf:"idle_keepalive_interval"` // Keepalive interval during IDLE (default "3m")
+	TCPKeepalivePeriod    string `koanf:"tcp_keepalive_period"`    // TCP SO_KEEPALIVE period (default "60s")
+	MaxConnections        int    `koanf:"max_connections"`         // Maximum global IMAP connections (default 2000)
+	MaxConnectionsPerIP   int    `koanf:"max_connections_per_ip"`  // Maximum connections per IP (default 100)
 }
 
 // TLSConfig holds TLS/ACME configuration
@@ -177,6 +187,21 @@ type APIConfig struct {
 	MaxTotalAttachmentsSizeMB int      `koanf:"max_total_attachments_size_mb"` // Max total attachments size in MB (default 25)
 }
 
+// UpdaterConfig holds update system configuration
+type UpdaterConfig struct {
+	Mode                   string `koanf:"mode"`                      // Update mode: normal, power (default "normal")
+	AutoCheckEnabled       bool   `koanf:"auto_check_enabled"`        // Enable automatic update checks (default true)
+	AutoCheckInterval      int    `koanf:"auto_check_interval"`       // Check interval in seconds (default 3600)
+	GitRepoURL             string `koanf:"git_repo_url"`              // GitHub repository URL
+	BuildPath              string `koanf:"build_path"`                // Build working directory (default "/tmp/mailserver-build")
+	BackupBeforeUpdate     bool   `koanf:"backup_before_update"`      // Create backup before updating (default true)
+	MaxBackups             int    `koanf:"max_backups"`               // Maximum number of backups to keep (default 5)
+	RequireHealthCheck     bool   `koanf:"require_health_check"`      // Require health check before deploying (default true)
+	AutoRollbackOnFailure  bool   `koanf:"auto_rollback_on_failure"`  // Automatically rollback on failure (default true)
+	BinaryPath             string `koanf:"binary_path"`               // Path to mailserver binary
+	SystemdService         string `koanf:"systemd_service"`           // Systemd service name (default "mailserver.service")
+}
+
 // DefaultConfig returns a configuration with sensible defaults
 func DefaultConfig() *Config {
 	return &Config{
@@ -191,6 +216,12 @@ func DefaultConfig() *Config {
 			IMAPSPort:       993,
 			DAVPort:         443,
 			ShutdownTimeout: "30s",
+			IMAP: IMAPConfig{
+				IdleKeepaliveInterval: "3m",
+				TCPKeepalivePeriod:    "60s",
+				MaxConnections:        2000,
+				MaxConnectionsPerIP:   100,
+			},
 		},
 		TLS: TLSConfig{
 			AutoTLS:  false,
@@ -274,6 +305,19 @@ func DefaultConfig() *Config {
 			RateLimitDefault: 1000,
 			EnableTracking:   true,
 		},
+		Updater: UpdaterConfig{
+			Mode:                  "normal",
+			AutoCheckEnabled:      true,
+			AutoCheckInterval:     3600,
+			GitRepoURL:            "https://github.com/fenilsonani/email-server",
+			BuildPath:             "/tmp/mailserver-build",
+			BackupBeforeUpdate:    true,
+			MaxBackups:            5,
+			RequireHealthCheck:    true,
+			AutoRollbackOnFailure: true,
+			BinaryPath:            "/usr/local/bin/mailserver",
+			SystemdService:        "mailserver.service",
+		},
 	}
 }
 
@@ -321,6 +365,11 @@ func (c *Config) Validate() error {
 
 	// Timeout validation
 	if err := c.validateTimeouts(); err != nil {
+		return err
+	}
+
+	// IMAP configuration validation
+	if err := c.validateIMAP(); err != nil {
 		return err
 	}
 
@@ -556,6 +605,65 @@ func (c *Config) validateTimeouts() error {
 				return fmt.Errorf("%s is too long, maximum is 30d (got: %s)", name, timeout)
 			}
 		}
+	}
+
+	return nil
+}
+
+// validateIMAP validates IMAP configuration
+func (c *Config) validateIMAP() error {
+	imap := &c.Server.IMAP
+
+	// Validate timeouts
+	imapTimeouts := map[string]string{
+		"server.imap.idle_keepalive_interval": imap.IdleKeepaliveInterval,
+		"server.imap.tcp_keepalive_period":    imap.TCPKeepalivePeriod,
+	}
+
+	for name, timeout := range imapTimeouts {
+		if timeout == "" {
+			continue // Use default
+		}
+		d, err := time.ParseDuration(timeout)
+		if err != nil {
+			return fmt.Errorf("%s is invalid: %w", name, err)
+		}
+		if d < 0 {
+			return fmt.Errorf("%s cannot be negative (got: %s)", name, timeout)
+		}
+	}
+
+	// Validate specific constraints
+	if imap.IdleKeepaliveInterval != "" {
+		d, _ := time.ParseDuration(imap.IdleKeepaliveInterval)
+		if d > 0 && d < 30*time.Second {
+			return fmt.Errorf("server.imap.idle_keepalive_interval must be at least 30s (got: %s)", imap.IdleKeepaliveInterval)
+		}
+		if d > 10*time.Minute {
+			return fmt.Errorf("server.imap.idle_keepalive_interval cannot exceed 10m (got: %s)", imap.IdleKeepaliveInterval)
+		}
+	}
+
+	if imap.TCPKeepalivePeriod != "" {
+		d, _ := time.ParseDuration(imap.TCPKeepalivePeriod)
+		if d > 0 && d < 10*time.Second {
+			return fmt.Errorf("server.imap.tcp_keepalive_period must be at least 10s (got: %s)", imap.TCPKeepalivePeriod)
+		}
+	}
+
+	// Validate connection limits
+	if imap.MaxConnections < 0 {
+		return fmt.Errorf("server.imap.max_connections cannot be negative (got: %d)", imap.MaxConnections)
+	}
+	if imap.MaxConnections > 100000 {
+		return fmt.Errorf("server.imap.max_connections cannot exceed 100000 (got: %d)", imap.MaxConnections)
+	}
+
+	if imap.MaxConnectionsPerIP < 0 {
+		return fmt.Errorf("server.imap.max_connections_per_ip cannot be negative (got: %d)", imap.MaxConnectionsPerIP)
+	}
+	if imap.MaxConnectionsPerIP > 10000 {
+		return fmt.Errorf("server.imap.max_connections_per_ip cannot exceed 10000 (got: %d)", imap.MaxConnectionsPerIP)
 	}
 
 	return nil

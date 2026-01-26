@@ -460,10 +460,30 @@ var serveCmd = &cobra.Command{
 			"deduplication", true,
 		)
 
-		// Create IMAP server
+		// Create IMAP server with config
 		imapAddr := fmt.Sprintf("%s:%d", cfg.Server.BindAddress, cfg.Server.IMAPPort)
 		imapsAddr := fmt.Sprintf("%s:%d", cfg.Server.BindAddress, cfg.Server.IMAPSPort)
-		imapSrv := imapserver.NewServer(authenticator, store, imapAddr, imapsAddr, tlsManager.TLSConfigForProtocol("imap"))
+
+		// Parse IMAP-specific config
+		imapConfig := imapserver.DefaultIMAPConfig()
+		if cfg.Server.IMAP.IdleKeepaliveInterval != "" {
+			if d, err := time.ParseDuration(cfg.Server.IMAP.IdleKeepaliveInterval); err == nil {
+				imapConfig.IdleKeepaliveInterval = d
+			}
+		}
+		if cfg.Server.IMAP.TCPKeepalivePeriod != "" {
+			if d, err := time.ParseDuration(cfg.Server.IMAP.TCPKeepalivePeriod); err == nil {
+				imapConfig.TCPKeepalivePeriod = d
+			}
+		}
+		if cfg.Server.IMAP.MaxConnections > 0 {
+			imapConfig.MaxConnections = cfg.Server.IMAP.MaxConnections
+		}
+		if cfg.Server.IMAP.MaxConnectionsPerIP > 0 {
+			imapConfig.MaxConnectionsPerIP = cfg.Server.IMAP.MaxConnectionsPerIP
+		}
+
+		imapSrv := imapserver.NewServer(authenticator, store, imapAddr, imapsAddr, tlsManager.TLSConfig(), imapConfig)
 		resources.imapSrv = imapSrv
 
 		// Create SMTP backend and server
@@ -500,7 +520,7 @@ var serveCmd = &cobra.Command{
 		featuresStore := features.NewStore(db.RawDB())
 		smtpBackend.SetFeaturesStore(featuresStore)
 
-		smtpSrv := smtpserver.NewServer(smtpBackend, cfg, tlsManager.TLSConfigForProtocol("smtp"))
+		smtpSrv := smtpserver.NewServer(smtpBackend, cfg, tlsManager.TLSConfig())
 		resources.smtpSrv = smtpSrv
 
 		// Start all servers with error handling
@@ -517,7 +537,7 @@ var serveCmd = &cobra.Command{
 		logger.Info("IMAP server started", "port", cfg.Server.IMAPPort)
 
 		if tlsManager.HasTLS() {
-			if err := imapSrv.ListenAndServeTLS(tlsManager.TLSConfigForProtocol("imap")); err != nil {
+			if err := imapSrv.ListenAndServeTLS(tlsManager.TLSConfig()); err != nil {
 				cleanup()
 				return fmt.Errorf("failed to start IMAPS server: %w", err)
 			}

@@ -1,0 +1,234 @@
+name: Coverage Report
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  coverage:
+    name: Generate Coverage Report
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.25.x'
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Generate coverage report
+        run: |
+          go test -v -coverprofile=coverage.out -covermode=atomic ./...
+
+      - name: Generate HTML coverage
+        run: |
+          go tool cover -html=coverage.out -o coverage.html
+
+      - name: Display coverage summary
+        run: |
+          echo "## Coverage Report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          go tool cover -func=coverage.out | tail -20 >> $GITHUB_STEP_SUMMARY
+
+      - name: Calculate coverage percentage
+        run: |
+          coverage=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
+          echo "COVERAGE=$coverage" >> $GITHUB_ENV
+          echo "## Coverage: ${coverage}%" >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v3
+        with:
+          files: ./coverage.out
+          flags: unittests
+          name: codecov-umbrella
+          verbose: true
+
+      - name: Upload coverage artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: coverage-report
+          path: |
+            coverage.out
+            coverage.html
+
+      - name: Comment coverage on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const coverage = process.env.COVERAGE || 'unknown';
+            const comment = `## Coverage Report
+
+            **Total Coverage:** ${coverage}%
+
+            See attached artifacts for detailed coverage report.`;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+        env:
+          COVERAGE: ${{ env.COVERAGE }}
+        continue-on-error: true
+
+      - name: Check coverage threshold
+        run: |
+          coverage=${{ env.COVERAGE }}
+          target=35
+          if (( $(echo "$coverage >= $target" | bc -l) )); then
+            echo "✓ Coverage meets minimum threshold (${coverage}% >= ${target}%)"
+          else
+            echo "⚠ Coverage below minimum threshold (${coverage}% < ${target}%)"
+            echo "Current packages with low coverage:"
+            go tool cover -func=coverage.out | awk -F'[/ ]' '{if ($NF+0 < '$target') print $1, $NF"%"}' | head -10
+          fi
+
+  coverage-by-package:
+    name: Coverage by Package
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.25.x'
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Generate coverage report
+        run: |
+          go test -v -coverprofile=coverage.out -covermode=atomic ./...
+
+      - name: Analyze coverage by package
+        run: |
+          echo "## Package Coverage Analysis" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Package | Coverage |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|----------|" >> $GITHUB_STEP_SUMMARY
+          go tool cover -func=coverage.out | \
+            awk '{
+              pkg = $1;
+              gsub(/\/[^\/]*\.go:.*/, "", pkg);
+              cov = $NF;
+              gsub(/%/, "", cov);
+              if (pkg != last_pkg && pkg != "total") {
+                if (cov+0 < 50) marker = "⚠️  ";
+                else if (cov+0 < 80) marker = "⚡ ";
+                else marker = "✓ ";
+                print "| " marker pkg " | " cov "% |";
+                last_pkg = pkg;
+              }
+            }' >> $GITHUB_STEP_SUMMARY
+
+  critical-packages:
+    name: Critical Package Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.25.x'
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Generate coverage report
+        run: |
+          go test -v -coverprofile=coverage.out -covermode=atomic ./...
+
+      - name: Check critical package coverage
+        run: |
+          echo "## Critical Packages Coverage" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          critical_packages=(
+            "github.com/fenilsonani/email-server/internal/validation"
+            "github.com/fenilsonani/email-server/internal/auth"
+            "github.com/fenilsonani/email-server/internal/storage"
+          )
+
+          for package in "${critical_packages[@]}"; do
+            coverage=$(go tool cover -func=coverage.out | grep "$package" | tail -1 | awk '{print $NF}' | sed 's/%//')
+            if [ -z "$coverage" ]; then
+              coverage="0"
+            fi
+
+            if (( $(echo "$coverage < 90" | bc -l) )); then
+              marker="⚠️  "
+            else
+              marker="✓ "
+            fi
+
+            echo "- $marker $package: ${coverage}%" >> $GITHUB_STEP_SUMMARY
+          done
+
+  trend-analysis:
+    name: Coverage Trend
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.25.x'
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Generate coverage report
+        run: |
+          go test -v -coverprofile=coverage.out -covermode=atomic ./...
+
+      - name: Extract coverage metric
+        run: |
+          coverage=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
+          echo "CURRENT_COVERAGE=$coverage" >> $GITHUB_ENV
+
+          # Store in artifact for trend analysis
+          echo "$coverage" > coverage.txt
+
+      - name: Display trend information
+        run: |
+          echo "## Coverage Metrics" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- Current: ${{ env.CURRENT_COVERAGE }}%" >> $GITHUB_STEP_SUMMARY
+          echo "- Target: 80%" >> $GITHUB_STEP_SUMMARY
+          echo "- Minimum: 35%" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if (( $(echo "${{ env.CURRENT_COVERAGE }} >= 80" | bc -l) )); then
+            echo "✓ **Excellent coverage achieved!**" >> $GITHUB_STEP_SUMMARY
+          elif (( $(echo "${{ env.CURRENT_COVERAGE }} >= 60" | bc -l) )); then
+            echo "⚡ **Good coverage, room for improvement**" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️  **Coverage needs attention**" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Upload coverage trend
+        uses: actions/upload-artifact@v3
+        with:
+          name: coverage-trend
+          path: coverage.txt
