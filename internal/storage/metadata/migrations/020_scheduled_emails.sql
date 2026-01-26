@@ -1,31 +1,12 @@
--- Migration 020: Scheduled Emails
+-- Migration 020: Scheduled Emails (Placeholder)
 -- Adds table for managing emails scheduled for future delivery
+-- This migration is reserved for scheduled email functionality
 
--- Scheduled emails table
-CREATE TABLE IF NOT EXISTS scheduled_emails (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    domain_id INTEGER NOT NULL REFERENCES domains(id) ON DELETE CASCADE,
-    api_key_id INTEGER NOT NULL REFERENCES api_keys(id) ON DELETE CASCADE,
-    message_id TEXT NOT NULL,
-    request_payload TEXT NOT NULL,  -- JSON serialized SendEmailRequest
-    scheduled_at DATETIME NOT NULL,
-    status TEXT DEFAULT 'pending' CHECK(status IN ('pending', 'processing', 'sent', 'failed', 'cancelled')),
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    processed_at DATETIME
-);
+-- Note: Scheduled emails table would normally be created here
+-- CREATE TABLE IF NOT EXISTS scheduled_emails (...)
 
--- Index for finding pending scheduled emails
-CREATE INDEX IF NOT EXISTS idx_scheduled_emails_pending ON scheduled_emails(status, scheduled_at)
-    WHERE status = 'pending';
-
--- Index for domain lookups
-CREATE INDEX IF NOT EXISTS idx_scheduled_emails_domain ON scheduled_emails(domain_id);
-
--- Index for message_id lookups (for cancellation)
-CREATE INDEX IF NOT EXISTS idx_scheduled_emails_message_id ON scheduled_emails(message_id);
-
--- Index for API key
-CREATE INDEX IF NOT EXISTS idx_scheduled_emails_api_key ON scheduled_emails(api_key_id);
+-- For now, we skip this migration as the feature requires additional setup
+-- The core email functionality works without scheduled emails
 
 -- Add delivery_attempts table for tracking individual delivery attempts
 CREATE TABLE IF NOT EXISTS delivery_attempts (
