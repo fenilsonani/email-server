@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/fenilsonani/email-server/tests/shared/helpers"
-	"github.com/fenilsonani/email-server/tests/shared"
+	testenv "github.com/fenilsonani/email-server/tests/shared"
 )
 
 // TestAdminAPI tests admin panel API operations.

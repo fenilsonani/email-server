@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fenilsonani/email-server/internal/testutil"
+	"github.com/fenilsonani/email-server/tests/shared/helpers"
 )
 
 // TestNewChecker tests DNS checker construction and validation
@@ -353,7 +353,7 @@ func TestCheckAll(t *testing.T) {
 	})
 
 	t.Run("check_all_concurrent", func(t *testing.T) {
-		testutil.RunConcurrent(t, 5, func(i int) error {
+		helpers.RunConcurrent(t, 5, func(i int) error {
 			checker, _ := NewChecker("example.com", "mail.example.com")
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
@@ -503,7 +503,7 @@ func TestLongDomains(t *testing.T) {
 
 	t.Run("invalid_label_too_long", func(t *testing.T) {
 		// RFC 1035: Each label must be <= 63 characters
-		longLabel := testutil.VeryLongString(65) + ".com"
+		longLabel := helpers.VeryLongString(65) + ".com"
 		_, err := NewChecker(longLabel, "mail.example.com")
 		if err == nil {
 			t.Errorf("NewChecker with 65-char label should fail (max 63)")
@@ -514,14 +514,14 @@ func TestLongDomains(t *testing.T) {
 // TestConcurrentChecks tests concurrent DNS checks
 func TestConcurrentChecks(t *testing.T) {
 	t.Run("concurrent_checker_creation", func(t *testing.T) {
-		testutil.RunConcurrent(t, 20, func(i int) error {
+		helpers.RunConcurrent(t, 20, func(i int) error {
 			_, err := NewChecker("example.com", "mail.example.com")
 			return err
 		})
 	})
 
 	t.Run("concurrent_different_domains", func(t *testing.T) {
-		testutil.RunConcurrent(t, 10, func(i int) error {
+		helpers.RunConcurrent(t, 10, func(i int) error {
 			domain := "example" + string(rune('0'+i)) + ".com"
 			_, err := NewChecker(domain, "mail."+domain)
 			return err
@@ -530,7 +530,7 @@ func TestConcurrentChecks(t *testing.T) {
 
 	t.Run("concurrent_check_all", func(t *testing.T) {
 		checker, _ := NewChecker("example.com", "mail.example.com")
-		testutil.RunConcurrent(t, 5, func(i int) error {
+		helpers.RunConcurrent(t, 5, func(i int) error {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			results := checker.CheckAll(ctx)

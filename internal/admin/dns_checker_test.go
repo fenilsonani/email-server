@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fenilsonani/email-server/internal/testutil"
+	"github.com/fenilsonani/email-server/tests/shared/helpers"
 )
 
 // TestDNSLookup tests DNS resolution functionality
@@ -199,7 +199,7 @@ func TestDomainValidation(t *testing.T) {
 	})
 
 	t.Run("domain_too_long", func(t *testing.T) {
-		domain := testutil.VeryLongString(300) + ".com"
+		domain := helpers.VeryLongString(300) + ".com"
 		if len(domain) <= 253 {
 			t.Logf("Domain length check failed")
 		}
@@ -295,7 +295,7 @@ func TestDNSCaching(t *testing.T) {
 	})
 
 	t.Run("multiple_lookups", func(t *testing.T) {
-		testutil.RunConcurrent(t, 5, func(i int) error {
+		helpers.RunConcurrent(t, 5, func(i int) error {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			_, _ = net.DefaultResolver.LookupHost(ctx, "example.com")
@@ -322,7 +322,7 @@ func TestDNSReliability(t *testing.T) {
 // TestDNSConcurrency tests concurrent DNS operations
 func TestDNSConcurrency(t *testing.T) {
 	t.Run("concurrent_lookups", func(t *testing.T) {
-		testutil.RunConcurrent(t, 10, func(i int) error {
+		helpers.RunConcurrent(t, 10, func(i int) error {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			_, err := net.DefaultResolver.LookupHost(ctx, "example.com")
@@ -331,7 +331,7 @@ func TestDNSConcurrency(t *testing.T) {
 	})
 
 	t.Run("concurrent_different_domains", func(t *testing.T) {
-		testutil.RunConcurrent(t, 5, func(i int) error {
+		helpers.RunConcurrent(t, 5, func(i int) error {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			_, err := net.DefaultResolver.LookupHost(ctx, "example.com")

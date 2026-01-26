@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/fenilsonani/email-server/tests/shared/helpers"
-	"github.com/fenilsonani/email-server/tests/shared"
+	testenv "github.com/fenilsonani/email-server/tests/shared"
 )
 
 // TestQueueDelivery tests the complete message queue delivery flow.
