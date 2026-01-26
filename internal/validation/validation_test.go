@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/fenilsonani/email-server/internal/testutil"
+	"github.com/fenilsonani/email-server/tests/shared/helpers"
 )
 
 // TestUsername_ValidInputs tests valid username formats
@@ -28,7 +28,7 @@ func TestUsername_ValidInputs(t *testing.T) {
 
 		// Edge cases at boundaries
 		{"exactly_1_char", "a", false, false},
-		{"exactly_64_chars", testutil.VeryLongString(64), false, false},
+		{"exactly_64_chars", helpers.VeryLongString(64), false, false},
 
 		// Capital letters
 		{"all_caps", "ALICE", false, false},
@@ -63,9 +63,9 @@ func TestUsername_InvalidInputs(t *testing.T) {
 		// Length violations
 		{"empty_string", "", true},
 		{"only_whitespace", "   ", true},
-		{"65_chars", testutil.VeryLongString(65), true},
-		{"too_long_128_chars", testutil.VeryLongString(128), true},
-		{"way_too_long", testutil.VeryLongString(1000), true},
+		{"65_chars", helpers.VeryLongString(65), true},
+		{"too_long_128_chars", helpers.VeryLongString(128), true},
+		{"way_too_long", helpers.VeryLongString(1000), true},
 
 		// Invalid patterns
 		{"leading_dot", ".alice", true},
@@ -118,7 +118,7 @@ func TestUsername_InvalidInputs(t *testing.T) {
 func TestUsername_SecurityVectors(t *testing.T) {
 	// SQL injection attempts - should all fail
 	t.Run("sql_injection_vectors", func(t *testing.T) {
-		for _, injection := range testutil.SQLInjectionStrings {
+		for _, injection := range helpers.SQLInjectionStrings {
 			t.Run("injection_attempt", func(t *testing.T) {
 				err := Username(injection)
 				if err == nil {
@@ -130,7 +130,7 @@ func TestUsername_SecurityVectors(t *testing.T) {
 
 	// Path traversal attempts - should all fail
 	t.Run("path_traversal_vectors", func(t *testing.T) {
-		for _, traversal := range testutil.PathTraversalStrings {
+		for _, traversal := range helpers.PathTraversalStrings {
 			t.Run("traversal_attempt", func(t *testing.T) {
 				err := Username(traversal)
 				if err == nil {
@@ -142,7 +142,7 @@ func TestUsername_SecurityVectors(t *testing.T) {
 
 	// Null byte injection - should all fail
 	t.Run("null_byte_vectors", func(t *testing.T) {
-		for _, nullByte := range testutil.NullByteStrings {
+		for _, nullByte := range helpers.NullByteStrings {
 			t.Run("null_byte_attempt", func(t *testing.T) {
 				err := Username(nullByte)
 				if err == nil {
@@ -165,13 +165,13 @@ func TestPassword_ValidInputs(t *testing.T) {
 		{"exactly_8_simple", "password", false},
 
 		// Common lengths
-		{"16_chars", testutil.VeryLongPassword(16), false},
-		{"32_chars", testutil.VeryLongPassword(32), false},
-		{"64_chars", testutil.VeryLongPassword(64), false},
-		{"100_chars", testutil.VeryLongPassword(100), false},
+		{"16_chars", helpers.VeryLongPassword(16), false},
+		{"32_chars", helpers.VeryLongPassword(32), false},
+		{"64_chars", helpers.VeryLongPassword(64), false},
+		{"100_chars", helpers.VeryLongPassword(100), false},
 
 		// Maximum length (128 chars)
-		{"exactly_128_chars", testutil.VeryLongPassword(128), false},
+		{"exactly_128_chars", helpers.VeryLongPassword(128), false},
 
 		// Simple passwords (all same)
 		{"all_lowercase", "abcdefgh", false},
@@ -210,9 +210,9 @@ func TestPassword_InvalidInputs(t *testing.T) {
 		{"7_chars", "abcdefg", true},
 
 		// Too long
-		{"129_chars", testutil.VeryLongPassword(129), true},
-		{"200_chars", testutil.VeryLongPassword(200), true},
-		{"1000_chars", testutil.VeryLongPassword(1000), true},
+		{"129_chars", helpers.VeryLongPassword(129), true},
+		{"200_chars", helpers.VeryLongPassword(200), true},
+		{"1000_chars", helpers.VeryLongPassword(1000), true},
 
 		// Edge cases (Password doesn't trim whitespace)
 		{"space_padded_short", " short ", true}, // " short " = 7 chars (with spaces), too short

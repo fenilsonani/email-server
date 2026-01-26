@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/fenilsonani/email-server/internal/testutil"
+	"github.com/fenilsonani/email-server/tests/shared/helpers"
 )
 
 // TestUsername_EdgeCases tests edge cases and boundary conditions
@@ -184,7 +184,7 @@ func TestPassword_EdgeCases(t *testing.T) {
 
 		for _, tt := range tests {
 			t.Run("length_"+string(rune(48+tt.len%48)), func(t *testing.T) {
-				password := testutil.VeryLongPassword(tt.len)
+				password := helpers.VeryLongPassword(tt.len)
 				err := Password(password)
 				if (err != nil) != tt.wantErr {
 					t.Errorf("Length %d: error = %v, wantErr %v", tt.len, err, tt.wantErr)
@@ -521,7 +521,7 @@ func TestValidation_Normalization(t *testing.T) {
 // TestValidation_ConcurrentAccess tests thread-safety
 func TestValidation_ConcurrentAccess(t *testing.T) {
 	t.Run("username_concurrent", func(t *testing.T) {
-		testutil.RunConcurrent(t, 100, func(i int) error {
+		helpers.RunConcurrent(t, 100, func(i int) error {
 			username := "alice" + string(rune('0'+i%10))
 			if err := Username(username); err != nil {
 				if i%10 == 0 { // Expect some to fail
@@ -534,14 +534,14 @@ func TestValidation_ConcurrentAccess(t *testing.T) {
 	})
 
 	t.Run("password_concurrent", func(t *testing.T) {
-		testutil.RunConcurrent(t, 100, func(i int) error {
+		helpers.RunConcurrent(t, 100, func(i int) error {
 			password := "password" + string(rune('0'+i%10))
 			return Password(password)
 		})
 	})
 
 	t.Run("domain_concurrent", func(t *testing.T) {
-		testutil.RunConcurrent(t, 100, func(i int) error {
+		helpers.RunConcurrent(t, 100, func(i int) error {
 			domain := "example" + string(rune('0'+i%10)) + ".com"
 			return Domain(domain)
 		})

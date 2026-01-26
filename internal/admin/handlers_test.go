@@ -55,7 +55,7 @@ func TestHandleLogin(t *testing.T) {
 	})
 
 	t.Run("login_sql_injection_attempt", func(t *testing.T) {
-		for _, injection := range testutil.SQLInjectionStrings {
+		for _, injection := range helpers.SQLInjectionStrings {
 			t.Run("injection_attempt", func(t *testing.T) {
 				data := bytes.NewBufferString("username=" + injection + "&password=test")
 				req := httptest.NewRequest("POST", "/login", data)

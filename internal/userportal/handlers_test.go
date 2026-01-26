@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/fenilsonani/email-server/internal/logging"
-	"github.com/fenilsonani/email-server/internal/testutil"
+	"github.com/fenilsonani/email-server/tests/shared/helpers"
 )
 
 // TestHandleLogin tests the login handler
@@ -235,7 +235,7 @@ func TestHandleDashboard(t *testing.T) {
 	})
 
 	t.Run("dashboard_correct_path", func(t *testing.T) {
-		testutil.WithTestDBAndSchema(t, func(db *sql.DB) {
+		helpers.WithTestDBAndSchema(t, func(db *sql.DB) {
 			s := &Server{
 				logger: createTestLogger(t),
 				db:     db,
@@ -256,7 +256,7 @@ func TestHandleDashboard(t *testing.T) {
 // TestHandlePassword tests the password change handler
 func TestHandlePassword(t *testing.T) {
 	t.Run("password_get_shows_form", func(t *testing.T) {
-		testutil.WithTestDBAndSchema(t, func(db *sql.DB) {
+		helpers.WithTestDBAndSchema(t, func(db *sql.DB) {
 			s := &Server{
 				logger: createTestLogger(t),
 				db:     db,
@@ -690,7 +690,7 @@ func TestHandleVacation(t *testing.T) {
 // TestGetUserInfo tests the getUserInfo helper
 func TestGetUserInfo(t *testing.T) {
 	t.Run("get_user_info_nonexistent", func(t *testing.T) {
-		testutil.WithTestDBAndSchema(t, func(db *sql.DB) {
+		helpers.WithTestDBAndSchema(t, func(db *sql.DB) {
 			s := &Server{
 				db: db,
 			}
@@ -878,7 +878,7 @@ func TestConcurrentHandlers(t *testing.T) {
 			rateLimiter: NewRateLimiter(100, 15*time.Minute, 30*time.Minute), // High limit for concurrent test
 		}
 
-		testutil.RunConcurrent(t, 10, func(i int) error {
+		helpers.RunConcurrent(t, 10, func(i int) error {
 			form := url.Values{}
 			form.Set("email", "user@example.com")
 			form.Set("password", "testpass")

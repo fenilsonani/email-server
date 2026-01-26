@@ -1,16 +1,14 @@
 package autodiscover
 
 import (
-	"context"
 	"encoding/xml"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
-	"github.com/fenilsonani/email-server/internal/testutil"
+	"github.com/fenilsonani/email-server/tests/shared/helpers"
 )
 
 // TestConfigDefaults tests default configuration values
@@ -370,21 +368,21 @@ func TestHTTPMethods(t *testing.T) {
 // TestConcurrentRequests tests concurrent autodiscover requests
 func TestConcurrentRequests(t *testing.T) {
 	t.Run("concurrent_mozilla_requests", func(t *testing.T) {
-		testutil.RunConcurrent(t, 10, func(i int) error {
+		helpers.RunConcurrent(t, 10, func(i int) error {
 			// Simulate concurrent autodiscover requests
 			return nil
 		})
 	})
 
 	t.Run("concurrent_different_domains", func(t *testing.T) {
-		testutil.RunConcurrent(t, 5, func(i int) error {
+		helpers.RunConcurrent(t, 5, func(i int) error {
 			// Simulate requests for different domains
 			return nil
 		})
 	})
 
 	t.Run("concurrent_microsoft_autodiscover", func(t *testing.T) {
-		testutil.RunConcurrent(t, 10, func(i int) error {
+		helpers.RunConcurrent(t, 10, func(i int) error {
 			// Simulate concurrent Autodiscover requests
 			return nil
 		})
