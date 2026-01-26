@@ -1,0 +1,81 @@
+# CodeRabbit Configuration
+# https://docs.coderabbit.ai/guides/configure-coderabbit
+
+reviews:
+  # Enable CodeRabbit reviews on all PRs
+  enabled: true
+
+  # Request review on the following conditions
+  request_changes: true
+  auto_review: true
+  review_status: true
+
+  # Review on base/target branches
+  review_on_base_branch: true
+  review_on_default_branch: true
+
+  # Branches to review (include all)
+  auto_review_branches:
+    - main
+    - develop
+    - "*.branch"
+    - "feat/*"
+    - "fix/*"
+
+  # Skip specific branches if needed
+  skip_branches: []
+
+chat:
+  # Enable chat features
+  enabled: true
+
+# Review settings
+review:
+  # Enable detailed reviews
+  enabled: true
+
+  # Number of comments to generate per review
+  max_comments: -1  # Unlimited
+
+  # Comment style
+  comment_style: "diff"
+
+  # Blocks for review
+  blocks:
+    - type: "testing"
+      enabled: true
+    - type: "security"
+      enabled: true
+    - type: "performance"
+      enabled: true
+    - type: "documentation"
+      enabled: false
+
+# Rules for file patterns
+rules:
+  - type: "tests"
+    patterns:
+      - "**/*_test.go"
+      - "tests/**/*.go"
+    enabled: true
+
+  - type: "go"
+    patterns:
+      - "**/*.go"
+    enabled: true
+
+  - type: "configuration"
+    patterns:
+      - "Makefile"
+      - ".github/**/*.yml"
+      - ".github/**/*.yaml"
+    enabled: true
+
+# Linter and code quality tools
+tools:
+  go:
+    enabled: true
+  golangci:
+    enabled: true
+  staticcheck:
+    enabled: true
