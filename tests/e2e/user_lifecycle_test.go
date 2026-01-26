@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fenilsonani/email-server/tests/testenv"
+	"github.com/fenilsonani/email-server/tests/shared"
 )
 
 // TestUserLifecycle tests the complete user lifecycle: create, login, email, delete.

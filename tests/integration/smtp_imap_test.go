@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fenilsonani/email-server/internal/testutil"
-	"github.com/fenilsonani/email-server/tests/testenv"
+	"github.com/fenilsonani/email-server/tests/shared/helpers"
+	"github.com/fenilsonani/email-server/tests/shared"
 )
 
 // TestSMTPtoIMAP tests the complete SMTP send to IMAP receive flow.
@@ -197,7 +197,7 @@ func testLargeEmailHandling(t *testing.T, ts *testenv.TestServer) {
 func testConcurrentSMTPOperations(t *testing.T, ts *testenv.TestServer) {
 	t.Helper()
 
-	testutil.RunConcurrent(t, 5, func(i int) error {
+	helpers.RunConcurrent(t, 5, func(i int) error {
 		from := "sender" + string(rune('0'+i)) + "@example.com"
 		to := "recipient@example.com"
 		subject := "Concurrent Test " + string(rune('0'+i))
@@ -211,7 +211,7 @@ func testConcurrentSMTPOperations(t *testing.T, ts *testenv.TestServer) {
 func testConcurrentIMAPOperations(t *testing.T, ts *testenv.TestServer) {
 	t.Helper()
 
-	testutil.RunConcurrent(t, 5, func(i int) error {
+	helpers.RunConcurrent(t, 5, func(i int) error {
 		userEmail := "user" + string(rune('0'+i)) + "@example.com"
 		mailbox := "INBOX"
 

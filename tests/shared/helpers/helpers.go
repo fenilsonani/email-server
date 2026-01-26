@@ -1,5 +1,5 @@
 // Package testutil provides test utilities and helpers for edge case testing.
-package testutil
+package helpers
 
 import (
 	"context"

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fenilsonani/email-server/tests/testenv"
+	"github.com/fenilsonani/email-server/tests/shared"
 )
 
 // TestMailingListLifecycle tests the complete mailing list lifecycle.

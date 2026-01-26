@@ -1,5 +1,5 @@
 // Package testutil provides test utilities and helpers.
-package testutil
+package helpers
 
 import (
 	"strings"

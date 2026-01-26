@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fenilsonani/email-server/internal/testutil"
-	"github.com/fenilsonani/email-server/tests/testenv"
+	"github.com/fenilsonani/email-server/tests/shared/helpers"
+	"github.com/fenilsonani/email-server/tests/shared"
 )
 
 // TestAdminAPI tests admin panel API operations.
@@ -378,7 +378,7 @@ func testAdminVerifyDomainDNS(t *testing.T, db *sql.DB) {
 func testAdminConcurrentOperations(t *testing.T, db *sql.DB) {
 	t.Helper()
 
-	testutil.RunConcurrent(t, 5, func(i int) error {
+	helpers.RunConcurrent(t, 5, func(i int) error {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 

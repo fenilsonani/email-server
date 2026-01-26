@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fenilsonani/email-server/tests/testenv"
+	"github.com/fenilsonani/email-server/tests/shared"
 )
 
 // TestAdminOperations tests complete admin workflow.

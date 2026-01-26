@@ -10,7 +10,7 @@ import (
 
 	"github.com/fenilsonani/email-server/internal/auth"
 	"github.com/fenilsonani/email-server/internal/logging"
-	"github.com/fenilsonani/email-server/internal/testutil"
+	"github.com/fenilsonani/email-server/tests/shared/helpers"
 )
 
 // TestServer represents a complete test server with all components.
@@ -84,11 +84,11 @@ func (ts *TestServer) setupDatabase(t *testing.T) error {
 
 	if ts.Config.DatabaseType == "sqlite" {
 		// Use in-memory SQLite for testing
-		testutil.WithTestDBAndSchema(t, func(db *sql.DB) {
+		helpers.WithTestDBAndSchema(t, func(db *sql.DB) {
 			ts.DB = db
 		})
 	} else if ts.Config.DatabaseType == "postgres" {
-		dsn := testutil.TestPostgresDSN()
+		dsn := helpers.TestPostgresDSN()
 		if dsn == "" {
 			t.Skip("PostgreSQL not configured for testing")
 		}
@@ -252,7 +252,7 @@ func IntegrationTestServer(t *testing.T) *TestServer {
 	}
 
 	// Use PostgreSQL if configured
-	if testutil.PostgresAvailable() {
+	if helpers.PostgresAvailable() {
 		config.DatabaseType = "postgres"
 	}
 
