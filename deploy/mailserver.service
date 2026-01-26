@@ -19,6 +19,9 @@ ExecStart=/usr/local/bin/mailserver serve --config /etc/mailserver/config.yaml
 ExecStop=/bin/kill -SIGTERM $MAINPID
 TimeoutStopSec=30
 
+# Hot reload of certificates via SIGHUP
+ExecReload=/bin/kill -HUP $MAINPID
+
 # Restart policy
 Restart=on-failure
 RestartSec=5

@@ -60,6 +60,15 @@ type TLSConfig struct {
 	CertFile string `koanf:"cert_file"`  // Manual cert path
 	KeyFile  string `koanf:"key_file"`   // Manual key path
 	CacheDir string `koanf:"cache_dir"`  // ACME cache directory
+
+	// Hot-reload and automation settings
+	EnableHTTPChallenge  bool     `koanf:"enable_http_challenge"`   // Enable HTTP-01 challenge server for ACME
+	HTTPChallengePort    int      `koanf:"http_challenge_port"`     // Port for HTTP-01 challenges (default 80)
+	ReloadOnChange       bool     `koanf:"reload_on_change"`        // Auto-reload certificates when file changes
+	RenewalCheckInterval string   `koanf:"renewal_check_interval"`  // How often to check for renewal (e.g., "12h")
+	RenewalDaysBefore    int      `koanf:"renewal_days_before"`     // Days before expiry to trigger renewal (default 30)
+	RenewalHookScript    string   `koanf:"renewal_hook_script"`     // Script to execute after renewal
+	Domains              []string `koanf:"domains"`                 // Additional domains for AutoTLS beyond server.hostname
 }
 
 // StorageConfig holds storage paths configuration
@@ -241,8 +250,14 @@ func DefaultConfig() *Config {
 			},
 		},
 		TLS: TLSConfig{
-			AutoTLS:  false,
-			CacheDir: "/var/lib/mailserver/acme",
+			AutoTLS:              false,
+			CacheDir:             "/var/lib/mailserver/acme",
+			EnableHTTPChallenge:  true,
+			HTTPChallengePort:    80,
+			ReloadOnChange:       false,
+			RenewalCheckInterval: "12h",
+			RenewalDaysBefore:    30,
+			Domains:              []string{},
 		},
 		Storage: StorageConfig{
 			DataDir:      "/var/lib/mailserver",

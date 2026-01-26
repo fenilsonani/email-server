@@ -1,0 +1,18 @@
+[Unit]
+Description=Check mailserver certificates daily for expiry and health
+After=network-online.target
+Wants=network-online.target
+
+[Timer]
+# Run daily at 2 AM (local time)
+OnCalendar=daily
+OnBootSec=5min
+
+# Re-run if missed (e.g., system was off)
+Persistent=true
+
+# Run on UTC time for consistency
+OnCalendar=*-*-* 02:00:00
+
+[Install]
+WantedBy=timers.target
