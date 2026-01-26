@@ -79,6 +79,16 @@ func (s *Scheduler) processDueEmails() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
+	// Check if scheduled_emails table exists
+	var tableExists bool
+	err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='scheduled_emails'
+	`).Scan(&tableExists)
+	if err != nil || !tableExists {
+		// Table doesn't exist (migration 020 was skipped) - scheduled emails not yet available
+		return
+	}
+
 	// Fetch scheduled emails that are due
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, domain_id, api_key_id, message_id, request_payload, scheduled_at
