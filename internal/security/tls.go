@@ -70,9 +70,9 @@ func (m *TLSManager) TLSConfig() *tls.Config {
 	return m.tlsConfig
 }
 
-// TLSConfigForProtocol returns a TLS configuration with ALPN set for the specified protocol.
-// This is required for clients like Apple Mail that use ALPN negotiation.
-// Supported protocols: "imap", "smtp", "pop3"
+// TLSConfigForProtocol returns a TLS configuration for the specified protocol.
+// Note: ALPN is not used for IMAP/SMTP/POP3 as these protocols don't support it.
+// ALPN is only used for HTTP-based protocols (h2, http/1.1).
 func (m *TLSManager) TLSConfigForProtocol(protocol string) *tls.Config {
 	if m.tlsConfig == nil {
 		return nil
@@ -81,17 +81,9 @@ func (m *TLSManager) TLSConfigForProtocol(protocol string) *tls.Config {
 	// Clone the base config
 	cfg := m.tlsConfig.Clone()
 
-	// Set ALPN NextProtos based on protocol
-	switch protocol {
-	case "imap":
-		cfg.NextProtos = []string{"imap"}
-	case "smtp":
-		cfg.NextProtos = []string{"smtp"}
-	case "pop3":
-		cfg.NextProtos = []string{"pop3"}
-	default:
-		// No ALPN for unknown protocols
-	}
+	// Don't set ALPN for mail protocols (imap, smtp, pop3) as they don't use it.
+	// ALPN is only for HTTP-based protocols. Mail protocols use plain TLS negotiation.
+	cfg.NextProtos = []string{}
 
 	return cfg
 }
