@@ -125,7 +125,8 @@ Russian: Привет
 Greek: Γεια σου
 `
 
-// SQL injection test strings
+// SQL injection test strings - these are intentional test vectors for security validation
+//nolint:gosec
 var SQLInjectionStrings = []string{
 	"'; DROP TABLE users; --",
 	"' OR '1'='1",
@@ -179,6 +180,7 @@ func VeryLongString(length int) string {
 }
 
 // VeryLongPassword creates a password of specified length.
+//nolint:gosec
 func VeryLongPassword(length int) string {
 	return strings.Repeat("P@ssw0rd!", length/9+1)[:length]
 }

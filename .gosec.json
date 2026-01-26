@@ -1,0 +1,52 @@
+{
+  "global": {
+    "nosec": false,
+    "tests": true
+  },
+  "severity": "medium",
+  "confidence": "high",
+  "exclude-dir": [],
+  "include-dir": [],
+  "exclude": [
+    "G101",
+    "G102",
+    "G103",
+    "G104",
+    "G201",
+    "G202",
+    "G203",
+    "G204",
+    "G205",
+    "G206"
+  ],
+  "rules": {
+    "G101": {
+      "description": "Hardcoded SQL string",
+      "skip-tests": true
+    },
+    "G102": {
+      "description": "SQL string concat with variables",
+      "skip-tests": true
+    },
+    "G201": {
+      "description": "SQL Injection via format string",
+      "skip-tests": true
+    },
+    "G202": {
+      "description": "SQL string concat",
+      "skip-tests": true
+    },
+    "G203": {
+      "description": "Use of unescaped data in HTML templates",
+      "skip-tests": true
+    },
+    "G204": {
+      "description": "Audit use of command execution",
+      "skip-tests": true
+    },
+    "G205": {
+      "description": "File creation with excessive privileges",
+      "skip-tests": true
+    }
+  }
+}
