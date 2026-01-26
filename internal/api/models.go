@@ -81,20 +81,32 @@ type Attachment struct {
 	ContentType string `json:"content_type,omitempty"` // Optional: MIME type (auto-detected if empty)
 }
 
+// Priority levels for email sending
+type Priority string
+
+const (
+	PriorityHigh   Priority = "high"
+	PriorityNormal Priority = "normal"
+	PriorityLow    Priority = "low"
+)
+
 // SendEmailRequest is the request body for sending an email
 type SendEmailRequest struct {
-	From        string            `json:"from"`
-	To          string            `json:"to"`
-	Subject     string            `json:"subject"`
-	HTML        string            `json:"html,omitempty"`
-	Text        string            `json:"text,omitempty"`
-	Variables   map[string]string `json:"variables,omitempty"`
-	Tags        []string          `json:"tags,omitempty"`
-	TrackOpens  bool              `json:"track_opens"`
-	TrackClicks bool              `json:"track_clicks"`
-	ReplyTo     string            `json:"reply_to,omitempty"`
-	Headers     map[string]string `json:"headers,omitempty"`
-	Attachments []Attachment      `json:"attachments,omitempty"` // Optional: file attachments
+	IdempotencyKey string            `json:"idempotency_key,omitempty"` // Prevents duplicate sends on retries
+	From           string            `json:"from"`
+	To             string            `json:"to"`
+	Subject        string            `json:"subject"`
+	HTML           string            `json:"html,omitempty"`
+	Text           string            `json:"text,omitempty"`
+	Variables      map[string]string `json:"variables,omitempty"`
+	Tags           []string          `json:"tags,omitempty"`
+	TrackOpens     bool              `json:"track_opens"`
+	TrackClicks    bool              `json:"track_clicks"`
+	ReplyTo        string            `json:"reply_to,omitempty"`
+	Headers        map[string]string `json:"headers,omitempty"`
+	Attachments    []Attachment      `json:"attachments,omitempty"` // Optional: file attachments
+	Priority       Priority          `json:"priority,omitempty"`    // Queue priority: high, normal, low
+	ScheduledAt    *time.Time        `json:"scheduled_at,omitempty"` // Send at a future time (up to 30 days)
 }
 
 // SendTemplateRequest is the request body for sending with a template
@@ -128,9 +140,11 @@ type BatchEmailMessage struct {
 
 // SendResponse is the response for a successful send
 type SendResponse struct {
-	Success   bool   `json:"success"`
-	MessageID string `json:"message_id"`
-	Status    string `json:"status"`
+	Success           bool       `json:"success"`
+	MessageID         string     `json:"message_id"`
+	Status            string     `json:"status"`
+	ScheduledAt       *time.Time `json:"scheduled_at,omitempty"`       // When the email will be sent (for scheduled emails)
+	IdempotentReplayed bool       `json:"idempotent_replayed,omitempty"` // True if this is a replayed response
 }
 
 // BatchSendResponse is the response for batch sending
@@ -149,9 +163,11 @@ type BatchError struct {
 
 // APIError represents an API error response
 type APIError struct {
-	Error   string `json:"error"`
-	Code    string `json:"code,omitempty"`
-	Details string `json:"details,omitempty"`
+	Error     string `json:"error"`
+	Code      string `json:"code,omitempty"`
+	Details   string `json:"details,omitempty"`
+	Field     string `json:"field,omitempty"`      // Field that caused the error (for validation errors)
+	RequestID string `json:"request_id,omitempty"` // Unique request ID for tracing
 }
 
 // StatsResponse holds email sending statistics
@@ -217,14 +233,69 @@ type ListResponse struct {
 
 // Email status constants
 const (
-	StatusQueued    = "queued"
-	StatusSent      = "sent"
-	StatusDelivered = "delivered"
-	StatusBounced   = "bounced"
-	StatusFailed    = "failed"
-	StatusOpened    = "opened"
-	StatusClicked   = "clicked"
+	StatusQueued     = "queued"
+	StatusScheduled  = "scheduled"
+	StatusSent       = "sent"
+	StatusDelivered  = "delivered"
+	StatusBounced    = "bounced"
+	StatusFailed     = "failed"
+	StatusOpened     = "opened"
+	StatusClicked    = "clicked"
+	StatusSuppressed = "suppressed"
 )
+
+// Suppression represents a suppressed email address
+type Suppression struct {
+	ID        int64     `json:"id"`
+	DomainID  int64     `json:"domain_id"`
+	Email     string    `json:"email"`
+	Reason    string    `json:"reason"` // hard_bounce, unsubscribe, complaint, manual
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// SuppressionReason constants
+const (
+	SuppressionHardBounce  = "hard_bounce"
+	SuppressionUnsubscribe = "unsubscribe"
+	SuppressionComplaint   = "complaint"
+	SuppressionManual      = "manual"
+)
+
+// CreateSuppressionRequest is the request for adding an email to suppression list
+type CreateSuppressionRequest struct {
+	Email  string `json:"email"`
+	Reason string `json:"reason"`
+}
+
+// DeliveryAttempt represents a single delivery attempt for an email
+type DeliveryAttempt struct {
+	Attempt      int       `json:"attempt"`
+	AttemptedAt  time.Time `json:"attempted_at"`
+	Status       string    `json:"status"` // pending, sent, deferred, failed
+	SMTPResponse string    `json:"smtp_response,omitempty"`
+	ErrorMessage string    `json:"error_message,omitempty"`
+}
+
+// EnhancedSentEmail extends SentEmail with delivery attempt history
+type EnhancedSentEmail struct {
+	SentEmail
+	DeliveryAttempts []DeliveryAttempt `json:"delivery_attempts,omitempty"`
+	Priority         Priority          `json:"priority,omitempty"`
+	ScheduledAt      *time.Time        `json:"scheduled_at,omitempty"`
+}
+
+// ScheduledEmail represents a scheduled email in the database
+type ScheduledEmail struct {
+	ID             int64      `json:"id"`
+	DomainID       int64      `json:"domain_id"`
+	APIKeyID       int64      `json:"api_key_id"`
+	MessageID      string     `json:"message_id"`
+	RequestPayload string     `json:"-"` // JSON serialized SendEmailRequest
+	ScheduledAt    time.Time  `json:"scheduled_at"`
+	Status         string     `json:"status"` // pending, sent, cancelled
+	CreatedAt      time.Time  `json:"created_at"`
+	ProcessedAt    *time.Time `json:"processed_at,omitempty"`
+}
 
 // Webhook event types
 const (

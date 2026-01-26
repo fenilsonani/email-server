@@ -17,6 +17,7 @@ import (
 	"github.com/fenilsonani/email-server/internal/logging"
 	"github.com/fenilsonani/email-server/internal/queue"
 	"github.com/fenilsonani/email-server/internal/smtp/delivery"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 // Server handles the transactional email API
@@ -29,6 +30,11 @@ type Server struct {
 	httpServer   *http.Server
 	shutdownOnce sync.Once
 	queuePath    string
+
+	// New services for production features
+	idempotency *IdempotencyStore   // Redis-backed idempotency store
+	suppression *SuppressionService // Email suppression list
+	scheduler   *Scheduler          // Scheduled email processor
 }
 
 // NewServer creates a new API server
@@ -54,6 +60,18 @@ func NewServer(
 		queuePath: queuePath,
 	}
 
+	// Initialize suppression service
+	s.suppression = NewSuppressionService(db)
+
+	// Initialize idempotency store if Redis queue is available
+	if q != nil && q.Client() != nil {
+		s.idempotency = NewIdempotencyStore(q.Client(), cfg.Queue.Prefix)
+		logger.Info("Idempotency store initialized with Redis backend")
+	}
+
+	// Initialize scheduler for scheduled emails
+	s.scheduler = NewScheduler(db, s, 30*time.Second)
+
 	return s, nil
 }
 
@@ -64,6 +82,9 @@ func (s *Server) Start(listen string) error {
 	// Health endpoints (no auth)
 	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/healthz", s.handleHealth)
+
+	// Prometheus metrics endpoint (no auth)
+	mux.Handle("/metrics", promhttp.Handler())
 
 	// API v1 routes (with auth)
 	mux.Handle("/api/v1/send", s.authMiddleware(http.HandlerFunc(s.handleSendEmail)))
@@ -81,6 +102,10 @@ func (s *Server) Start(listen string) error {
 	// Stats
 	mux.Handle("/api/v1/stats", s.authMiddleware(http.HandlerFunc(s.handleStats)))
 
+	// Suppression list endpoints
+	mux.Handle("/api/v1/suppressions", s.authMiddleware(http.HandlerFunc(s.handleSuppressions)))
+	mux.Handle("/api/v1/suppressions/", s.authMiddleware(http.HandlerFunc(s.handleSuppressionByEmail)))
+
 	// Webhooks
 	mux.Handle("/api/v1/webhooks", s.authMiddleware(http.HandlerFunc(s.handleWebhooks)))
 
@@ -90,6 +115,8 @@ func (s *Server) Start(listen string) error {
 
 	// Build middleware chain
 	handler := s.corsMiddleware(mux)
+	handler = s.requestIDMiddleware(handler) // Add request ID middleware
+	handler = s.metricsMiddleware(handler)   // Add metrics middleware
 	handler = s.requestLoggingMiddleware(handler)
 
 	s.httpServer = &http.Server{
@@ -103,6 +130,12 @@ func (s *Server) Start(listen string) error {
 	}
 
 	s.logger.Info("Starting API server", "listen", listen)
+
+	// Start the scheduler for scheduled emails
+	if s.scheduler != nil {
+		s.scheduler.Start()
+		s.logger.Info("Email scheduler started")
+	}
 
 	// Start server in goroutine
 	serverErr := make(chan error, 1)
@@ -136,6 +169,13 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	var err error
 	s.shutdownOnce.Do(func() {
 		s.logger.Info("Shutting down API server")
+
+		// Stop the scheduler first
+		if s.scheduler != nil {
+			s.scheduler.Stop()
+			s.logger.Info("Email scheduler stopped")
+		}
+
 		if s.httpServer != nil {
 			if shutdownErr := s.httpServer.Shutdown(ctx); shutdownErr != nil {
 				s.logger.Error("Error shutting down API server", "error", shutdownErr.Error())

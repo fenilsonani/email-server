@@ -12,13 +12,15 @@ import (
 	"sync"
 	"time"
 
+	"github.com/fenilsonani/email-server/internal/metrics"
 	"golang.org/x/crypto/argon2"
 )
 
 type contextKey string
 
 const (
-	contextKeyAPIKey contextKey = "api_key"
+	contextKeyAPIKey    contextKey = "api_key"
+	contextKeyRequestID contextKey = "request_id"
 )
 
 // Rate limiter for API keys
@@ -385,6 +387,8 @@ func (s *Server) requestLoggingMiddleware(next http.Handler) http.Handler {
 			keyID = apiKey.ID
 		}
 
+		requestID := getRequestIDFromContext(r.Context())
+
 		s.logger.Info("API request",
 			"method", r.Method,
 			"path", r.URL.Path,
@@ -392,8 +396,81 @@ func (s *Server) requestLoggingMiddleware(next http.Handler) http.Handler {
 			"duration_ms", time.Since(start).Milliseconds(),
 			"api_key_id", keyID,
 			"remote_addr", r.RemoteAddr,
+			"request_id", requestID,
 		)
 	})
+}
+
+// requestIDMiddleware adds a unique request ID to each request
+func (s *Server) requestIDMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Check if request already has an ID (from upstream proxy)
+		requestID := r.Header.Get("X-Request-ID")
+		if requestID == "" {
+			requestID = generateRequestID()
+		}
+
+		// Set the request ID in response header
+		w.Header().Set("X-Request-ID", requestID)
+
+		// Add to context
+		ctx := context.WithValue(r.Context(), contextKeyRequestID, requestID)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+// metricsMiddleware records API metrics
+func (s *Server) metricsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+
+		// Wrap response writer to capture status
+		wrapper := &responseWriter{ResponseWriter: w, status: http.StatusOK}
+
+		next.ServeHTTP(wrapper, r)
+
+		// Record metrics
+		duration := time.Since(start).Seconds()
+		endpoint := normalizeEndpoint(r.URL.Path)
+		metrics.RecordAPIRequest(endpoint, r.Method, wrapper.status, duration)
+	})
+}
+
+// normalizeEndpoint normalizes the URL path for metrics (removes variable parts)
+func normalizeEndpoint(path string) string {
+	// Normalize paths with IDs/slugs to avoid high cardinality
+	switch {
+	case strings.HasPrefix(path, "/api/v1/emails/"):
+		return "/api/v1/emails/{id}"
+	case strings.HasPrefix(path, "/api/v1/templates/"):
+		return "/api/v1/templates/{slug}"
+	case strings.HasPrefix(path, "/api/v1/suppressions/"):
+		return "/api/v1/suppressions/{email}"
+	case strings.HasPrefix(path, "/t/o/"):
+		return "/t/o/{id}"
+	case strings.HasPrefix(path, "/t/c/"):
+		return "/t/c/{id}"
+	default:
+		return path
+	}
+}
+
+// getRequestIDFromContext retrieves the request ID from context
+func getRequestIDFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	id, _ := ctx.Value(contextKeyRequestID).(string)
+	return id
+}
+
+// generateRequestID generates a unique request ID
+func generateRequestID() string {
+	b := make([]byte, 8)
+	if _, err := rand.Read(b); err != nil {
+		return "req_" + time.Now().Format("20060102150405")
+	}
+	return "req_" + hex.EncodeToString(b)
 }
 
 type responseWriter struct {
