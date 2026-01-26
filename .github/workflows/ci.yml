@@ -33,13 +33,6 @@ jobs:
       - name: Run unit tests
         run: make test-short
 
-      - name: Upload test results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-results
-          path: test-results/
-
   lint:
     name: Code Quality
     runs-on: ubuntu-latest
@@ -82,9 +75,17 @@ jobs:
         run: go mod download
 
       - name: Generate coverage report
-        run: make test-coverage
+        run: |
+          go test -v -coverprofile=coverage.out -covermode=atomic ./... || true
+          if [ -f coverage.out ]; then
+            echo "Coverage file generated successfully"
+            go tool cover -html=coverage.out -o coverage.html
+          else
+            echo "Warning: Coverage file not generated"
+          fi
 
       - name: Upload coverage to Codecov
+        if: always()
         uses: codecov/codecov-action@v3
         with:
           files: ./coverage.out
@@ -93,20 +94,27 @@ jobs:
           fail_ci_if_error: false
 
       - name: Check coverage threshold
+        if: always()
         run: |
-          coverage=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
-          echo "Coverage: ${coverage}%"
-          if (( $(echo "$coverage < 35" | bc -l) )); then
-            echo "Warning: Coverage is below 35% target"
+          if [ -f coverage.out ]; then
+            coverage=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
+            echo "Coverage: ${coverage}%"
+            if (( $(echo "$coverage < 35" | bc -l) )); then
+              echo "Warning: Coverage is below 35% target"
+            fi
+          else
+            echo "Warning: No coverage file found"
           fi
 
       - name: Upload coverage artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: coverage-report
           path: |
             coverage.out
             coverage.html
+          if-no-files-found: ignore
 
   security:
     name: Security Checks

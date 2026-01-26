@@ -40,13 +40,13 @@ test-short:
 # Run all tests and generate coverage report
 test-coverage:
 	go test -v -coverprofile=coverage.out -covermode=atomic ./...
-	@echo ""
-	@echo "Coverage report generated: coverage.out"
-
-# Generate HTML coverage report
-test-coverage-html: test-coverage
 	go tool cover -html=coverage.out -o coverage.html
-	@echo "HTML coverage report generated: coverage.html"
+	@echo ""
+	@echo "Coverage report generated: coverage.out and coverage.html"
+
+# Generate HTML coverage report (runs test-coverage if needed)
+test-coverage-html: test-coverage
+	@echo "HTML coverage report available: coverage.html"
 	@echo "Open in browser: file://$(PWD)/coverage.html"
 
 # Show coverage by function
