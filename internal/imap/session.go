@@ -13,6 +13,7 @@ import (
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapserver"
 	"github.com/fenilsonani/email-server/internal/auth"
+	"github.com/fenilsonani/email-server/internal/metrics"
 	"github.com/fenilsonani/email-server/internal/search"
 	"github.com/fenilsonani/email-server/internal/storage"
 )
@@ -501,11 +502,27 @@ func (s *Session) Poll(w *imapserver.UpdateWriter, allowExpunge bool) error {
 	return nil
 }
 
+// defaultIdleKeepaliveInterval is the default keepalive interval during IDLE.
+// Apple Mail and other clients expect periodic responses to detect dead connections.
+// NAT/firewall timeouts are typically 5-30 minutes. Using 3 minutes provides better
+// compatibility with strict NAT environments and Apple Mail.
+const defaultIdleKeepaliveInterval = 3 * time.Minute
+
+// getIdleKeepaliveInterval returns the configured IDLE keepalive interval
+func (s *Session) getIdleKeepaliveInterval() time.Duration {
+	if s.server != nil && s.server.config != nil && s.server.config.IdleKeepaliveInterval > 0 {
+		return s.server.config.IdleKeepaliveInterval
+	}
+	return defaultIdleKeepaliveInterval
+}
+
 // Idle handles IDLE command - the key to instant notifications!
+// Includes keepalive mechanism to prevent connection drops from NAT/firewall timeouts.
 func (s *Session) Idle(w *imapserver.UpdateWriter, stop <-chan struct{}) error {
 	s.mu.RLock()
 	tracker := s.tracker
 	user := s.user
+	selected := s.selected
 	s.mu.RUnlock()
 
 	if tracker == nil {
@@ -520,9 +537,54 @@ func (s *Session) Idle(w *imapserver.UpdateWriter, stop <-chan struct{}) error {
 	}
 
 	log.Printf("IMAP v2: IDLE started for %s", userEmail)
-	defer log.Printf("IMAP v2: IDLE ended for %s", userEmail)
+	metrics.RecordIMAPIdleStart()
+	defer func() {
+		metrics.RecordIMAPIdleEnd()
+		log.Printf("IMAP v2: IDLE ended for %s", userEmail)
+	}()
 
-	return tracker.Idle(w, stop)
+	// Create a done channel for the tracker goroutine
+	done := make(chan error, 1)
+	trackerStop := make(chan struct{})
+
+	// Run tracker.Idle in a goroutine
+	go func() {
+		done <- tracker.Idle(w, trackerStop)
+	}()
+
+	// Keepalive ticker to prevent NAT/firewall timeouts
+	keepaliveInterval := s.getIdleKeepaliveInterval()
+	keepaliveTicker := time.NewTicker(keepaliveInterval)
+	defer keepaliveTicker.Stop()
+
+	for {
+		select {
+		case <-stop:
+			// Client sent DONE, stop the tracker
+			close(trackerStop)
+			return <-done
+
+		case err := <-done:
+			// Tracker finished (shouldn't happen normally during IDLE)
+			return err
+
+		case <-keepaliveTicker.C:
+			// Send keepalive by triggering a mailbox status update
+			// This causes the server to send an EXISTS response with current count
+			if selected != nil {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				stats, err := s.server.store.GetMailboxStats(ctx, selected.ID)
+				cancel()
+				if err == nil {
+					// Queue the current message count - this triggers an untagged response
+					// even if the count hasn't changed, keeping the connection alive
+					s.server.GetMailboxTracker(selected.ID).QueueNumMessages(uint32(stats.Messages))
+					metrics.RecordIMAPKeepalive()
+					log.Printf("IMAP v2: Keepalive sent for %s (messages: %d)", userEmail, stats.Messages)
+				}
+			}
+		}
+	}
 }
 
 // Fetch retrieves messages
@@ -835,11 +897,124 @@ func (s *Session) Copy(numSet imap.NumSet, dest string) (*imap.CopyData, error) 
 	}, nil
 }
 
+// Move moves messages to another mailbox (RFC 6851)
+// This is more efficient than COPY + STORE \Deleted + EXPUNGE
+func (s *Session) Move(w *imapserver.MoveWriter, numSet imap.NumSet, dest string) error {
+	s.mu.RLock()
+	selected := s.selected
+	user := s.user
+	s.mu.RUnlock()
+
+	if selected == nil {
+		return fmt.Errorf("no mailbox selected")
+	}
+
+	if user == nil {
+		return fmt.Errorf("not authenticated")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Get destination mailbox
+	destMb, err := s.server.store.GetMailbox(ctx, user.ID, dest)
+	if err != nil {
+		return &imap.Error{
+			Type: imap.StatusResponseTypeNo,
+			Code: imap.ResponseCodeTryCreate,
+			Text: "Destination mailbox not found",
+		}
+	}
+
+	// Get messages
+	messages, err := s.server.store.ListMessages(ctx, selected.ID, 0, 0)
+	if err != nil {
+		return fmt.Errorf("failed to list messages: %w", err)
+	}
+
+	var srcUIDs, destUIDs []imap.UID
+	var expungeSeqs []uint32
+
+	for i, msg := range messages {
+		seqNum := uint32(i + 1)
+		var shouldMove bool
+		switch set := numSet.(type) {
+		case imap.UIDSet:
+			shouldMove = set.Contains(imap.UID(msg.UID))
+		case imap.SeqSet:
+			shouldMove = set.Contains(seqNum)
+		}
+
+		if shouldMove {
+			// Copy message to destination
+			newMsg, err := s.server.store.CopyMessage(ctx, selected.ID, msg.UID, destMb.ID)
+			if err != nil {
+				log.Printf("IMAP: Failed to move message UID %d: %v", msg.UID, err)
+				continue
+			}
+
+			srcUIDs = append(srcUIDs, imap.UID(msg.UID))
+			destUIDs = append(destUIDs, imap.UID(newMsg.UID))
+			expungeSeqs = append(expungeSeqs, seqNum)
+
+			// Delete from source
+			if err := s.server.store.DeleteMessage(ctx, selected.ID, msg.UID); err != nil {
+				log.Printf("IMAP: Failed to delete moved message UID %d: %v", msg.UID, err)
+			}
+		}
+	}
+
+	// Write COPYUID response
+	if len(srcUIDs) > 0 {
+		w.WriteCopyData(&imap.CopyData{
+			UIDValidity: destMb.UIDValidity,
+			SourceUIDs:  imap.UIDSetNum(srcUIDs...),
+			DestUIDs:    imap.UIDSetNum(destUIDs...),
+		})
+
+		// Write EXPUNGE responses (in reverse order for correct sequence numbers)
+		for i := len(expungeSeqs) - 1; i >= 0; i-- {
+			w.WriteExpunge(expungeSeqs[i])
+		}
+	}
+
+	// Notify both mailboxes
+	s.server.NotifyMailboxUpdate(selected.ID)
+	s.server.NotifyMailboxUpdate(destMb.ID)
+
+	return nil
+}
+
+// Namespace returns the namespace hierarchy (RFC 2342)
+// Thunderbird and other clients use this to understand mailbox organization
+func (s *Session) Namespace() (*imap.NamespaceData, error) {
+	s.mu.RLock()
+	user := s.user
+	s.mu.RUnlock()
+
+	if user == nil {
+		return nil, fmt.Errorf("not authenticated")
+	}
+
+	// Return standard personal namespace with "/" as delimiter
+	// Most email clients expect this format
+	return &imap.NamespaceData{
+		Personal: []imap.NamespaceDescriptor{
+			{
+				Prefix: "",
+				Delim:  '/',
+			},
+		},
+		// No shared or other namespaces (single-user mailboxes)
+		Other:  nil,
+		Shared: nil,
+	}, nil
+}
+
 // Search searches for messages
 func (s *Session) Search(kind imapserver.NumKind, criteria *imap.SearchCriteria, options *imap.SearchOptions) (*imap.SearchData, error) {
 	s.mu.RLock()
 	selected := s.selected
-	user := s.user
 	s.mu.RUnlock()
 
 	if selected == nil {
@@ -849,18 +1024,24 @@ func (s *Session) Search(kind imapserver.NumKind, criteria *imap.SearchCriteria,
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	var uids []uint32
-	var err error
-
-	// Check if full-text search is needed and available
-	if s.server.searchEngine != nil && needsFullTextSearch(criteria) {
-		// Use full-text search engine
-		uids, err = s.searchWithEngine(ctx, selected.ID, user.ID, criteria)
-	} else {
-		// Fall back to database search
-		uids, err = s.searchWithStorage(ctx, selected.ID, criteria)
+	// Convert criteria to our format
+	storageCriteria := &storage.SearchCriteria{}
+	if criteria != nil {
+		if !criteria.Since.IsZero() {
+			storageCriteria.Since = &criteria.Since
+		}
+		if !criteria.Before.IsZero() {
+			storageCriteria.Before = &criteria.Before
+		}
+		for _, f := range criteria.Flag {
+			storageCriteria.Flags = append(storageCriteria.Flags, storage.Flag(f))
+		}
+		for _, f := range criteria.NotFlag {
+			storageCriteria.NotFlags = append(storageCriteria.NotFlags, storage.Flag(f))
+		}
 	}
 
+	uids, err := s.server.store.SearchMessages(ctx, selected.ID, storageCriteria)
 	if err != nil {
 		return nil, fmt.Errorf("failed to search messages: %w", err)
 	}
@@ -895,138 +1076,6 @@ func (s *Session) Search(kind imapserver.NumKind, criteria *imap.SearchCriteria,
 	return &imap.SearchData{
 		All: imap.SeqSetNum(seqNums...),
 	}, nil
-}
-
-// searchWithStorage uses the storage layer for simple searches
-func (s *Session) searchWithStorage(ctx context.Context, mailboxID int64, criteria *imap.SearchCriteria) ([]uint32, error) {
-	storageCriteria := &storage.SearchCriteria{}
-	if criteria != nil {
-		if !criteria.Since.IsZero() {
-			storageCriteria.Since = &criteria.Since
-		}
-		if !criteria.Before.IsZero() {
-			storageCriteria.Before = &criteria.Before
-		}
-		for _, f := range criteria.Flag {
-			storageCriteria.Flags = append(storageCriteria.Flags, storage.Flag(f))
-		}
-		for _, f := range criteria.NotFlag {
-			storageCriteria.NotFlags = append(storageCriteria.NotFlags, storage.Flag(f))
-		}
-	}
-	return s.server.store.SearchMessages(ctx, mailboxID, storageCriteria)
-}
-
-// searchWithEngine uses the full-text search engine
-func (s *Session) searchWithEngine(ctx context.Context, mailboxID, userID int64, criteria *imap.SearchCriteria) ([]uint32, error) {
-	// Build search query from IMAP criteria
-	sq := buildSearchQuery(criteria, mailboxID, userID)
-
-	// Execute search
-	result, err := s.server.searchEngine.Search(ctx, sq)
-	if err != nil {
-		// Fall back to storage search on error
-		log.Printf("Full-text search failed, falling back to storage: %v", err)
-		return s.searchWithStorage(ctx, mailboxID, criteria)
-	}
-
-	// Extract UIDs from search results
-	uids := make([]uint32, 0, len(result.Hits))
-	for _, hit := range result.Hits {
-		if hit.MailboxID == mailboxID {
-			uids = append(uids, hit.UID)
-		}
-	}
-
-	return uids, nil
-}
-
-// needsFullTextSearch checks if the criteria requires full-text search
-func needsFullTextSearch(criteria *imap.SearchCriteria) bool {
-	if criteria == nil {
-		return false
-	}
-	// Body and Text searches require full-text
-	if len(criteria.Body) > 0 || len(criteria.Text) > 0 {
-		return true
-	}
-	// Check Not criteria
-	for i := range criteria.Not {
-		if needsFullTextSearch(&criteria.Not[i]) {
-			return true
-		}
-	}
-	// Check Or criteria
-	for _, orPair := range criteria.Or {
-		if needsFullTextSearch(&orPair[0]) || needsFullTextSearch(&orPair[1]) {
-			return true
-		}
-	}
-	return false
-}
-
-// buildSearchQuery converts IMAP criteria to a search query
-func buildSearchQuery(criteria *imap.SearchCriteria, mailboxID, userID int64) *search.SearchQuery {
-	sq := &search.SearchQuery{
-		MailboxID: mailboxID,
-		UserID:    userID,
-		Limit:     10000, // IMAP searches return all matches
-	}
-
-	if criteria == nil {
-		return sq
-	}
-
-	// Date filters
-	if !criteria.Since.IsZero() {
-		t := criteria.Since
-		sq.Since = &t
-	}
-	if !criteria.Before.IsZero() {
-		t := criteria.Before
-		sq.Before = &t
-	}
-
-	// Flag filters
-	for _, flag := range criteria.Flag {
-		sq.HasFlags = append(sq.HasFlags, string(flag))
-	}
-	for _, flag := range criteria.NotFlag {
-		sq.NotFlags = append(sq.NotFlags, string(flag))
-	}
-
-	// Header searches
-	for _, h := range criteria.Header {
-		key := strings.ToLower(h.Key)
-		switch key {
-		case "from":
-			sq.From = h.Value
-		case "to":
-			sq.To = h.Value
-		case "subject":
-			sq.Subject = h.Value
-		}
-	}
-
-	// Body search
-	for _, bodyPart := range criteria.Body {
-		if sq.Body != "" {
-			sq.Body = sq.Body + " " + bodyPart
-		} else {
-			sq.Body = bodyPart
-		}
-	}
-
-	// Text search (searches all fields)
-	for _, text := range criteria.Text {
-		if sq.Text != "" {
-			sq.Text = sq.Text + " " + text
-		} else {
-			sq.Text = text
-		}
-	}
-
-	return sq
 }
 
 // Helper functions

@@ -16,31 +16,36 @@ import (
 	"github.com/fenilsonani/email-server/internal/storage/maildir"
 )
 
-// Default connection limits for IMAP
+// Default connection limits and keepalive settings for IMAP
 const (
-	defaultIMAPMaxConnections      = 2000
+	defaultIMAPMaxConnections = 2000
 	defaultIMAPMaxConnectionsPerIP = 100
 )
 
-// limitedListener wraps a net.Listener with connection limits
+// limitedListener wraps a net.Listener with connection limits and keepalive settings
 type limitedListener struct {
 	net.Listener
-	maxConns      int
-	maxConnsPerIP int
-	currentConns  int64
-	perIPConns    map[string]int
-	perIPMu       sync.Mutex
-	sem           chan struct{}
+	maxConns           int
+	maxConnsPerIP      int
+	currentConns       int64
+	perIPConns         map[string]int
+	perIPMu            sync.Mutex
+	sem                chan struct{}
+	tcpKeepalivePeriod time.Duration
 }
 
-// newLimitedListener creates a connection-limiting listener
-func newLimitedListener(l net.Listener, maxConns, maxConnsPerIP int) *limitedListener {
+// newLimitedListener creates a connection-limiting listener with keepalive settings
+func newLimitedListener(l net.Listener, config *IMAPConfig) *limitedListener {
+	if config == nil {
+		config = DefaultIMAPConfig()
+	}
 	return &limitedListener{
-		Listener:      l,
-		maxConns:      maxConns,
-		maxConnsPerIP: maxConnsPerIP,
-		perIPConns:    make(map[string]int),
-		sem:           make(chan struct{}, maxConns),
+		Listener:           l,
+		maxConns:           config.MaxConnections,
+		maxConnsPerIP:      config.MaxConnectionsPerIP,
+		perIPConns:         make(map[string]int),
+		sem:                make(chan struct{}, config.MaxConnections),
+		tcpKeepalivePeriod: config.TCPKeepalivePeriod,
 	}
 }
 
@@ -53,6 +58,9 @@ func (l *limitedListener) Accept() (net.Conn, error) {
 		<-l.sem
 		return nil, err
 	}
+
+	// Enable TCP-level keepalive to detect dead connections at OS level
+	enableTCPKeepalive(conn, l.tcpKeepalivePeriod)
 
 	// Check per-IP limit
 	ip := extractIP(conn.RemoteAddr())
@@ -114,6 +122,28 @@ func extractIP(addr net.Addr) string {
 	}
 }
 
+// enableTCPKeepalive enables TCP-level keepalive on a connection.
+// This works for both raw TCP and TLS-wrapped connections.
+func enableTCPKeepalive(conn net.Conn, period time.Duration) {
+	// Try direct TCP connection first
+	if tcpConn, ok := conn.(*net.TCPConn); ok {
+		tcpConn.SetKeepAlive(true)
+		tcpConn.SetKeepAlivePeriod(period)
+		return
+	}
+
+	// Handle TLS-wrapped connections
+	if tlsConn, ok := conn.(*tls.Conn); ok {
+		if netConn := tlsConn.NetConn(); netConn != nil {
+			if tcpConn, ok := netConn.(*net.TCPConn); ok {
+				tcpConn.SetKeepAlive(true)
+				tcpConn.SetKeepAlivePeriod(period)
+			}
+		}
+	}
+}
+
+
 // Maximum number of mailbox trackers to cache (prevents unbounded memory growth)
 const maxTrackerCacheSize = 5000
 
@@ -121,6 +151,24 @@ const maxTrackerCacheSize = 5000
 type trackerEntry struct {
 	tracker    *imapserver.MailboxTracker
 	lastAccess time.Time
+}
+
+// IMAPConfig holds IMAP-specific configuration
+type IMAPConfig struct {
+	IdleKeepaliveInterval time.Duration
+	TCPKeepalivePeriod    time.Duration
+	MaxConnections        int
+	MaxConnectionsPerIP   int
+}
+
+// DefaultIMAPConfig returns sensible defaults for IMAP configuration
+func DefaultIMAPConfig() *IMAPConfig {
+	return &IMAPConfig{
+		IdleKeepaliveInterval: 3 * time.Minute,
+		TCPKeepalivePeriod:    60 * time.Second,
+		MaxConnections:        2000,
+		MaxConnectionsPerIP:   100,
+	}
 }
 
 // Server wraps the go-imap v2 server
@@ -133,6 +181,7 @@ type Server struct {
 	tlsAddr       string
 	listener      net.Listener
 	tlsListener   net.Listener
+	config        *IMAPConfig
 
 	// Search engine for full-text search (optional)
 	searchEngine search.SearchEngine
@@ -148,7 +197,11 @@ type Server struct {
 }
 
 // NewServer creates a new IMAP v2 server
-func NewServer(authenticator *auth.Authenticator, store *maildir.Store, addr, tlsAddr string, tlsConfig *tls.Config) *Server {
+func NewServer(authenticator *auth.Authenticator, store *maildir.Store, addr, tlsAddr string, tlsConfig *tls.Config, config *IMAPConfig) *Server {
+	if config == nil {
+		config = DefaultIMAPConfig()
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &Server{
 		authenticator: authenticator,
@@ -159,6 +212,7 @@ func NewServer(authenticator *auth.Authenticator, store *maildir.Store, addr, tl
 		trackers:      make(map[int64]*trackerEntry),
 		ctx:           ctx,
 		cancel:        cancel,
+		config:        config,
 	}
 
 	// Create IMAP server with v2 API
@@ -168,8 +222,13 @@ func NewServer(authenticator *auth.Authenticator, store *maildir.Store, addr, tl
 			return session, &imapserver.GreetingData{}, nil
 		},
 		Caps: imap.CapSet{
-			imap.CapIMAP4rev1: {},
-			imap.CapIdle:      {},
+			imap.CapIMAP4rev1:  {},
+			imap.CapIdle:       {},
+			imap.CapUIDPlus:    {}, // RFC 4315 - Better UID handling (UIDPLUS responses)
+			imap.CapNamespace:  {}, // RFC 2342 - Namespace support (Thunderbird needs this)
+			imap.CapMove:       {}, // RFC 6851 - Efficient MOVE command
+			imap.CapSpecialUse: {}, // RFC 6154 - Special-use mailboxes (Sent, Drafts, etc.)
+			imap.CapUnselect:   {}, // RFC 3691 - Clean mailbox unselect
 		},
 		TLSConfig:    tlsConfig,
 		InsecureAuth: false, // Require TLS/STARTTLS before authentication
@@ -318,11 +377,12 @@ func (s *Server) ListenAndServe() error {
 			return err
 		}
 
-		// Wrap with connection limits
-		listener := newLimitedListener(rawListener, defaultIMAPMaxConnections, defaultIMAPMaxConnectionsPerIP)
+		// Wrap with connection limits and keepalive settings
+		listener := newLimitedListener(rawListener, s.config)
 		s.listener = listener
 
-		log.Printf("IMAP server listening on %s (max %d conns, %d per IP)", s.addr, defaultIMAPMaxConnections, defaultIMAPMaxConnectionsPerIP)
+		log.Printf("IMAP server listening on %s (max %d conns, %d per IP, TCP keepalive %v)",
+			s.addr, s.config.MaxConnections, s.config.MaxConnectionsPerIP, s.config.TCPKeepalivePeriod)
 
 		s.shutdownWg.Add(1)
 		go func() {
@@ -350,11 +410,12 @@ func (s *Server) ListenAndServeTLS(tlsConfig *tls.Config) error {
 			return err
 		}
 
-		// Wrap with connection limits
-		listener := newLimitedListener(rawListener, defaultIMAPMaxConnections, defaultIMAPMaxConnectionsPerIP)
+		// Wrap with connection limits and keepalive settings
+		listener := newLimitedListener(rawListener, s.config)
 		s.tlsListener = listener
 
-		log.Printf("IMAPS server listening on %s (max %d conns, %d per IP)", s.tlsAddr, defaultIMAPMaxConnections, defaultIMAPMaxConnectionsPerIP)
+		log.Printf("IMAPS server listening on %s (max %d conns, %d per IP, TCP keepalive %v)",
+			s.tlsAddr, s.config.MaxConnections, s.config.MaxConnectionsPerIP, s.config.TCPKeepalivePeriod)
 
 		s.shutdownWg.Add(1)
 		go func() {

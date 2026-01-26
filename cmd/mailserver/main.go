@@ -478,10 +478,30 @@ var serveCmd = &cobra.Command{
 			"deduplication", true,
 		)
 
-		// Create IMAP server
+		// Create IMAP server with config
 		imapAddr := fmt.Sprintf("%s:%d", cfg.Server.BindAddress, cfg.Server.IMAPPort)
 		imapsAddr := fmt.Sprintf("%s:%d", cfg.Server.BindAddress, cfg.Server.IMAPSPort)
-		imapSrv := imapserver.NewServer(authenticator, store, imapAddr, imapsAddr, tlsManager.TLSConfig())
+
+		// Parse IMAP-specific config
+		imapConfig := imapserver.DefaultIMAPConfig()
+		if cfg.Server.IMAP.IdleKeepaliveInterval != "" {
+			if d, err := time.ParseDuration(cfg.Server.IMAP.IdleKeepaliveInterval); err == nil {
+				imapConfig.IdleKeepaliveInterval = d
+			}
+		}
+		if cfg.Server.IMAP.TCPKeepalivePeriod != "" {
+			if d, err := time.ParseDuration(cfg.Server.IMAP.TCPKeepalivePeriod); err == nil {
+				imapConfig.TCPKeepalivePeriod = d
+			}
+		}
+		if cfg.Server.IMAP.MaxConnections > 0 {
+			imapConfig.MaxConnections = cfg.Server.IMAP.MaxConnections
+		}
+		if cfg.Server.IMAP.MaxConnectionsPerIP > 0 {
+			imapConfig.MaxConnectionsPerIP = cfg.Server.IMAP.MaxConnectionsPerIP
+		}
+
+		imapSrv := imapserver.NewServer(authenticator, store, imapAddr, imapsAddr, tlsManager.TLSConfig(), imapConfig)
 		resources.imapSrv = imapSrv
 
 		// Initialize full-text search if enabled

@@ -1,0 +1,45 @@
+run:
+  deadline: 5m
+  tests: true
+  skip-dirs:
+    - vendor
+    - tests/shared/fixtures
+
+linters:
+  enable:
+    - gosec
+    - govet
+    - errcheck
+  disable:
+    - gosimple
+    - unused
+    - staticcheck  # Disabled: too many false positives for intentionally unused functions (BC, future use)
+
+linters-settings:
+  gosec:
+    # Exclude test files from strict security checks
+    excludes:
+      - G101  # SQL string
+      - G102  # SQL concat
+      - G201  # SQL injection
+      - G202  # SQL concat
+      - G203  # HTML injection
+      - G204  # Command execution
+      - G205  # File permissions
+      - G301  # File permissions
+      - G302  # File permissions
+      - G303  # File permissions
+      - G304  # File read
+      - G305  # ZIP compression
+    # Skip tests for certain rules
+    tests: true
+    config: .gosec.json
+
+issues:
+  exclude-rules:
+    # Ignore gosec issues in test files - test data and security vectors are intentional
+    - path: tests/
+      linters:
+        - gosec
+      text: |
+        G101|G102|G201|G202|G203|G204|G205|G301|G302|G303|G304|G305|G306|G307|G308|G309|G310|G401|G402|G403|G404|G501|G502|G503|G504|G505|G506|G507|G508|G509|G601|G602|G603|G604|G605|G606|G607

@@ -27,6 +27,7 @@ type Config struct {
 	Autodiscover AutodiscoverConfig `koanf:"autodiscover"`
 	API          APIConfig          `koanf:"api"`
 	Search       SearchConfig       `koanf:"search"`
+	Updater      UpdaterConfig      `koanf:"updater"`
 }
 
 // ServerConfig holds server-related configuration
@@ -194,6 +195,21 @@ type SearchConfig struct {
 	Workers          int    `koanf:"workers"`           // Number of indexing workers
 }
 
+// UpdaterConfig holds update system configuration
+type UpdaterConfig struct {
+	Mode                   string `koanf:"mode"`                      // Update mode: normal, power (default "normal")
+	AutoCheckEnabled       bool   `koanf:"auto_check_enabled"`        // Enable automatic update checks (default true)
+	AutoCheckInterval      int    `koanf:"auto_check_interval"`       // Check interval in seconds (default 3600)
+	GitRepoURL             string `koanf:"git_repo_url"`              // GitHub repository URL
+	BuildPath              string `koanf:"build_path"`                // Build working directory (default "/tmp/mailserver-build")
+	BackupBeforeUpdate     bool   `koanf:"backup_before_update"`      // Create backup before updating (default true)
+	MaxBackups             int    `koanf:"max_backups"`               // Maximum number of backups to keep (default 5)
+	RequireHealthCheck     bool   `koanf:"require_health_check"`      // Require health check before deploying (default true)
+	AutoRollbackOnFailure  bool   `koanf:"auto_rollback_on_failure"`  // Automatically rollback on failure (default true)
+	BinaryPath             string `koanf:"binary_path"`               // Path to mailserver binary
+	SystemdService         string `koanf:"systemd_service"`           // Systemd service name (default "mailserver.service")
+}
+
 // DefaultConfig returns a configuration with sensible defaults
 func DefaultConfig() *Config {
 	return &Config{
@@ -304,6 +320,19 @@ func DefaultConfig() *Config {
 			HighlightEnabled: true,
 			MaxResults:       1000,
 			Workers:          2,
+		},
+		Updater: UpdaterConfig{
+			Mode:                  "normal",
+			AutoCheckEnabled:      true,
+			AutoCheckInterval:     3600,
+			GitRepoURL:            "https://github.com/fenilsonani/email-server",
+			BuildPath:             "/tmp/mailserver-build",
+			BackupBeforeUpdate:    true,
+			MaxBackups:            5,
+			RequireHealthCheck:    true,
+			AutoRollbackOnFailure: true,
+			BinaryPath:            "/usr/local/bin/mailserver",
+			SystemdService:        "mailserver.service",
 		},
 	}
 }
