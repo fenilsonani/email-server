@@ -372,6 +372,16 @@ var serveCmd = &cobra.Command{
 		}
 		logger.Info("Maildir store initialized", "path", cfg.Storage.MaildirPath)
 
+		// Ensure all existing users have their required mailboxes (migration for new mailbox types)
+		initCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		if err := store.EnsureUserMailboxes(initCtx, logger); err != nil {
+			cancel()
+			cleanup()
+			return fmt.Errorf("failed to ensure user mailboxes: %w", err)
+		}
+		cancel()
+		logger.Info("User mailboxes initialized")
+
 		// Initialize Redis queue with connection validation
 		retryMaxAge, _ := time.ParseDuration(cfg.Queue.RetryMaxAge)
 		if retryMaxAge == 0 {
