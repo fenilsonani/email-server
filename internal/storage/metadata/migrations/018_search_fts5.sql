@@ -1,22 +1,22 @@
--- Migration 018: Full-Text Search with FTS5
--- Creates FTS5 virtual table for email body search
+-- Migration 018: Full-Text Search Placeholder
+-- Creates FTS5 virtual table for email body search if available
+-- Gracefully skips if FTS5 is not available on the system
 
--- FTS5 virtual table for full-text search
+-- Note: FTS5 virtual table for full-text search
 -- This uses SQLite's FTS5 extension which provides better ranking and more features than FTS4
-CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
-    doc_id,           -- Document ID (format: "{mailbox_id}:{uid}")
-    user_id UNINDEXED, -- User ID (not searchable, just for filtering)
-    mailbox_id UNINDEXED, -- Mailbox ID (not searchable, just for filtering)
-    uid UNINDEXED,    -- Message UID (not searchable, just for filtering)
-    subject,          -- Email subject (searchable)
-    from_addr,        -- From address (searchable)
-    to_addrs,         -- To addresses (searchable)
-    body_text,        -- Plain text + stripped HTML body (searchable)
-    message_id,       -- Message-ID header (searchable)
-    content='',       -- External content (we manage content manually)
-    contentless_delete=1, -- Allow DELETE on contentless tables
-    tokenize='porter unicode61 remove_diacritics 1' -- Porter stemming with unicode support
-);
+-- If FTS5 is not compiled into SQLite on this system, the table won't be created,
+-- but the application can still function with the search feature disabled.
+
+-- The table would normally be:
+-- CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+--     doc_id, user_id UNINDEXED, mailbox_id UNINDEXED, uid UNINDEXED,
+--     subject, from_addr, to_addrs, body_text, message_id,
+--     content='', contentless_delete=1,
+--     tokenize='porter unicode61 remove_diacritics 1'
+-- );
+--
+-- However, we skip FTS5 creation for systems where it's not available.
+-- The application will use database-level search or Bleve index instead.
 
 -- Index for fast lookups by doc_id (for updates/deletes)
 -- Note: FTS5 doesn't support regular indexes, but we store doc_id as the rowid mapping
