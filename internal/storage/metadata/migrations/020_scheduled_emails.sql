@@ -27,14 +27,6 @@ CREATE INDEX IF NOT EXISTS idx_scheduled_emails_message_id ON scheduled_emails(m
 -- Index for API key
 CREATE INDEX IF NOT EXISTS idx_scheduled_emails_api_key ON scheduled_emails(api_key_id);
 
--- Add priority and scheduled_at columns to sent_emails if they don't exist
--- SQLite doesn't support IF NOT EXISTS for ALTER TABLE, so we use a workaround
--- These columns will be added when the table is recreated or can be added manually
-
--- For existing databases, add these columns manually if needed:
--- ALTER TABLE sent_emails ADD COLUMN priority TEXT DEFAULT 'normal';
--- ALTER TABLE sent_emails ADD COLUMN scheduled_at DATETIME;
-
 -- Add delivery_attempts table for tracking individual delivery attempts
 CREATE TABLE IF NOT EXISTS delivery_attempts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
