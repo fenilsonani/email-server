@@ -30,18 +30,27 @@ type Config struct {
 	Updater      UpdaterConfig      `koanf:"updater"`
 }
 
+// IMAPConfig holds IMAP-specific configuration
+type IMAPConfig struct {
+	IdleKeepaliveInterval string `koanf:"idle_keepalive_interval"` // IDLE keepalive interval
+	TCPKeepalivePeriod    string `koanf:"tcp_keepalive_period"`     // TCP keepalive period
+	MaxConnections        int    `koanf:"max_connections"`          // Maximum concurrent connections
+	MaxConnectionsPerIP   int    `koanf:"max_connections_per_ip"`   // Maximum connections per IP
+}
+
 // ServerConfig holds server-related configuration
 type ServerConfig struct {
-	Hostname        string `koanf:"hostname"`         // mail.example.com
-	BindAddress     string `koanf:"bind_address"`     // Listen address (default 0.0.0.0)
-	Domain          string `koanf:"domain"`           // Primary email domain (e.g., example.com)
-	SMTPPort        int    `koanf:"smtp_port"`        // 25 for MX receiving
-	SubmissionPort  int    `koanf:"submission_port"`  // 587 for client submission
-	SMTPSPort       int    `koanf:"smtps_port"`       // 465 for implicit TLS
-	IMAPPort        int    `koanf:"imap_port"`        // 143 for STARTTLS
-	IMAPSPort       int    `koanf:"imaps_port"`       // 993 for implicit TLS
-	DAVPort         int    `koanf:"dav_port"`         // 443 for CalDAV/CardDAV
-	ShutdownTimeout string `koanf:"shutdown_timeout"` // Graceful shutdown timeout
+	Hostname        string     `koanf:"hostname"`         // mail.example.com
+	BindAddress     string     `koanf:"bind_address"`     // Listen address (default 0.0.0.0)
+	Domain          string     `koanf:"domain"`           // Primary email domain (e.g., example.com)
+	SMTPPort        int        `koanf:"smtp_port"`        // 25 for MX receiving
+	SubmissionPort  int        `koanf:"submission_port"`  // 587 for client submission
+	SMTPSPort       int        `koanf:"smtps_port"`       // 465 for implicit TLS
+	IMAPPort        int        `koanf:"imap_port"`        // 143 for STARTTLS
+	IMAPSPort       int        `koanf:"imaps_port"`       // 993 for implicit TLS
+	DAVPort         int        `koanf:"dav_port"`         // 443 for CalDAV/CardDAV
+	ShutdownTimeout string     `koanf:"shutdown_timeout"` // Graceful shutdown timeout
+	IMAP            IMAPConfig `koanf:"imap"`             // IMAP-specific configuration
 }
 
 // TLSConfig holds TLS/ACME configuration
@@ -224,6 +233,12 @@ func DefaultConfig() *Config {
 			IMAPSPort:       993,
 			DAVPort:         443,
 			ShutdownTimeout: "30s",
+			IMAP: IMAPConfig{
+				IdleKeepaliveInterval: "5m",
+				TCPKeepalivePeriod:    "3m",
+				MaxConnections:        0,
+				MaxConnectionsPerIP:   0,
+			},
 		},
 		TLS: TLSConfig{
 			AutoTLS:  false,
