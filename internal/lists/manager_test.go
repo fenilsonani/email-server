@@ -1,11 +1,10 @@
 package lists
 
 import (
-	"context"
 	"testing"
 	"time"
 
-	"github.com/fenilsonani/email-server/internal/testutil"
+	"github.com/fenilsonani/email-server/tests/shared/helpers"
 )
 
 // TestListCreation tests mailing list creation
@@ -398,7 +397,7 @@ func TestListValidation(t *testing.T) {
 // TestListConcurrency tests concurrent list operations
 func TestListConcurrency(t *testing.T) {
 	t.Run("concurrent_member_operations", func(t *testing.T) {
-		testutil.RunConcurrent(t, 10, func(i int) error {
+		helpers.RunConcurrent(t, 10, func(i int) error {
 			member := &ListMember{
 				Email: "user" + string(rune('0'+i)) + "@example.com",
 				Role:  RoleMember,
@@ -409,7 +408,7 @@ func TestListConcurrency(t *testing.T) {
 	})
 
 	t.Run("concurrent_moderation_actions", func(t *testing.T) {
-		testutil.RunConcurrent(t, 5, func(i int) error {
+		helpers.RunConcurrent(t, 5, func(i int) error {
 			msg := &ModeratedMessage{
 				Status: ModerationPending,
 			}

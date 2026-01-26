@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fenilsonani/email-server/internal/testutil"
+	"github.com/fenilsonani/email-server/tests/shared/helpers"
 )
 
 // TestSessionLogin tests the Login operation
@@ -259,7 +259,7 @@ func TestSessionIdle(t *testing.T) {
 // TestSessionConcurrency tests concurrent operations
 func TestSessionConcurrency(t *testing.T) {
 	t.Run("concurrent_flags", func(t *testing.T) {
-		testutil.RunConcurrent(t, 10, func(i int) error {
+		helpers.RunConcurrent(t, 10, func(i int) error {
 			// Simulate concurrent flag operations
 			t.Logf("Flag operation %d", i)
 			return nil
@@ -267,7 +267,7 @@ func TestSessionConcurrency(t *testing.T) {
 	})
 
 	t.Run("concurrent_fetches", func(t *testing.T) {
-		testutil.RunConcurrent(t, 10, func(i int) error {
+		helpers.RunConcurrent(t, 10, func(i int) error {
 			// Simulate concurrent fetch operations
 			t.Logf("Fetch operation %d", i)
 			return nil

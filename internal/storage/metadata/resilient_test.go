@@ -6,12 +6,12 @@ import (
 	"time"
 
 	"github.com/fenilsonani/email-server/internal/logging"
-	"github.com/fenilsonani/email-server/internal/testutil"
+	"github.com/fenilsonani/email-server/tests/shared/helpers"
 )
 
 // TestResilientStoreCreation tests creating a resilient store wrapper
 func TestResilientStoreCreation(t *testing.T) {
-	testutil.WithTempDir(t, func(tmpDir string) {
+	helpers.WithTempDir(t, func(tmpDir string) {
 		db, err := Open(tmpDir + "/test.db")
 		if err != nil {
 			t.Fatalf("Failed to open database: %v", err)
@@ -41,7 +41,7 @@ func TestResilientStoreCreation(t *testing.T) {
 
 // TestResilientStorePing tests ping through resilient wrapper
 func TestResilientStorePing(t *testing.T) {
-	testutil.WithTempDir(t, func(tmpDir string) {
+	helpers.WithTempDir(t, func(tmpDir string) {
 		db, err := Open(tmpDir + "/test.db")
 		if err != nil {
 			t.Fatalf("Failed to open database: %v", err)
@@ -62,7 +62,7 @@ func TestResilientStorePing(t *testing.T) {
 
 // TestResilientStoreQueries tests query execution through resilient wrapper
 func TestResilientStoreQueries(t *testing.T) {
-	testutil.WithTempDir(t, func(tmpDir string) {
+	helpers.WithTempDir(t, func(tmpDir string) {
 		db, err := Open(tmpDir + "/test.db")
 		if err != nil {
 			t.Fatalf("Failed to open database: %v", err)
@@ -124,7 +124,7 @@ func TestResilientStoreQueries(t *testing.T) {
 
 // TestResilientStoreStats tests statistics collection
 func TestResilientStoreStats(t *testing.T) {
-	testutil.WithTempDir(t, func(tmpDir string) {
+	helpers.WithTempDir(t, func(tmpDir string) {
 		db, err := Open(tmpDir + "/test.db")
 		if err != nil {
 			t.Fatalf("Failed to open database: %v", err)
@@ -143,7 +143,7 @@ func TestResilientStoreStats(t *testing.T) {
 
 // TestResilientStoreDriver tests driver information
 func TestResilientStoreDriver(t *testing.T) {
-	testutil.WithTempDir(t, func(tmpDir string) {
+	helpers.WithTempDir(t, func(tmpDir string) {
 		db, err := Open(tmpDir + "/test.db")
 		if err != nil {
 			t.Fatalf("Failed to open database: %v", err)
@@ -161,7 +161,7 @@ func TestResilientStoreDriver(t *testing.T) {
 
 // TestResilientStoreRawDB tests raw database access
 func TestResilientStoreRawDB(t *testing.T) {
-	testutil.WithTempDir(t, func(tmpDir string) {
+	helpers.WithTempDir(t, func(tmpDir string) {
 		db, err := Open(tmpDir + "/test.db")
 		if err != nil {
 			t.Fatalf("Failed to open database: %v", err)
@@ -187,7 +187,7 @@ func TestResilientStoreRawDB(t *testing.T) {
 
 // TestResilientStoreTimeout tests query timeout behavior
 func TestResilientStoreTimeout(t *testing.T) {
-	testutil.WithTempDir(t, func(tmpDir string) {
+	helpers.WithTempDir(t, func(tmpDir string) {
 		db, err := Open(tmpDir + "/test.db")
 		if err != nil {
 			t.Fatalf("Failed to open database: %v", err)
@@ -223,7 +223,7 @@ func TestResilientStoreTimeout(t *testing.T) {
 
 // TestResilientStoreTransaction tests transaction support
 func TestResilientStoreTransaction(t *testing.T) {
-	testutil.WithTempDir(t, func(tmpDir string) {
+	helpers.WithTempDir(t, func(tmpDir string) {
 		db, err := Open(tmpDir + "/test.db")
 		if err != nil {
 			t.Fatalf("Failed to open database: %v", err)
@@ -268,7 +268,7 @@ func TestResilientStoreTransaction(t *testing.T) {
 
 // TestResilientStoreSlowQueryLogging tests slow query detection
 func TestResilientStoreSlowQueryLogging(t *testing.T) {
-	testutil.WithTempDir(t, func(tmpDir string) {
+	helpers.WithTempDir(t, func(tmpDir string) {
 		db, err := Open(tmpDir + "/test.db")
 		if err != nil {
 			t.Fatalf("Failed to open database: %v", err)
@@ -304,7 +304,7 @@ func TestResilientStoreSlowQueryLogging(t *testing.T) {
 
 // TestResilientStoreConcurrency tests concurrent access through resilient wrapper
 func TestResilientStoreConcurrency(t *testing.T) {
-	testutil.WithTempDir(t, func(tmpDir string) {
+	helpers.WithTempDir(t, func(tmpDir string) {
 		db, err := Open(tmpDir + "/test.db")
 		if err != nil {
 			t.Fatalf("Failed to open database: %v", err)
@@ -328,7 +328,7 @@ func TestResilientStoreConcurrency(t *testing.T) {
 		`)
 
 		t.Run("concurrent_inserts_through_wrapper", func(t *testing.T) {
-			testutil.RunConcurrent(t, 10, func(i int) error {
+			helpers.RunConcurrent(t, 10, func(i int) error {
 				_, err := rs.ExecContext(context.Background(),
 					"INSERT INTO concurrent_resilient (value) VALUES (?)", i)
 				return err
@@ -342,7 +342,7 @@ func TestResilientStoreConcurrency(t *testing.T) {
 
 // TestResilientStoreClose tests closing resilient store
 func TestResilientStoreClose(t *testing.T) {
-	testutil.WithTempDir(t, func(tmpDir string) {
+	helpers.WithTempDir(t, func(tmpDir string) {
 		db, err := Open(tmpDir + "/test.db")
 		if err != nil {
 			t.Fatalf("Failed to open database: %v", err)
@@ -366,7 +366,7 @@ func TestResilientStoreClose(t *testing.T) {
 
 // BenchmarkResilientStoreQuery benchmarks query through resilient wrapper
 func BenchmarkResilientStoreQuery(b *testing.B) {
-	testutil.WithTempDir(&testing.T{}, func(tmpDir string) {
+	helpers.WithTempDir(&testing.T{}, func(tmpDir string) {
 		db, _ := Open(tmpDir + "/bench.db")
 		defer db.Close()
 
@@ -395,7 +395,7 @@ func BenchmarkResilientStoreQuery(b *testing.B) {
 
 // BenchmarkResilientStoreInsert benchmarks insert through resilient wrapper
 func BenchmarkResilientStoreInsert(b *testing.B) {
-	testutil.WithTempDir(&testing.T{}, func(tmpDir string) {
+	helpers.WithTempDir(&testing.T{}, func(tmpDir string) {
 		db, _ := Open(tmpDir + "/bench.db")
 		defer db.Close()
 

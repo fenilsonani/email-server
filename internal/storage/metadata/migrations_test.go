@@ -5,12 +5,12 @@ import (
 	"database/sql"
 	"testing"
 
-	"github.com/fenilsonani/email-server/internal/testutil"
+	"github.com/fenilsonani/email-server/tests/shared/helpers"
 )
 
 // TestMigrationsApply tests applying all migrations
 func TestMigrationsApply(t *testing.T) {
-	testutil.WithTempDir(t, func(tmpDir string) {
+	helpers.WithTempDir(t, func(tmpDir string) {
 		db, err := Open(tmpDir + "/test.db")
 		if err != nil {
 			t.Fatalf("Failed to open database: %v", err)
@@ -40,7 +40,7 @@ func TestMigrationsApply(t *testing.T) {
 
 // TestMigrationIdempotency tests that migrations can be run multiple times safely
 func TestMigrationIdempotency(t *testing.T) {
-	testutil.WithTempDir(t, func(tmpDir string) {
+	helpers.WithTempDir(t, func(tmpDir string) {
 		db, err := Open(tmpDir + "/test.db")
 		if err != nil {
 			t.Fatalf("Failed to open database: %v", err)
@@ -85,7 +85,7 @@ func TestMigrationIdempotency(t *testing.T) {
 
 // TestMigrationsCreateTables tests that tables are created by migrations
 func TestMigrationsCreateTables(t *testing.T) {
-	testutil.WithTempDir(t, func(tmpDir string) {
+	helpers.WithTempDir(t, func(tmpDir string) {
 		db, err := Open(tmpDir + "/test.db")
 		if err != nil {
 			t.Fatalf("Failed to open database: %v", err)
@@ -133,7 +133,7 @@ func TestMigrationsCreateTables(t *testing.T) {
 
 // TestUsersTableSchema tests the users table structure
 func TestUsersTableSchema(t *testing.T) {
-	testutil.WithTempDir(t, func(tmpDir string) {
+	helpers.WithTempDir(t, func(tmpDir string) {
 		db, err := Open(tmpDir + "/test.db")
 		if err != nil {
 			t.Fatalf("Failed to open database: %v", err)
@@ -187,7 +187,7 @@ func TestUsersTableSchema(t *testing.T) {
 
 // TestDomainsTableSchema tests the domains table structure
 func TestDomainsTableSchema(t *testing.T) {
-	testutil.WithTempDir(t, func(tmpDir string) {
+	helpers.WithTempDir(t, func(tmpDir string) {
 		db, err := Open(tmpDir + "/test.db")
 		if err != nil {
 			t.Fatalf("Failed to open database: %v", err)
@@ -234,7 +234,7 @@ func TestDomainsTableSchema(t *testing.T) {
 
 // TestMailboxesTableSchema tests the mailboxes table structure
 func TestMailboxesTableSchema(t *testing.T) {
-	testutil.WithTempDir(t, func(tmpDir string) {
+	helpers.WithTempDir(t, func(tmpDir string) {
 		db, err := Open(tmpDir + "/test.db")
 		if err != nil {
 			t.Fatalf("Failed to open database: %v", err)
@@ -281,7 +281,7 @@ func TestMailboxesTableSchema(t *testing.T) {
 
 // TestMigrationTransactional tests that migrations are transactional
 func TestMigrationTransactional(t *testing.T) {
-	testutil.WithTempDir(t, func(tmpDir string) {
+	helpers.WithTempDir(t, func(tmpDir string) {
 		db, err := Open(tmpDir + "/test.db")
 		if err != nil {
 			t.Fatalf("Failed to open database: %v", err)
@@ -313,7 +313,7 @@ func TestMigrationTransactional(t *testing.T) {
 
 // TestMigrationVersionTracking tests that migration versions are tracked correctly
 func TestMigrationVersionTracking(t *testing.T) {
-	testutil.WithTempDir(t, func(tmpDir string) {
+	helpers.WithTempDir(t, func(tmpDir string) {
 		db, err := Open(tmpDir + "/test.db")
 		if err != nil {
 			t.Fatalf("Failed to open database: %v", err)
@@ -364,7 +364,7 @@ func TestMigrationVersionTracking(t *testing.T) {
 
 // TestForeignKeyEnforcement tests that foreign keys are enforced after migrations
 func TestForeignKeyEnforcement(t *testing.T) {
-	testutil.WithTempDir(t, func(tmpDir string) {
+	helpers.WithTempDir(t, func(tmpDir string) {
 		db, err := Open(tmpDir + "/test.db")
 		if err != nil {
 			t.Fatalf("Failed to open database: %v", err)
@@ -391,7 +391,7 @@ func TestForeignKeyEnforcement(t *testing.T) {
 
 // TestTablesAreAccessible tests that created tables can be accessed
 func TestTablesAreAccessible(t *testing.T) {
-	testutil.WithTempDir(t, func(tmpDir string) {
+	helpers.WithTempDir(t, func(tmpDir string) {
 		db, err := Open(tmpDir + "/test.db")
 		if err != nil {
 			t.Fatalf("Failed to open database: %v", err)
@@ -427,7 +427,7 @@ func TestTablesAreAccessible(t *testing.T) {
 
 // BenchmarkMigrations benchmarks the migration process
 func BenchmarkMigrations(b *testing.B) {
-	testutil.WithTempDir(&testing.T{}, func(tmpDir string) {
+	helpers.WithTempDir(&testing.T{}, func(tmpDir string) {
 		for i := 0; i < b.N; i++ {
 			db, _ := Open(tmpDir + "/bench" + string(rune(i)) + ".db")
 			db.Migrate(context.Background())
@@ -438,7 +438,7 @@ func BenchmarkMigrations(b *testing.B) {
 
 // BenchmarkMigrationIdempotency benchmarks running migrations on an already-migrated database
 func BenchmarkMigrationIdempotency(b *testing.B) {
-	testutil.WithTempDir(&testing.T{}, func(tmpDir string) {
+	helpers.WithTempDir(&testing.T{}, func(tmpDir string) {
 		db, _ := Open(tmpDir + "/bench.db")
 		defer db.Close()
 

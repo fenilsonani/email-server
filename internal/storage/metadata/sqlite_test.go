@@ -7,13 +7,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fenilsonani/email-server/internal/testutil"
+	"github.com/fenilsonani/email-server/tests/shared/helpers"
 )
 
 // TestOpenSQLite tests SQLite database opening and configuration
 func TestOpenSQLite(t *testing.T) {
 	t.Run("open_memory_database", func(t *testing.T) {
-		testutil.WithTempDir(t, func(tmpDir string) {
+		helpers.WithTempDir(t, func(tmpDir string) {
 			dbPath := tmpDir + "/test.db"
 			cfg := SQLiteConfig{
 				Path:            dbPath,
@@ -40,7 +40,7 @@ func TestOpenSQLite(t *testing.T) {
 	})
 
 	t.Run("open_with_defaults", func(t *testing.T) {
-		testutil.WithTempDir(t, func(tmpDir string) {
+		helpers.WithTempDir(t, func(tmpDir string) {
 			cfg := SQLiteConfig{Path: tmpDir + "/test.db"}
 			db, err := OpenSQLite(cfg)
 			if err != nil {
@@ -68,7 +68,7 @@ func TestOpenSQLite(t *testing.T) {
 	})
 
 	t.Run("legacy_open_function", func(t *testing.T) {
-		testutil.WithTempDir(t, func(tmpDir string) {
+		helpers.WithTempDir(t, func(tmpDir string) {
 			dbPath := tmpDir + "/legacy.db"
 			db, err := Open(dbPath)
 			if err != nil {
@@ -85,7 +85,7 @@ func TestOpenSQLite(t *testing.T) {
 
 // TestSQLiteDriver tests basic Store interface implementations
 func TestSQLiteDriver(t *testing.T) {
-	testutil.WithTempDir(t, func(tmpDir string) {
+	helpers.WithTempDir(t, func(tmpDir string) {
 		db, err := Open(tmpDir + "/test.db")
 		if err != nil {
 			t.Fatalf("Failed to open database: %v", err)
@@ -132,7 +132,7 @@ func TestSQLiteDriver(t *testing.T) {
 
 // TestSQLiteTransaction tests transaction handling
 func TestSQLiteTransaction(t *testing.T) {
-	testutil.WithTempDir(t, func(tmpDir string) {
+	helpers.WithTempDir(t, func(tmpDir string) {
 		db, err := Open(tmpDir + "/test.db")
 		if err != nil {
 			t.Fatalf("Failed to open database: %v", err)
@@ -211,7 +211,7 @@ func TestSQLiteTransaction(t *testing.T) {
 
 // TestSQLiteConcurrency tests concurrent database access
 func TestSQLiteConcurrency(t *testing.T) {
-	testutil.WithTempDir(t, func(tmpDir string) {
+	helpers.WithTempDir(t, func(tmpDir string) {
 		db, err := Open(tmpDir + "/test.db")
 		if err != nil {
 			t.Fatalf("Failed to open database: %v", err)
@@ -230,7 +230,7 @@ func TestSQLiteConcurrency(t *testing.T) {
 		}
 
 		t.Run("concurrent_inserts", func(t *testing.T) {
-			testutil.RunConcurrent(t, 10, func(i int) error {
+			helpers.RunConcurrent(t, 10, func(i int) error {
 				_, err := db.ExecContext(context.Background(), "INSERT INTO concurrent_test (value) VALUES (?)", i)
 				return err
 			})
@@ -247,7 +247,7 @@ func TestSQLiteConcurrency(t *testing.T) {
 		})
 
 		t.Run("concurrent_reads", func(t *testing.T) {
-			testutil.RunConcurrent(t, 20, func(i int) error {
+			helpers.RunConcurrent(t, 20, func(i int) error {
 				rows, err := db.QueryContext(context.Background(), "SELECT COUNT(*) FROM concurrent_test")
 				if err != nil {
 					return err
@@ -261,7 +261,7 @@ func TestSQLiteConcurrency(t *testing.T) {
 
 // TestSQLiteForeignKeys tests foreign key constraint enforcement
 func TestSQLiteForeignKeys(t *testing.T) {
-	testutil.WithTempDir(t, func(tmpDir string) {
+	helpers.WithTempDir(t, func(tmpDir string) {
 		db, err := Open(tmpDir + "/test.db")
 		if err != nil {
 			t.Fatalf("Failed to open database: %v", err)
@@ -318,7 +318,7 @@ func TestSQLiteForeignKeys(t *testing.T) {
 
 // TestSQLiteErrorHandling tests error handling
 func TestSQLiteErrorHandling(t *testing.T) {
-	testutil.WithTempDir(t, func(tmpDir string) {
+	helpers.WithTempDir(t, func(tmpDir string) {
 		db, err := Open(tmpDir + "/test.db")
 		if err != nil {
 			t.Fatalf("Failed to open database: %v", err)
@@ -366,7 +366,7 @@ func TestSQLiteErrorHandling(t *testing.T) {
 
 // TestSQLiteClose tests database closure
 func TestSQLiteClose(t *testing.T) {
-	testutil.WithTempDir(t, func(tmpDir string) {
+	helpers.WithTempDir(t, func(tmpDir string) {
 		db, err := Open(tmpDir + "/test.db")
 		if err != nil {
 			t.Fatalf("Failed to open database: %v", err)
@@ -392,7 +392,7 @@ func TestSQLiteClose(t *testing.T) {
 
 // TestSQLiteQueryRow tests QueryRowContext
 func TestSQLiteQueryRow(t *testing.T) {
-	testutil.WithTempDir(t, func(tmpDir string) {
+	helpers.WithTempDir(t, func(tmpDir string) {
 		db, err := Open(tmpDir + "/test.db")
 		if err != nil {
 			t.Fatalf("Failed to open database: %v", err)
@@ -432,7 +432,7 @@ func TestSQLiteQueryRow(t *testing.T) {
 
 // BenchmarkSQLiteInsert benchmarks insert operations
 func BenchmarkSQLiteInsert(b *testing.B) {
-	testutil.WithTempDir(&testing.T{}, func(tmpDir string) {
+	helpers.WithTempDir(&testing.T{}, func(tmpDir string) {
 		db, _ := Open(tmpDir + "/bench.db")
 		defer db.Close()
 
@@ -452,7 +452,7 @@ func BenchmarkSQLiteInsert(b *testing.B) {
 
 // BenchmarkSQLiteQuery benchmarks query operations
 func BenchmarkSQLiteQuery(b *testing.B) {
-	testutil.WithTempDir(&testing.T{}, func(tmpDir string) {
+	helpers.WithTempDir(&testing.T{}, func(tmpDir string) {
 		db, _ := Open(tmpDir + "/bench.db")
 		defer db.Close()
 

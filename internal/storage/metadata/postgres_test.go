@@ -7,18 +7,18 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fenilsonani/email-server/internal/testutil"
+	"github.com/fenilsonani/email-server/tests/shared/helpers"
 )
 
 // TestOpenPostgres tests PostgreSQL database connection
 func TestOpenPostgres(t *testing.T) {
-	if !testutil.PostgresAvailable() {
+	if !helpers.PostgresAvailable() {
 		t.Skip("PostgreSQL not configured (set TEST_POSTGRES_DSN)")
 	}
 
 	t.Run("open_postgres_connection", func(t *testing.T) {
 		cfg := PostgresConfig{
-			DSN:             testutil.TestPostgresDSN(),
+			DSN:             helpers.TestPostgresDSN(),
 			MaxOpenConns:    50,
 			MaxIdleConns:    10,
 			ConnMaxLifetime: 30 * time.Minute,
@@ -49,12 +49,12 @@ func TestOpenPostgres(t *testing.T) {
 
 // TestPostgresBasics tests basic PostgreSQL operations
 func TestPostgresBasics(t *testing.T) {
-	if !testutil.PostgresAvailable() {
+	if !helpers.PostgresAvailable() {
 		t.Skip("PostgreSQL not configured (set TEST_POSTGRES_DSN)")
 	}
 
 	db, err := OpenPostgres(PostgresConfig{
-		DSN: testutil.TestPostgresDSN(),
+		DSN: helpers.TestPostgresDSN(),
 	})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
@@ -85,12 +85,12 @@ func TestPostgresBasics(t *testing.T) {
 
 // TestPostgresTransaction tests PostgreSQL transactions
 func TestPostgresTransaction(t *testing.T) {
-	if !testutil.PostgresAvailable() {
+	if !helpers.PostgresAvailable() {
 		t.Skip("PostgreSQL not configured (set TEST_POSTGRES_DSN)")
 	}
 
 	db, err := OpenPostgres(PostgresConfig{
-		DSN: testutil.TestPostgresDSN(),
+		DSN: helpers.TestPostgresDSN(),
 	})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
@@ -167,12 +167,12 @@ func TestPostgresTransaction(t *testing.T) {
 
 // TestPostgresConcurrency tests concurrent PostgreSQL access
 func TestPostgresConcurrency(t *testing.T) {
-	if !testutil.PostgresAvailable() {
+	if !helpers.PostgresAvailable() {
 		t.Skip("PostgreSQL not configured (set TEST_POSTGRES_DSN)")
 	}
 
 	db, err := OpenPostgres(PostgresConfig{
-		DSN: testutil.TestPostgresDSN(),
+		DSN: helpers.TestPostgresDSN(),
 	})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
@@ -194,7 +194,7 @@ func TestPostgresConcurrency(t *testing.T) {
 	defer db.ExecContext(ctx, fmt.Sprintf("DROP TABLE IF EXISTS %s", testTableName))
 
 	t.Run("concurrent_inserts", func(t *testing.T) {
-		testutil.RunConcurrent(t, 20, func(i int) error {
+		helpers.RunConcurrent(t, 20, func(i int) error {
 			_, err := db.ExecContext(context.Background(),
 				fmt.Sprintf("INSERT INTO %s (value) VALUES ($1)", testTableName), i)
 			return err
@@ -211,7 +211,7 @@ func TestPostgresConcurrency(t *testing.T) {
 	})
 
 	t.Run("concurrent_reads", func(t *testing.T) {
-		testutil.RunConcurrent(t, 30, func(i int) error {
+		helpers.RunConcurrent(t, 30, func(i int) error {
 			rows, err := db.QueryContext(context.Background(),
 				fmt.Sprintf("SELECT * FROM %s LIMIT 5", testTableName))
 			if err != nil {
@@ -225,12 +225,12 @@ func TestPostgresConcurrency(t *testing.T) {
 
 // TestPostgresForeignKeys tests foreign key constraints
 func TestPostgresForeignKeys(t *testing.T) {
-	if !testutil.PostgresAvailable() {
+	if !helpers.PostgresAvailable() {
 		t.Skip("PostgreSQL not configured (set TEST_POSTGRES_DSN)")
 	}
 
 	db, err := OpenPostgres(PostgresConfig{
-		DSN: testutil.TestPostgresDSN(),
+		DSN: helpers.TestPostgresDSN(),
 	})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
@@ -297,12 +297,12 @@ func TestPostgresForeignKeys(t *testing.T) {
 
 // TestPostgresErrorHandling tests error scenarios
 func TestPostgresErrorHandling(t *testing.T) {
-	if !testutil.PostgresAvailable() {
+	if !helpers.PostgresAvailable() {
 		t.Skip("PostgreSQL not configured (set TEST_POSTGRES_DSN)")
 	}
 
 	db, err := OpenPostgres(PostgresConfig{
-		DSN: testutil.TestPostgresDSN(),
+		DSN: helpers.TestPostgresDSN(),
 	})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
@@ -356,12 +356,12 @@ func TestPostgresErrorHandling(t *testing.T) {
 
 // TestPostgresQueryRow tests QueryRowContext
 func TestPostgresQueryRow(t *testing.T) {
-	if !testutil.PostgresAvailable() {
+	if !helpers.PostgresAvailable() {
 		t.Skip("PostgreSQL not configured (set TEST_POSTGRES_DSN)")
 	}
 
 	db, err := OpenPostgres(PostgresConfig{
-		DSN: testutil.TestPostgresDSN(),
+		DSN: helpers.TestPostgresDSN(),
 	})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
@@ -409,12 +409,12 @@ func TestPostgresQueryRow(t *testing.T) {
 
 // TestPostgresArrayTypes tests PostgreSQL array types
 func TestPostgresArrayTypes(t *testing.T) {
-	if !testutil.PostgresAvailable() {
+	if !helpers.PostgresAvailable() {
 		t.Skip("PostgreSQL not configured (set TEST_POSTGRES_DSN)")
 	}
 
 	db, err := OpenPostgres(PostgresConfig{
-		DSN: testutil.TestPostgresDSN(),
+		DSN: helpers.TestPostgresDSN(),
 	})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
@@ -456,12 +456,12 @@ func TestPostgresArrayTypes(t *testing.T) {
 
 // BenchmarkPostgresInsert benchmarks PostgreSQL insert operations
 func BenchmarkPostgresInsert(b *testing.B) {
-	if !testutil.PostgresAvailable() {
+	if !helpers.PostgresAvailable() {
 		b.Skip("PostgreSQL not configured")
 	}
 
 	db, err := OpenPostgres(PostgresConfig{
-		DSN: testutil.TestPostgresDSN(),
+		DSN: helpers.TestPostgresDSN(),
 	})
 	if err != nil {
 		b.Fatalf("Failed to open database: %v", err)
@@ -486,12 +486,12 @@ func BenchmarkPostgresInsert(b *testing.B) {
 
 // BenchmarkPostgresQuery benchmarks PostgreSQL query operations
 func BenchmarkPostgresQuery(b *testing.B) {
-	if !testutil.PostgresAvailable() {
+	if !helpers.PostgresAvailable() {
 		b.Skip("PostgreSQL not configured")
 	}
 
 	db, err := OpenPostgres(PostgresConfig{
-		DSN: testutil.TestPostgresDSN(),
+		DSN: helpers.TestPostgresDSN(),
 	})
 	if err != nil {
 		b.Fatalf("Failed to open database: %v", err)
