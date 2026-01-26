@@ -3,8 +3,7 @@
 
 reviews:
   # Enable automatic reviews on all PRs
-  auto_review:
-    enabled: true
+  auto_review: true
 
 language: "en-US"
 
