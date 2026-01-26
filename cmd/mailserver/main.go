@@ -30,6 +30,9 @@ import (
 	"github.com/fenilsonani/email-server/internal/migration"
 	"github.com/fenilsonani/email-server/internal/queue"
 	"github.com/fenilsonani/email-server/internal/doctor"
+	"github.com/fenilsonani/email-server/internal/search"
+	searchbleve "github.com/fenilsonani/email-server/internal/search/bleve"
+	"github.com/fenilsonani/email-server/internal/search/indexer"
 	"github.com/fenilsonani/email-server/internal/security"
 	"github.com/fenilsonani/email-server/internal/setup"
 	"github.com/fenilsonani/email-server/internal/sieve"
@@ -107,6 +110,7 @@ var serveCmd = &cobra.Command{
 			logger           *logging.Logger
 			healthMonitor    *health.Monitor
 			featureScheduler *features.Scheduler
+			searchService    *search.SearchService
 		}
 		resources := &resourceTracker{}
 
@@ -238,6 +242,20 @@ var serveCmd = &cobra.Command{
 						resources.logger.Error("IMAP server shutdown error", "error", err.Error())
 					} else {
 						fmt.Fprintf(os.Stderr, "IMAP server shutdown error: %v\n", err)
+					}
+				}
+			}
+
+			// 3.5. Stop search service (flush pending indexes)
+			if resources.searchService != nil {
+				if resources.logger != nil {
+					resources.logger.Info("Shutting down search service")
+				}
+				if err := resources.searchService.Close(); err != nil {
+					if resources.logger != nil {
+						resources.logger.Error("Search service shutdown error", "error", err.Error())
+					} else {
+						fmt.Fprintf(os.Stderr, "Search service shutdown error: %v\n", err)
 					}
 				}
 			}
@@ -485,6 +503,83 @@ var serveCmd = &cobra.Command{
 
 		imapSrv := imapserver.NewServer(authenticator, store, imapAddr, imapsAddr, tlsManager.TLSConfig(), imapConfig)
 		resources.imapSrv = imapSrv
+
+		// Initialize full-text search if enabled
+		if cfg.Search.Enabled {
+			searchCfg := &search.Config{
+				Enabled:          cfg.Search.Enabled,
+				Engine:           search.EngineType(cfg.Search.Engine),
+				IndexPath:        cfg.Search.IndexPath,
+				Realtime:         cfg.Search.Realtime,
+				BatchSize:        cfg.Search.BatchSize,
+				FlushInterval:    cfg.Search.FlushInterval,
+				Timeout:          cfg.Search.Timeout,
+				FuzzyEnabled:     cfg.Search.FuzzyEnabled,
+				FuzzyDistance:    cfg.Search.FuzzyDistance,
+				HighlightEnabled: cfg.Search.HighlightEnabled,
+				MaxResults:       cfg.Search.MaxResults,
+				Workers:          cfg.Search.Workers,
+			}
+
+			// Apply defaults for missing values
+			if searchCfg.BatchSize == 0 {
+				searchCfg.BatchSize = 100
+			}
+			if searchCfg.Workers == 0 {
+				searchCfg.Workers = 2
+			}
+			if searchCfg.FlushInterval == "" {
+				searchCfg.FlushInterval = "100ms"
+			}
+			if searchCfg.Timeout == "" {
+				searchCfg.Timeout = "5s"
+			}
+			if searchCfg.MaxResults == 0 {
+				searchCfg.MaxResults = 1000
+			}
+
+			// Create Bleve search engine
+			searchEngine, err := searchbleve.NewEngine(searchCfg)
+			if err != nil {
+				cleanup()
+				return fmt.Errorf("failed to initialize search engine: %w", err)
+			}
+
+			// Create indexer
+			searchIndexer := indexer.NewIndexer(searchEngine, store, nil, searchCfg)
+
+			// Wire up storage hooks for real-time indexing
+			if searchCfg.Realtime {
+				maildir.SetSearchAppendHook(func(ctx context.Context, mailboxID int64, uid uint32) {
+					if err := searchIndexer.IndexMessage(ctx, mailboxID, uid); err != nil {
+						logger.Warn("Failed to index message", "mailbox", mailboxID, "uid", uid, "error", err.Error())
+					}
+				})
+				maildir.SetSearchExpungeHook(func(ctx context.Context, mailboxID int64, uid uint32) {
+					if err := searchIndexer.DeleteMessage(ctx, mailboxID, uid); err != nil {
+						logger.Warn("Failed to delete message from index", "mailbox", mailboxID, "uid", uid, "error", err.Error())
+					}
+				})
+			}
+
+			// Start the indexer
+			if err := searchIndexer.Start(context.Background()); err != nil {
+				cleanup()
+				return fmt.Errorf("failed to start search indexer: %w", err)
+			}
+
+			// Set search engine on IMAP server
+			imapSrv.SetSearchEngine(searchEngine)
+
+			// Store for cleanup
+			resources.searchService = search.NewSearchService(searchEngine, searchIndexer)
+			logger.Info("Full-text search enabled",
+				"engine", searchEngine.Name(),
+				"index_path", searchCfg.IndexPath,
+				"realtime", searchCfg.Realtime,
+				"workers", searchCfg.Workers,
+			)
+		}
 
 		// Create SMTP backend and server
 		smtpBackend, err := smtpserver.NewBackend(cfg, authenticator, store, deliveryEngine, logger)

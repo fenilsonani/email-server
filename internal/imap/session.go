@@ -14,6 +14,7 @@ import (
 	"github.com/emersion/go-imap/v2/imapserver"
 	"github.com/fenilsonani/email-server/internal/auth"
 	"github.com/fenilsonani/email-server/internal/metrics"
+	"github.com/fenilsonani/email-server/internal/search"
 	"github.com/fenilsonani/email-server/internal/storage"
 )
 

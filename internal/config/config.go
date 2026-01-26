@@ -26,6 +26,7 @@ type Config struct {
 	Sieve        SieveConfig        `koanf:"sieve"`
 	Autodiscover AutodiscoverConfig `koanf:"autodiscover"`
 	API          APIConfig          `koanf:"api"`
+	Search       SearchConfig       `koanf:"search"`
 	Updater      UpdaterConfig      `koanf:"updater"`
 }
 
@@ -41,15 +42,6 @@ type ServerConfig struct {
 	IMAPSPort       int    `koanf:"imaps_port"`       // 993 for implicit TLS
 	DAVPort         int    `koanf:"dav_port"`         // 443 for CalDAV/CardDAV
 	ShutdownTimeout string `koanf:"shutdown_timeout"` // Graceful shutdown timeout
-	IMAP            IMAPConfig `koanf:"imap"`         // IMAP-specific settings
-}
-
-// IMAPConfig holds IMAP-specific configuration for connection management
-type IMAPConfig struct {
-	IdleKeepaliveInterval string `koanf:"idle_keepalive_interval"` // Keepalive interval during IDLE (default "3m")
-	TCPKeepalivePeriod    string `koanf:"tcp_keepalive_period"`    // TCP SO_KEEPALIVE period (default "60s")
-	MaxConnections        int    `koanf:"max_connections"`         // Maximum global IMAP connections (default 2000)
-	MaxConnectionsPerIP   int    `koanf:"max_connections_per_ip"`  // Maximum connections per IP (default 100)
 }
 
 // TLSConfig holds TLS/ACME configuration
@@ -187,6 +179,22 @@ type APIConfig struct {
 	MaxTotalAttachmentsSizeMB int      `koanf:"max_total_attachments_size_mb"` // Max total attachments size in MB (default 25)
 }
 
+// SearchConfig holds full-text search configuration
+type SearchConfig struct {
+	Enabled          bool   `koanf:"enabled"`           // Enable full-text search
+	Engine           string `koanf:"engine"`            // Search engine: bleve, sqlite, postgres, auto
+	IndexPath        string `koanf:"index_path"`        // Path for Bleve index
+	Realtime         bool   `koanf:"realtime"`          // Enable real-time indexing
+	BatchSize        int    `koanf:"batch_size"`        // Batch size for indexing
+	FlushInterval    string `koanf:"flush_interval"`    // Flush interval for batches
+	Timeout          string `koanf:"timeout"`           // Search timeout
+	FuzzyEnabled     bool   `koanf:"fuzzy_enabled"`     // Enable fuzzy matching
+	FuzzyDistance    int    `koanf:"fuzzy_distance"`    // Fuzzy edit distance
+	HighlightEnabled bool   `koanf:"highlight_enabled"` // Enable result highlighting
+	MaxResults       int    `koanf:"max_results"`       // Maximum search results
+	Workers          int    `koanf:"workers"`           // Number of indexing workers
+}
+
 // UpdaterConfig holds update system configuration
 type UpdaterConfig struct {
 	Mode                   string `koanf:"mode"`                      // Update mode: normal, power (default "normal")
@@ -216,12 +224,6 @@ func DefaultConfig() *Config {
 			IMAPSPort:       993,
 			DAVPort:         443,
 			ShutdownTimeout: "30s",
-			IMAP: IMAPConfig{
-				IdleKeepaliveInterval: "3m",
-				TCPKeepalivePeriod:    "60s",
-				MaxConnections:        2000,
-				MaxConnectionsPerIP:   100,
-			},
 		},
 		TLS: TLSConfig{
 			AutoTLS:  false,
@@ -305,6 +307,20 @@ func DefaultConfig() *Config {
 			RateLimitDefault: 1000,
 			EnableTracking:   true,
 		},
+		Search: SearchConfig{
+			Enabled:          true,
+			Engine:           "auto",
+			IndexPath:        "/var/lib/mailserver/search.bleve",
+			Realtime:         true,
+			BatchSize:        100,
+			FlushInterval:    "100ms",
+			Timeout:          "5s",
+			FuzzyEnabled:     true,
+			FuzzyDistance:    2,
+			HighlightEnabled: true,
+			MaxResults:       1000,
+			Workers:          2,
+		},
 		Updater: UpdaterConfig{
 			Mode:                  "normal",
 			AutoCheckEnabled:      true,
@@ -365,11 +381,6 @@ func (c *Config) Validate() error {
 
 	// Timeout validation
 	if err := c.validateTimeouts(); err != nil {
-		return err
-	}
-
-	// IMAP configuration validation
-	if err := c.validateIMAP(); err != nil {
 		return err
 	}
 
@@ -605,65 +616,6 @@ func (c *Config) validateTimeouts() error {
 				return fmt.Errorf("%s is too long, maximum is 30d (got: %s)", name, timeout)
 			}
 		}
-	}
-
-	return nil
-}
-
-// validateIMAP validates IMAP configuration
-func (c *Config) validateIMAP() error {
-	imap := &c.Server.IMAP
-
-	// Validate timeouts
-	imapTimeouts := map[string]string{
-		"server.imap.idle_keepalive_interval": imap.IdleKeepaliveInterval,
-		"server.imap.tcp_keepalive_period":    imap.TCPKeepalivePeriod,
-	}
-
-	for name, timeout := range imapTimeouts {
-		if timeout == "" {
-			continue // Use default
-		}
-		d, err := time.ParseDuration(timeout)
-		if err != nil {
-			return fmt.Errorf("%s is invalid: %w", name, err)
-		}
-		if d < 0 {
-			return fmt.Errorf("%s cannot be negative (got: %s)", name, timeout)
-		}
-	}
-
-	// Validate specific constraints
-	if imap.IdleKeepaliveInterval != "" {
-		d, _ := time.ParseDuration(imap.IdleKeepaliveInterval)
-		if d > 0 && d < 30*time.Second {
-			return fmt.Errorf("server.imap.idle_keepalive_interval must be at least 30s (got: %s)", imap.IdleKeepaliveInterval)
-		}
-		if d > 10*time.Minute {
-			return fmt.Errorf("server.imap.idle_keepalive_interval cannot exceed 10m (got: %s)", imap.IdleKeepaliveInterval)
-		}
-	}
-
-	if imap.TCPKeepalivePeriod != "" {
-		d, _ := time.ParseDuration(imap.TCPKeepalivePeriod)
-		if d > 0 && d < 10*time.Second {
-			return fmt.Errorf("server.imap.tcp_keepalive_period must be at least 10s (got: %s)", imap.TCPKeepalivePeriod)
-		}
-	}
-
-	// Validate connection limits
-	if imap.MaxConnections < 0 {
-		return fmt.Errorf("server.imap.max_connections cannot be negative (got: %d)", imap.MaxConnections)
-	}
-	if imap.MaxConnections > 100000 {
-		return fmt.Errorf("server.imap.max_connections cannot exceed 100000 (got: %d)", imap.MaxConnections)
-	}
-
-	if imap.MaxConnectionsPerIP < 0 {
-		return fmt.Errorf("server.imap.max_connections_per_ip cannot be negative (got: %d)", imap.MaxConnectionsPerIP)
-	}
-	if imap.MaxConnectionsPerIP > 10000 {
-		return fmt.Errorf("server.imap.max_connections_per_ip cannot exceed 10000 (got: %d)", imap.MaxConnectionsPerIP)
 	}
 
 	return nil
