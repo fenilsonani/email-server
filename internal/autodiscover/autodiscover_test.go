@@ -1,9 +1,7 @@
 package autodiscover
 
 import (
-	"encoding/xml"
 	"log/slog"
-	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -111,7 +109,7 @@ func TestMozillaAutoconfigEndpoint(t *testing.T) {
 			DisplayName: "Example Mail",
 		}
 		logger := slog.Default()
-		server := NewServer(config, logger)
+		_ = NewServer(config, logger)
 
 		// Test the endpoint
 		req := httptest.NewRequest("GET", "/.well-known/autoconfig/mail/config-v1.1.xml", nil)

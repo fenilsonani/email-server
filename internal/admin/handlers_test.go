@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fenilsonani/email-server/internal/testutil"
+	"github.com/fenilsonani/email-server/tests/shared/helpers"
 )
 
 // TestHandleDashboard tests the dashboard handler
