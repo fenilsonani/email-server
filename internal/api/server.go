@@ -106,6 +106,9 @@ func (s *Server) Start(listen string) error {
 	mux.Handle("/api/v1/suppressions", s.authMiddleware(http.HandlerFunc(s.handleSuppressions)))
 	mux.Handle("/api/v1/suppressions/", s.authMiddleware(http.HandlerFunc(s.handleSuppressionByEmail)))
 
+	// Webhooks
+	mux.Handle("/api/v1/webhooks", s.authMiddleware(http.HandlerFunc(s.handleWebhooks)))
+
 	// Tracking endpoints (no auth - public tracking pixels/links)
 	mux.HandleFunc("/t/o/", s.handleTrackOpen)
 	mux.HandleFunc("/t/c/", s.handleTrackClick)

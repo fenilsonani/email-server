@@ -70,6 +70,32 @@ func (m *TLSManager) TLSConfig() *tls.Config {
 	return m.tlsConfig
 }
 
+// TLSConfigForProtocol returns a TLS configuration with ALPN set for the specified protocol.
+// This is required for clients like Apple Mail that use ALPN negotiation.
+// Supported protocols: "imap", "smtp", "pop3"
+func (m *TLSManager) TLSConfigForProtocol(protocol string) *tls.Config {
+	if m.tlsConfig == nil {
+		return nil
+	}
+
+	// Clone the base config
+	cfg := m.tlsConfig.Clone()
+
+	// Set ALPN NextProtos based on protocol
+	switch protocol {
+	case "imap":
+		cfg.NextProtos = []string{"imap"}
+	case "smtp":
+		cfg.NextProtos = []string{"smtp"}
+	case "pop3":
+		cfg.NextProtos = []string{"pop3"}
+	default:
+		// No ALPN for unknown protocols
+	}
+
+	return cfg
+}
+
 // CertManager returns the autocert manager for HTTP-01 challenges
 func (m *TLSManager) CertManager() *autocert.Manager {
 	return m.certManager
