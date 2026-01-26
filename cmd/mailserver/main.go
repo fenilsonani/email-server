@@ -30,6 +30,7 @@ import (
 	"github.com/fenilsonani/email-server/internal/migration"
 	"github.com/fenilsonani/email-server/internal/queue"
 	"github.com/fenilsonani/email-server/internal/doctor"
+	"github.com/fenilsonani/email-server/internal/recovery"
 	"github.com/fenilsonani/email-server/internal/search"
 	searchbleve "github.com/fenilsonani/email-server/internal/search/bleve"
 	"github.com/fenilsonani/email-server/internal/search/indexer"
@@ -2692,6 +2693,45 @@ var migrateDBBackupCmd = &cobra.Command{
 	},
 }
 
+var recoveryCmd = &cobra.Command{
+	Use:   "recovery",
+	Short: "Recover emails from maildir that are missing from the database",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := cfg.EnsureDirectories(); err != nil {
+			return err
+		}
+
+		// Setup logging
+		logger, err := logging.New(logging.Config{
+			Level:  cfg.Logging.Level,
+			Format: cfg.Logging.Format,
+			Output: cfg.Logging.Output,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to initialize logger: %w", err)
+		}
+
+		// Open database
+		db, err := metadata.OpenFromConfig(cfg.Database)
+		if err != nil {
+			return fmt.Errorf("failed to open database: %w", err)
+		}
+		defer db.Close()
+
+		// Run recovery
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+		defer cancel()
+
+		sqlDB := db.(*metadata.SQLiteDB).DB
+		if err := recovery.RecoverMaildirEmails(ctx, sqlDB, cfg.Storage.MaildirPath, logger.Logger); err != nil {
+			return fmt.Errorf("recovery failed: %w", err)
+		}
+
+		fmt.Println("✓ Recovery completed successfully")
+		return nil
+	},
+}
+
 func maskDSN(dsn string) string {
 	// Mask password in DSN for display
 	// postgres://user:password@host/db -> postgres://user:****@host/db
@@ -2795,6 +2835,7 @@ func init() {
 	doctorCmd.AddCommand(doctorCompareCmd)
 
 	rootCmd.AddCommand(doctorCmd)
+	rootCmd.AddCommand(recoveryCmd)
 
 	// Database migration commands
 	migrateDBAutoCmd.Flags().StringVar(&migrateTargetDSN, "target", "", "Target database DSN (e.g., postgres://user:pass@localhost/mail)")
