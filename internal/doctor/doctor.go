@@ -98,6 +98,7 @@ func (d *Doctor) registerDefaultChecks() {
 	// Security checks
 	d.RegisterCheck(CategorySecurity, checkTLSCertificates)
 	d.RegisterCheck(CategorySecurity, checkCertExpiry)
+	d.RegisterCheck(CategorySecurity, checkTLSALPN)
 	d.RegisterCheck(CategorySecurity, checkAllDomainsDKIM)
 
 	// DNS checks

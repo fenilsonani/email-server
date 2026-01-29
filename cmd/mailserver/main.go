@@ -512,7 +512,7 @@ var serveCmd = &cobra.Command{
 			imapConfig.MaxConnectionsPerIP = cfg.Server.IMAP.MaxConnectionsPerIP
 		}
 
-		imapSrv := imapserver.NewServer(authenticator, store, imapAddr, imapsAddr, tlsManager.TLSConfigForProtocol("imap"), imapConfig)
+		imapSrv := imapserver.NewServer(authenticator, store, imapAddr, imapsAddr, tlsManager.MailTLSConfig(), imapConfig)
 		resources.imapSrv = imapSrv
 
 		// Initialize full-text search if enabled
@@ -626,7 +626,7 @@ var serveCmd = &cobra.Command{
 		featuresStore := features.NewStore(db.RawDB())
 		smtpBackend.SetFeaturesStore(featuresStore)
 
-		smtpSrv := smtpserver.NewServer(smtpBackend, cfg, tlsManager.TLSConfigForProtocol("smtp"))
+		smtpSrv := smtpserver.NewServer(smtpBackend, cfg, tlsManager.MailTLSConfig())
 		resources.smtpSrv = smtpSrv
 
 		// Start all servers with error handling
@@ -643,7 +643,7 @@ var serveCmd = &cobra.Command{
 		logger.Info("IMAP server started", "port", cfg.Server.IMAPPort)
 
 		if tlsManager.HasTLS() {
-			if err := imapSrv.ListenAndServeTLS(tlsManager.TLSConfigForProtocol("imap")); err != nil {
+			if err := imapSrv.ListenAndServeTLS(tlsManager.MailTLSConfig()); err != nil {
 				cleanup()
 				return fmt.Errorf("failed to start IMAPS server: %w", err)
 			}
@@ -680,7 +680,7 @@ var serveCmd = &cobra.Command{
 				resources.davSrv = davSrv
 				davAddr := fmt.Sprintf("%s:%d", cfg.Server.BindAddress, cfg.Server.DAVPort)
 				go func() {
-					if err := davSrv.Start(davAddr, tlsManager.TLSConfig()); err != nil {
+					if err := davSrv.Start(davAddr, tlsManager.HTTPTLSConfig()); err != nil {
 						logger.Error("DAV server error", "error", err.Error())
 					}
 				}()

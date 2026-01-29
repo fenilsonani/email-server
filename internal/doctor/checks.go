@@ -949,3 +949,69 @@ func checkQueueStale(ctx context.Context, cfg *config.Config, q *queue.RedisQueu
 	result.Message = "No stale messages"
 	return result
 }
+
+// checkTLSALPN verifies ALPN is properly configured for mail protocols.
+// This catches the bug where mail servers incorrectly advertise ALPN protocols,
+// causing connection failures with clients like Apple Mail.
+func checkTLSALPN(ctx context.Context, cfg *config.Config, _ *queue.RedisQueue) CheckResult {
+	result := CheckResult{
+		ID:       "tls-alpn",
+		Name:     "TLS ALPN Configuration",
+		Category: CategorySecurity,
+		Details:  make(map[string]interface{}),
+	}
+
+	// Skip if TLS is not configured
+	if cfg.TLS.CertFile == "" && !cfg.TLS.AutoTLS {
+		result.Status = StatusPass
+		result.Message = "TLS not configured, ALPN check skipped"
+		return result
+	}
+
+	// Test IMAPS port for ALPN handling
+	imapsPort := cfg.Server.IMAPSPort
+	if imapsPort == 0 {
+		imapsPort = 993
+	}
+
+	result.Details["imaps_port"] = imapsPort
+
+	// Connect with ALPN enabled (simulating Apple Mail behavior)
+	conn, err := tls.DialWithDialer(
+		&net.Dialer{Timeout: 5 * time.Second},
+		"tcp",
+		fmt.Sprintf("127.0.0.1:%d", imapsPort),
+		&tls.Config{
+			InsecureSkipVerify: true,
+			NextProtos:         []string{"imap"}, // Simulate Apple Mail ALPN
+		},
+	)
+
+	if err != nil {
+		// Check if the error is specifically about ALPN
+		errStr := err.Error()
+		if strings.Contains(errStr, "no application protocol") ||
+			strings.Contains(errStr, "unsupported application protocols") {
+			result.Status = StatusFail
+			result.Message = "IMAP server incorrectly rejecting ALPN - Apple Mail will fail"
+			result.Help = "Ensure IMAP server uses MailTLSConfig() which disables ALPN"
+			result.Details["error"] = errStr
+			return result
+		}
+
+		// Connection failed for other reasons (service not running, etc.)
+		result.Status = StatusWarn
+		result.Message = fmt.Sprintf("Could not test IMAPS: %v", err)
+		result.Help = "Ensure IMAPS server is running on port " + fmt.Sprintf("%d", imapsPort)
+		return result
+	}
+	defer conn.Close()
+
+	// Connection succeeded - ALPN is properly handled
+	result.Details["negotiated_protocol"] = conn.ConnectionState().NegotiatedProtocol
+	result.Details["alpn_handled"] = true
+
+	result.Status = StatusPass
+	result.Message = "TLS ALPN correctly configured for mail protocols"
+	return result
+}

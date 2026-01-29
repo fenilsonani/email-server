@@ -95,27 +95,41 @@ func NewTLSManager(cfg *config.Config) (*TLSManager, error) {
 	return manager, nil
 }
 
-// TLSConfig returns the TLS configuration
+// MailTLSConfig returns TLS config for mail protocols (IMAP, SMTP, POP3).
+// ALPN is disabled because mail protocols don't support it and enabling it
+// causes connection failures with clients like Apple Mail that advertise ALPN.
+// Use this for: IMAP server, SMTP server, POP3 server
+func (m *TLSManager) MailTLSConfig() *tls.Config {
+	if m.tlsConfig == nil {
+		return nil
+	}
+	cfg := m.tlsConfig.Clone()
+	cfg.NextProtos = []string{} // Disable ALPN for mail
+	return cfg
+}
+
+// HTTPTLSConfig returns TLS config for HTTP-based protocols.
+// ALPN is allowed for HTTP/2 negotiation.
+// Use this for: DAV server, Admin panel, API server
+func (m *TLSManager) HTTPTLSConfig() *tls.Config {
+	if m.tlsConfig == nil {
+		return nil
+	}
+	return m.tlsConfig.Clone()
+}
+
+// Deprecated: Use MailTLSConfig() or HTTPTLSConfig() instead.
+// TLSConfig returns the base TLS configuration without proper ALPN handling.
+// Using this directly may cause connection issues with mail clients.
 func (m *TLSManager) TLSConfig() *tls.Config {
 	return m.tlsConfig
 }
 
-// TLSConfigForProtocol returns a TLS configuration for the specified protocol.
-// Note: ALPN is not used for IMAP/SMTP/POP3 as these protocols don't support it.
-// ALPN is only used for HTTP-based protocols (h2, http/1.1).
+// Deprecated: Use MailTLSConfig() or HTTPTLSConfig() instead.
+// TLSConfigForProtocol returns a TLS configuration with ALPN disabled.
+// The protocol parameter is ignored - use the type-safe methods instead.
 func (m *TLSManager) TLSConfigForProtocol(protocol string) *tls.Config {
-	if m.tlsConfig == nil {
-		return nil
-	}
-
-	// Clone the base config
-	cfg := m.tlsConfig.Clone()
-
-	// Don't set ALPN for mail protocols (imap, smtp, pop3) as they don't use it.
-	// ALPN is only for HTTP-based protocols. Mail protocols use plain TLS negotiation.
-	cfg.NextProtos = []string{}
-
-	return cfg
+	return m.MailTLSConfig()
 }
 
 // CertManager returns the autocert manager for HTTP-01 challenges
