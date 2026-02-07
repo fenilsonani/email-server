@@ -175,7 +175,8 @@ func DefaultIMAPConfig() *IMAPConfig {
 type Server struct {
 	authenticator *auth.Authenticator
 	store         *maildir.Store
-	imapServer    *imapserver.Server
+	imapServer    *imapserver.Server // For plaintext port (143) with STARTTLS
+	imapsServer   *imapserver.Server // For implicit TLS port (993)
 	tlsConfig     *tls.Config
 	addr          string
 	tlsAddr       string
@@ -215,26 +216,44 @@ func NewServer(authenticator *auth.Authenticator, store *maildir.Store, addr, tl
 		config:        config,
 	}
 
-	// Create IMAP server with v2 API
+	caps := imap.CapSet{
+		imap.CapIMAP4rev1:  {},
+		imap.CapIdle:       {},
+		imap.CapUIDPlus:    {}, // RFC 4315 - Better UID handling (UIDPLUS responses)
+		imap.CapNamespace:  {}, // RFC 2342 - Namespace support (Thunderbird needs this)
+		imap.CapMove:       {}, // RFC 6851 - Efficient MOVE command
+		imap.CapSpecialUse: {}, // RFC 6154 - Special-use mailboxes (Sent, Drafts, etc.)
+		imap.CapUnselect:   {}, // RFC 3691 - Clean mailbox unselect
+	}
+
+	newSessionFunc := func(conn *imapserver.Conn) (imapserver.Session, *imapserver.GreetingData, error) {
+		session := NewSession(s, conn)
+		return session, &imapserver.GreetingData{}, nil
+	}
+
+	// Plaintext IMAP server (port 143) with STARTTLS support
+	// TLSConfig is set so STARTTLS is offered; InsecureAuth=false requires
+	// TLS before authentication
 	s.imapServer = imapserver.New(&imapserver.Options{
-		NewSession: func(conn *imapserver.Conn) (imapserver.Session, *imapserver.GreetingData, error) {
-			session := NewSession(s, conn)
-			return session, &imapserver.GreetingData{}, nil
-		},
-		Caps: imap.CapSet{
-			imap.CapIMAP4rev1:  {},
-			imap.CapIdle:       {},
-			imap.CapUIDPlus:    {}, // RFC 4315 - Better UID handling (UIDPLUS responses)
-			imap.CapNamespace:  {}, // RFC 2342 - Namespace support (Thunderbird needs this)
-			imap.CapMove:       {}, // RFC 6851 - Efficient MOVE command
-			imap.CapSpecialUse: {}, // RFC 6154 - Special-use mailboxes (Sent, Drafts, etc.)
-			imap.CapUnselect:   {}, // RFC 3691 - Clean mailbox unselect
-		},
+		NewSession:   newSessionFunc,
+		Caps:         caps,
 		TLSConfig:    tlsConfig,
-		InsecureAuth: false, // Require TLS/STARTTLS before authentication
+		InsecureAuth: false,
 	})
 
-	log.Printf("IMAP v2 server created with IDLE support")
+	// Implicit TLS IMAP server (port 993) - connection is already encrypted
+	// TLSConfig=nil prevents advertising STARTTLS on an already-TLS connection
+	// InsecureAuth=true allows authentication because the limitedConn wrapper
+	// hides *tls.Conn from the library's type assertion, but the connection
+	// IS encrypted via the TLS listener
+	s.imapsServer = imapserver.New(&imapserver.Options{
+		NewSession:   newSessionFunc,
+		Caps:         caps,
+		TLSConfig:    nil,
+		InsecureAuth: true,
+	})
+
+	log.Printf("IMAP v2 server created with IDLE support (separate plaintext/TLS instances)")
 	return s
 }
 
@@ -420,7 +439,10 @@ func (s *Server) ListenAndServeTLS(tlsConfig *tls.Config) error {
 		s.shutdownWg.Add(1)
 		go func() {
 			defer s.shutdownWg.Done()
-			if err := s.imapServer.Serve(listener); err != nil {
+			// Use the dedicated IMAPS server instance (TLSConfig=nil,
+			// InsecureAuth=true) so the library doesn't advertise STARTTLS
+			// or block authentication on already-encrypted connections
+			if err := s.imapsServer.Serve(listener); err != nil {
 				select {
 				case <-s.ctx.Done():
 					// Server is shutting down, expected error
@@ -460,10 +482,18 @@ func (s *Server) Close() error {
 		}
 	}
 
-	// Close the IMAP server
+	// Close the IMAP servers
 	if s.imapServer != nil {
 		if err := s.imapServer.Close(); err != nil {
-			log.Printf("IMAP: Error closing server: %v", err)
+			log.Printf("IMAP: Error closing plaintext server: %v", err)
+			if closeErr == nil {
+				closeErr = err
+			}
+		}
+	}
+	if s.imapsServer != nil {
+		if err := s.imapsServer.Close(); err != nil {
+			log.Printf("IMAP: Error closing TLS server: %v", err)
 			if closeErr == nil {
 				closeErr = err
 			}

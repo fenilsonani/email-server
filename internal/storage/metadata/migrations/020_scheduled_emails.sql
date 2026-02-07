@@ -1,14 +1,20 @@
--- Migration 020: Scheduled Emails (Placeholder)
--- Adds table for managing emails scheduled for future delivery
--- This migration is reserved for scheduled email functionality
+-- Migration 020: Add API scheduled email columns and delivery attempts
+-- The scheduled_emails table was created in migration 009 for user "Send Later".
+-- This adds columns needed by the transactional API scheduler (domain_id, etc.).
+-- ALTER TABLE ADD COLUMN is idempotent via the Go migration runner.
 
--- Note: Scheduled emails table would normally be created here
--- CREATE TABLE IF NOT EXISTS scheduled_emails (...)
+-- Add API scheduler columns to existing scheduled_emails table
+ALTER TABLE scheduled_emails ADD COLUMN domain_id INTEGER REFERENCES domains(id) ON DELETE CASCADE;
+ALTER TABLE scheduled_emails ADD COLUMN api_key_id INTEGER;
+ALTER TABLE scheduled_emails ADD COLUMN message_id TEXT;
+ALTER TABLE scheduled_emails ADD COLUMN request_payload TEXT;
+ALTER TABLE scheduled_emails ADD COLUMN scheduled_at DATETIME;
+ALTER TABLE scheduled_emails ADD COLUMN processed_at DATETIME;
 
--- For now, we skip this migration as the feature requires additional setup
--- The core email functionality works without scheduled emails
+-- Index for API scheduler queries (fetch pending scheduled emails by time)
+CREATE INDEX IF NOT EXISTS idx_scheduled_emails_api ON scheduled_emails(status, scheduled_at);
 
--- Add delivery_attempts table for tracking individual delivery attempts
+-- Delivery attempts table for tracking individual delivery attempts
 CREATE TABLE IF NOT EXISTS delivery_attempts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     sent_email_id INTEGER NOT NULL REFERENCES sent_emails(id) ON DELETE CASCADE,
@@ -21,3 +27,6 @@ CREATE TABLE IF NOT EXISTS delivery_attempts (
 
 -- Index for looking up attempts by sent_email_id
 CREATE INDEX IF NOT EXISTS idx_delivery_attempts_sent_email ON delivery_attempts(sent_email_id);
+
+-- Record migration version
+INSERT OR IGNORE INTO schema_migrations (version) VALUES (20);

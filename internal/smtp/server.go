@@ -126,6 +126,7 @@ func extractIP(addr net.Addr) string {
 type Server struct {
 	mxServer         *smtp.Server
 	submissionServer *smtp.Server
+	smtpsServer      *smtp.Server // Separate instance for implicit TLS (port 465)
 	config           *config.Config
 	mxListener       net.Listener
 	subListener      net.Listener
@@ -157,9 +158,24 @@ func NewServer(backend *Backend, cfg *config.Config, tlsConfig *tls.Config) *Ser
 		mxServer.TLSConfig = tlsConfig
 	}
 
+	// SMTPS server (port 465) - implicit TLS, connection is already encrypted
+	// TLSConfig=nil prevents advertising STARTTLS on an already-TLS connection
+	// AllowInsecureAuth=true allows AUTH because the limitedConn wrapper hides
+	// *tls.Conn from the library's type assertion, but the connection IS
+	// encrypted via the TLS listener
+	smtpsServer := smtp.NewServer(&submissionBackend{Backend: backend})
+	smtpsServer.Domain = cfg.Server.Hostname
+	smtpsServer.ReadTimeout = 60 * time.Second
+	smtpsServer.WriteTimeout = 60 * time.Second
+	smtpsServer.MaxMessageBytes = int64(cfg.Security.MaxMessageSize)
+	smtpsServer.MaxRecipients = 100
+	smtpsServer.AllowInsecureAuth = true
+	smtpsServer.TLSConfig = nil // No STARTTLS needed, already encrypted
+
 	return &Server{
 		mxServer:         mxServer,
 		submissionServer: submissionServer,
+		smtpsServer:      smtpsServer,
 		config:           cfg,
 	}
 }
@@ -228,13 +244,13 @@ func (s *Server) ListenAndServeSubmission() error {
 
 // ListenAndServeTLS starts the SMTPS server (implicit TLS)
 func (s *Server) ListenAndServeTLS() error {
-	if s.submissionServer.TLSConfig == nil {
+	if s.mxServer.TLSConfig == nil {
 		return nil // No TLS configured
 	}
 
 	addr := fmt.Sprintf("%s:%d", s.config.Server.BindAddress, s.config.Server.SMTPSPort)
 
-	rawListener, err := tls.Listen("tcp", addr, s.submissionServer.TLSConfig)
+	rawListener, err := tls.Listen("tcp", addr, s.mxServer.TLSConfig)
 	if err != nil {
 		return fmt.Errorf("failed to listen on %s: %w", addr, err)
 	}
@@ -246,7 +262,10 @@ func (s *Server) ListenAndServeTLS() error {
 	log.Printf("SMTPS server listening on %s (max %d conns, %d per IP)", addr, defaultMaxConnections, defaultMaxConnectionsPerIP)
 
 	go func() {
-		if err := s.submissionServer.Serve(listener); err != nil {
+		// Use the dedicated SMTPS server instance (TLSConfig=nil,
+		// AllowInsecureAuth=true) so the library doesn't advertise STARTTLS
+		// or block AUTH on already-encrypted connections
+		if err := s.smtpsServer.Serve(listener); err != nil {
 			log.Printf("SMTPS server error: %v", err)
 		}
 	}()
@@ -270,6 +289,9 @@ func (s *Server) Close() error {
 	}
 	if s.submissionServer != nil {
 		s.submissionServer.Close()
+	}
+	if s.smtpsServer != nil {
+		s.smtpsServer.Close()
 	}
 	return nil
 }

@@ -44,4 +44,4 @@
 --     DELETE FROM messages_fts WHERE doc_id = CAST(OLD.mailbox_id AS TEXT) || ':' || CAST(OLD.uid AS TEXT);
 -- END;
 
-INSERT INTO schema_migrations (version) VALUES (18);
+INSERT OR IGNORE INTO schema_migrations (version) VALUES (18);

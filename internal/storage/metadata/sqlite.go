@@ -229,11 +229,39 @@ func (db *SQLiteDB) applyMigration(ctx context.Context, m migration) error {
 	defer tx.Rollback()
 
 	// Execute migration SQL
+	// Split into individual statements to handle ALTER TABLE ADD COLUMN
+	// idempotently (SQLite lacks ADD COLUMN IF NOT EXISTS)
 	if _, err := tx.ExecContext(ctx, m.sql); err != nil {
-		return fmt.Errorf("migration SQL error: %w", err)
+		if strings.Contains(err.Error(), "duplicate column") {
+			// ALTER TABLE ADD COLUMN failed because column exists.
+			// Re-execute statement-by-statement, skipping duplicates.
+			if err := db.applyMigrationStatements(ctx, tx, m.sql); err != nil {
+				return err
+			}
+		} else {
+			return fmt.Errorf("migration SQL error: %w", err)
+		}
 	}
 
 	return tx.Commit()
+}
+
+// applyMigrationStatements executes migration SQL statement-by-statement,
+// ignoring "duplicate column" errors from ALTER TABLE ADD COLUMN.
+func (db *SQLiteDB) applyMigrationStatements(ctx context.Context, tx *sql.Tx, sqlContent string) error {
+	for _, stmt := range strings.Split(sqlContent, ";") {
+		stmt = strings.TrimSpace(stmt)
+		if stmt == "" {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, stmt); err != nil {
+			if strings.Contains(err.Error(), "duplicate column") {
+				continue
+			}
+			return fmt.Errorf("migration SQL error: %w", err)
+		}
+	}
+	return nil
 }
 
 // Close closes the database connection
