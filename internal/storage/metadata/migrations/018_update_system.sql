@@ -98,4 +98,4 @@ CREATE INDEX IF NOT EXISTS idx_rollback_snapshots_update ON rollback_snapshots(u
 CREATE INDEX IF NOT EXISTS idx_rollback_snapshots_expires ON rollback_snapshots(expires_at);
 CREATE INDEX IF NOT EXISTS idx_rollback_snapshots_type ON rollback_snapshots(snapshot_type);
 
-INSERT INTO schema_migrations (version) VALUES (18);
+INSERT OR IGNORE INTO schema_migrations (version) VALUES (18);
