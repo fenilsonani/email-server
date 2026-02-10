@@ -89,14 +89,15 @@ func (s *Store) EnsureUserMailboxes(ctx context.Context, logger *logging.Logger)
 	return nil
 }
 
-// ensureUserHasMailboxes creates any missing default mailboxes for a user
+// ensureUserHasMailboxes creates any missing default mailboxes for a user.
+// NOTE: This function must NOT hold s.mu because CreateMailbox acquires it.
+// Go's sync.Mutex is not reentrant — locking here and inside CreateMailbox
+// would cause a deadlock. SQLite serializes writes, so the existence check
+// is safe without the mutex.
 func (s *Store) ensureUserHasMailboxes(ctx context.Context, userID int64, requiredMailboxes []struct {
 	name       string
 	specialUse storage.SpecialUse
 }) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	for _, mb := range requiredMailboxes {
 		// Check if mailbox exists
 		var exists bool
@@ -109,7 +110,7 @@ func (s *Store) ensureUserHasMailboxes(ctx context.Context, userID int64, requir
 		}
 
 		if !exists {
-			// Create the missing mailbox
+			// CreateMailbox acquires s.mu internally
 			if _, err := s.CreateMailbox(ctx, userID, mb.name, mb.specialUse); err != nil {
 				return fmt.Errorf("failed to create mailbox %s: %w", mb.name, err)
 			}
