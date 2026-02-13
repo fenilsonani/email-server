@@ -427,7 +427,11 @@ func checkGo() CheckResult {
 		_, installCmd := detectPackageManager()
 		help := "Install Go: https://golang.org/dl/"
 		if installCmd != "install" {
-			help += fmt.Sprintf(" or run: %s go", installCmd)
+			pkg := "go"
+			if installCmd == "apt install" || installCmd == "dnf install" || installCmd == "yum install" {
+				pkg = "golang"
+			}
+			help += fmt.Sprintf(" or run: %s %s", installCmd, pkg)
 		}
 		return CheckResult{
 			Name:    "Go Compiler",
