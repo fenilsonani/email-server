@@ -12,9 +12,15 @@
 # Output of go coverage
 *.out
 
-# Data directories
+# Data directories (mail data, databases, queues, search indexes)
 data/
+mailserver-data/
 *.db
+*.db-shm
+*.db-wal
+
+# DKIM private keys
+dkim/
 
 # IDE
 .idea/
@@ -26,7 +32,7 @@ data/
 .DS_Store
 Thumbs.db
 
-# Config with secrets
+# Config with secrets (use config.example.yaml as template)
 config.yaml
 *.key
 *.pem
@@ -35,9 +41,15 @@ config.yaml
 /bin/
 /dist/
 
+# Test scripts
+send_test.py
+build.sh
+
 # Internal/temporary files
 /tmp/
 .obsidian/
 tmp.zip
 mailserver-linux-amd64
 CLAUDE.md
+ISP_REQUIREMENTS.md
+SETUP_SUMMARY.md

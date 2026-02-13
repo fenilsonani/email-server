@@ -64,6 +64,25 @@ A self-hosted email server written in Go, designed for individuals and small tea
 - A domain name with DNS control
 - Ports: 25, 587, 465, 143, 993, 8080, 8443
 
+## Quick Reference: DKIM Setup
+
+The DKIM key generation process has been simplified. Here's what happens:
+
+1. **Generate the key:** `./mailserver dkim generate yourdomain.com --config config.yaml`
+   - Creates a 2048-bit RSA key
+   - Stores it in the database
+   - Automatically sets the DKIM selector to `mail` (configurable)
+
+2. **View the DNS record:** `./mailserver dkim show yourdomain.com --config config.yaml`
+   - Displays the DNS TXT record you need to add
+   - Shows the selector, algorithm, and public key
+   - Output format is ready to copy-paste into your DNS provider
+
+3. **Database requirement:** 
+   - The domain must exist in the database first (use `./mailserver domain add yourdomain.com`)
+   - DKIM keys are stored in the database, not as files on disk
+   - The `dkim_key_file` in config.yaml is ignored when using database-backed DKIM
+
 ## Quick Start
 
 ### Option 1: Setup Wizard (Recommended)
@@ -187,26 +206,39 @@ logging:
 # Run database migrations
 ./mailserver migrate --config /etc/mailserver/config.yaml
 
-# Add your domain
-./mailserver domain add yourdomain.com
+# Add your domain (this creates the domain entry in the database)
+./mailserver domain add yourdomain.com --config /etc/mailserver/config.yaml
 
 # Create a user
-./mailserver user add user@yourdomain.com
+./mailserver user add user@yourdomain.com --config /etc/mailserver/config.yaml
 # You'll be prompted to enter a password
 ```
 
 #### 6. Generate DKIM Key
 
 ```bash
-# Create DKIM directory
-sudo mkdir -p /etc/mailserver/dkim
+# Generate DKIM key pair for your domain
+./mailserver dkim generate yourdomain.com --config /etc/mailserver/config.yaml
 
-# Generate DKIM key pair
-openssl genrsa -out /etc/mailserver/dkim/yourdomain.com.key 2048
-openssl rsa -in /etc/mailserver/dkim/yourdomain.com.key -pubout > /etc/mailserver/dkim/yourdomain.com.pub
+# View DKIM DNS record (copy the output below)
+./mailserver dkim show yourdomain.com --config /etc/mailserver/config.yaml
+```
 
-# Get DNS record
-./mailserver dkim dns --domain yourdomain.com
+**Expected Output:**
+```
+DKIM DNS Record for yourdomain.com
+============================
+
+Selector:   mail
+Algorithm:  RSA-2048
+DNS Record Name:
+  mail._domainkey.yourdomain.com
+
+DNS Record Type:
+  TXT
+
+DNS Record Value:
+  v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA...
 ```
 
 #### 7. Configure DNS Records
@@ -218,7 +250,7 @@ Add these DNS records to your domain:
 | A | mail | your.server.ip |
 | MX | @ | mail.yourdomain.com (priority 10) |
 | TXT | @ | `v=spf1 mx a:mail.yourdomain.com -all` |
-| TXT | mail._domainkey | (output from dkim dns command) |
+| TXT | mail._domainkey | (output from `./mailserver dkim show yourdomain.com`) |
 | TXT | _dmarc | `v=DMARC1; p=quarantine; rua=mailto:postmaster@yourdomain.com` |
 
 **For Auto-discovery (optional but recommended):**

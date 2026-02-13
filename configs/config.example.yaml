@@ -1,11 +1,14 @@
 # Example configuration for the email server
-# Copy this file to /etc/mailserver/config.yaml and modify as needed
+# Copy this file to config.yaml and modify as needed
 #
 # IMPORTANT: Replace all example.com references with your actual domain!
 # - hostname: mail.YOUR_DOMAIN.com
-# - domain: YOUR_DOMAIN.com (add this line)
+# - domain: YOUR_DOMAIN.com
 # - tls.email: admin@YOUR_DOMAIN.com
 # - domains[].name: YOUR_DOMAIN.com
+#
+# For development/local testing, use relative paths like ./mailserver-data
+# For production, use absolute paths like /var/lib/mailserver
 
 server:
   hostname: mail.example.com   # CHANGE THIS to mail.yourdomain.com
@@ -28,7 +31,7 @@ tls:
 
 storage:
   data_dir: /var/lib/mailserver
-  database_path: /var/lib/mailserver/mail.db  # Legacy, use database.path instead
+  database_path: /var/lib/mailserver/mail.db
   maildir_path: /var/lib/mailserver/maildir
 
 # Database configuration (new in v2.0)
@@ -50,9 +53,14 @@ database:
   # conn_max_lifetime: "30m"
   # conn_max_idle_time: "5m"
 
+redis:
+  address: localhost:6379      # Redis server address
+  password: ""                 # Redis password (empty if none)
+  db: 0                        # Redis database number
+
 domains:
   - name: example.com                                    # CHANGE THIS to yourdomain.com
-    dkim_selector: mail
+    dkim_selector: mail                                 # Selector for DKIM key
     dkim_key_file: /etc/mailserver/dkim/example.com.key  # CHANGE THIS path
 
   # Add more domains as needed:
@@ -68,10 +76,10 @@ autodiscover:
   display_name: ""   # Defaults to "domain.com Mail"
 
 security:
-  require_tls: true       # Require TLS for client connections
+  require_tls: false      # Set to true for production (require TLS for client connections)
   verify_spf: true        # Verify SPF on incoming mail
   verify_dkim: true       # Verify DKIM on incoming mail
-  verify_dmarc: true      # Check DMARC policy on incoming mail
+  verify_dmarc: false     # Check DMARC policy on incoming mail (set to true for production)
   sign_outbound: true     # DKIM sign outgoing mail
   max_message_size: 26214400  # 25MB
 
@@ -80,6 +88,11 @@ logging:
   format: json            # json or text
   output: stdout          # stdout, stderr, or file path
 
+greylisting:
+  enabled: true           # Enable/disable greylisting
+  min_delay: 5m           # Minimum delay before accepting mail from new sender
+  max_age: 840h           # Maximum age of greylisting entries (35 days)
+  
 # Queue configuration (Redis)
 queue:
   redis_url: redis://localhost:6379/0  # Redis URL for standalone mode
