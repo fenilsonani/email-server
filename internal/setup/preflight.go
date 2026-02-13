@@ -399,9 +399,9 @@ func checkRedis() CheckResult {
 	var d net.Dialer
 	conn, err := d.DialContext(ctx, "tcp", "localhost:6379")
 	if err != nil {
-		_, installCmd := detectPackageManager()
+		pmName, installCmd := detectPackageManager()
 		pkg := "redis"
-		if installCmd == "apt install" {
+		if pmName == "apt" {
 			pkg = "redis-server"
 		}
 		return CheckResult{
@@ -424,11 +424,11 @@ func checkGo() CheckResult {
 	cmd := exec.Command("go", "version")
 	output, err := cmd.Output()
 	if err != nil {
-		_, installCmd := detectPackageManager()
+		pmName, installCmd := detectPackageManager()
 		help := "Install Go: https://golang.org/dl/"
-		if installCmd != "install" {
+		if pmName != "unknown" {
 			pkg := "go"
-			if installCmd == "apt install" || installCmd == "dnf install" || installCmd == "yum install" {
+			if pmName == "apt" || pmName == "dnf" || pmName == "yum" {
 				pkg = "golang"
 			}
 			help += fmt.Sprintf(" or run: %s %s", installCmd, pkg)
