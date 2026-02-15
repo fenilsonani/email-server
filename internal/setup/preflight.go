@@ -37,21 +37,30 @@ func RunPreflight() *PreflightResults {
 func RunPreflightWithOptions(force bool) *PreflightResults {
 	results := &PreflightResults{}
 
+	// Run root check first — if not root on Linux, skip port checks
+	rootResult := checkRoot()
+	results.Checks = append(results.Checks, rootResult)
+	isRoot := rootResult.Status == "pass"
+
 	checks := []func() CheckResult{
-		checkRoot,
 		checkOS,
 		checkMemory,
 		checkDiskSpace,
-		checkPort25,
-		checkPort143,
-		checkPort465,
-		checkPort587,
-		checkPort993,
+	}
+
+	if isRoot || runtime.GOOS != "linux" {
+		checks = append(checks,
+			checkPort25, checkPort143, checkPort465,
+			checkPort587, checkPort993,
+		)
+	}
+
+	checks = append(checks,
 		checkPort25Outbound,
 		checkRedis,
 		checkGo,
 		checkSystemd,
-	}
+	)
 
 	for _, check := range checks {
 		result := check()
@@ -65,6 +74,27 @@ func RunPreflightWithOptions(force bool) *PreflightResults {
 		case "warn":
 			results.Warned++
 		}
+	}
+
+	// Count the root check result
+	switch rootResult.Status {
+	case "pass":
+		results.Passed++
+	case "fail":
+		results.Failed++
+	case "warn":
+		results.Warned++
+	}
+
+	// If not root on Linux, add a note that port checks were skipped
+	if !isRoot && runtime.GOOS == "linux" {
+		results.Checks = append(results.Checks, CheckResult{
+			Name:    "Port checks skipped",
+			Status:  "warn",
+			Message: "Port checks require root access",
+			Help:    "Re-run with: sudo mailserver preflight",
+		})
+		results.Warned++
 	}
 
 	// In force mode, only critical checks (ports, redis) block setup
@@ -111,7 +141,7 @@ func (r *PreflightResults) Print() {
 		if check.Message != "" {
 			fmt.Printf("  %s\n", check.Message)
 		}
-		if check.Status == "fail" && check.Help != "" {
+		if (check.Status == "fail" || check.Status == "warn") && check.Help != "" {
 			fmt.Printf("  → %s\n", check.Help)
 		}
 		fmt.Println()
@@ -127,6 +157,24 @@ func (r *PreflightResults) Print() {
 		fmt.Println("\033[31m✗ Server is not ready. Fix the issues above first.\033[0m")
 	}
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+}
+
+// detectPackageManager returns the name and install command for the system's package manager.
+func detectPackageManager() (name string, installCmd string) {
+	managers := []struct{ bin, name, cmd string }{
+		{"pacman", "pacman", "pacman -S"},
+		{"dnf", "dnf", "dnf install"},
+		{"yum", "yum", "yum install"},
+		{"zypper", "zypper", "zypper install"},
+		{"apk", "apk", "apk add"},
+		{"apt", "apt", "apt install"},
+	}
+	for _, m := range managers {
+		if _, err := exec.LookPath(m.bin); err == nil {
+			return m.name, m.cmd
+		}
+	}
+	return "unknown", "install"
 }
 
 func checkRoot() CheckResult {
@@ -351,11 +399,16 @@ func checkRedis() CheckResult {
 	var d net.Dialer
 	conn, err := d.DialContext(ctx, "tcp", "localhost:6379")
 	if err != nil {
+		pmName, installCmd := detectPackageManager()
+		pkg := "redis"
+		if pmName == "apt" {
+			pkg = "redis-server"
+		}
 		return CheckResult{
 			Name:    "Redis",
 			Status:  "fail",
 			Message: "Redis not reachable on localhost:6379",
-			Help:    "Install Redis: apt install redis-server",
+			Help:    fmt.Sprintf("Install Redis: %s %s", installCmd, pkg),
 		}
 	}
 	conn.Close()
@@ -371,11 +424,20 @@ func checkGo() CheckResult {
 	cmd := exec.Command("go", "version")
 	output, err := cmd.Output()
 	if err != nil {
+		pmName, installCmd := detectPackageManager()
+		help := "Install Go: https://golang.org/dl/"
+		if pmName != "unknown" {
+			pkg := "go"
+			if pmName == "apt" || pmName == "dnf" || pmName == "yum" {
+				pkg = "golang"
+			}
+			help += fmt.Sprintf(" or run: %s %s", installCmd, pkg)
+		}
 		return CheckResult{
 			Name:    "Go Compiler",
 			Status:  "fail",
 			Message: "Go not installed",
-			Help:    "Install Go: https://golang.org/dl/",
+			Help:    help,
 		}
 	}
 
