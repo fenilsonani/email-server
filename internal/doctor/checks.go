@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -947,6 +948,67 @@ func checkQueueStale(ctx context.Context, cfg *config.Config, q *queue.RedisQueu
 
 	result.Status = StatusPass
 	result.Message = "No stale messages"
+	return result
+}
+
+// checkDatabasePermissions checks database file permissions for security.
+func checkDatabasePermissions(ctx context.Context, cfg *config.Config, _ *queue.RedisQueue) CheckResult {
+	result := CheckResult{
+		ID:       "db-permissions",
+		Name:     "Database Permissions",
+		Category: CategorySecurity,
+		Details:  make(map[string]interface{}),
+	}
+
+	dbPath := cfg.Storage.DatabasePath
+	if dbPath == "" {
+		result.Status = StatusWarn
+		result.Message = "Database path not configured"
+		return result
+	}
+
+	result.Details["path"] = dbPath
+
+	// Check all database files (.db, .db-wal, .db-shm)
+	files := []string{dbPath, dbPath + "-wal", dbPath + "-shm"}
+	worstStatus := StatusPass
+	var issues []string
+
+	for _, path := range files {
+		info, err := os.Stat(path)
+		if os.IsNotExist(err) {
+			continue // WAL/SHM may not exist yet
+		}
+		if err != nil {
+			continue
+		}
+
+		mode := info.Mode().Perm()
+		result.Details[filepath.Base(path)+"_mode"] = fmt.Sprintf("%04o", mode)
+
+		// Check if mode is too permissive (> 0640)
+		if mode&0007 != 0 {
+			// World-readable or world-writable
+			worstStatus = StatusFail
+			issues = append(issues, fmt.Sprintf("%s is world-accessible (%04o)", filepath.Base(path), mode))
+		} else if mode > 0640 {
+			if worstStatus != StatusFail {
+				worstStatus = StatusWarn
+			}
+			issues = append(issues, fmt.Sprintf("%s has permissive mode (%04o)", filepath.Base(path), mode))
+		}
+	}
+
+	if len(issues) > 0 {
+		result.Status = worstStatus
+		result.Message = strings.Join(issues, "; ")
+		result.Help = fmt.Sprintf("Fix: chmod 640 %s %s-wal %s-shm", dbPath, dbPath, dbPath)
+		result.FixID = "db-permissions"
+		return result
+	}
+
+	result.Status = StatusPass
+	result.Message = "Database file permissions OK"
 	return result
 }
 

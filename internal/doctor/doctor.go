@@ -100,6 +100,7 @@ func (d *Doctor) registerDefaultChecks() {
 	d.RegisterCheck(CategorySecurity, checkCertExpiry)
 	d.RegisterCheck(CategorySecurity, checkTLSALPN)
 	d.RegisterCheck(CategorySecurity, checkAllDomainsDKIM)
+	d.RegisterCheck(CategorySecurity, checkDatabasePermissions)
 
 	// DNS checks
 	d.RegisterCheck(CategoryDNS, checkAllDomainsDNS)
@@ -122,6 +123,7 @@ func (d *Doctor) registerDefaultFixes() {
 	d.RegisterFix(&FixStartRedis{})
 	d.RegisterFix(&FixRestartMailserver{})
 	d.RegisterFix(&FixStartMailserver{})
+	d.RegisterFix(&FixDatabasePermissions{})
 }
 
 // RegisterCheck adds a health check for a specific category.

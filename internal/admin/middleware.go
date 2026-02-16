@@ -112,6 +112,51 @@ type DomainInfo struct {
 	IsPrimary    bool
 }
 
+// AdminUser represents the authenticated admin user with role and permissions
+type AdminUser struct {
+	ID          int64
+	Email       string
+	Role        string   // "super_admin", "domain_admin", "support"
+	Permissions []string // ["users.read", "users.create", ...]
+	DomainIDs   []int64  // scoped domain IDs (nil = all domains)
+}
+
+// HasPermission checks if the admin user has a specific permission
+func (u *AdminUser) HasPermission(perm string) bool {
+	for _, p := range u.Permissions {
+		if p == perm {
+			return true
+		}
+	}
+	return false
+}
+
+// HasDomainAccess checks if the admin user has access to a specific domain
+func (u *AdminUser) HasDomainAccess(domainID int64) bool {
+	// Global access (super_admin or support with no domain scoping)
+	if len(u.DomainIDs) == 0 {
+		return true
+	}
+	for _, id := range u.DomainIDs {
+		if id == domainID {
+			return true
+		}
+	}
+	return false
+}
+
+type adminUserContextKeyType string
+
+const adminUserContextKey adminUserContextKeyType = "admin_user"
+
+// GetAdminUser retrieves the admin user from the request context
+func GetAdminUser(r *http.Request) *AdminUser {
+	if user, ok := r.Context().Value(adminUserContextKey).(*AdminUser); ok {
+		return user
+	}
+	return nil
+}
+
 type domainContextKeyType string
 
 const domainContextKey domainContextKeyType = "domain"
@@ -261,7 +306,7 @@ func (s *Server) deleteSession(token string) {
 	_, _ = s.db.Exec(`DELETE FROM admin_sessions WHERE token = ?`, token)
 }
 
-// withAuth wraps a handler with authentication check
+// withAuth wraps a handler with authentication check and loads role/permissions into context
 func (s *Server) withAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// Check primary domain access for admin routes
@@ -295,14 +340,116 @@ func (s *Server) withAuth(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		// Check user is still admin
-		var isAdmin bool
-		err = s.db.QueryRowContext(r.Context(), "SELECT is_admin FROM users WHERE id = ?", userID).Scan(&isAdmin)
-		if err != nil || !isAdmin {
+		// Load admin user with role and permissions
+		adminUser, err := s.loadAdminUser(r.Context(), userID)
+		if err != nil || adminUser == nil {
 			http.Redirect(w, r, "/admin/login", http.StatusSeeOther)
 			return
 		}
 
+		// Store admin user in context
+		ctx := context.WithValue(r.Context(), adminUserContextKey, adminUser)
+		next(w, r.WithContext(ctx))
+	}
+}
+
+// loadAdminUser loads the admin user's role and permissions from the database.
+// Falls back to is_admin check for backward compatibility if no roles are assigned.
+func (s *Server) loadAdminUser(ctx context.Context, userID int64) (*AdminUser, error) {
+	var username, domain string
+	var isAdmin bool
+	err := s.db.QueryRowContext(ctx,
+		`SELECT u.username, d.name, u.is_admin FROM users u
+		 JOIN domains d ON u.domain_id = d.id WHERE u.id = ?`, userID,
+	).Scan(&username, &domain, &isAdmin)
+	if err != nil {
+		return nil, err
+	}
+
+	user := &AdminUser{
+		ID:    userID,
+		Email: username + "@" + domain,
+	}
+
+	// Try to load role from user_roles table
+	var roleName string
+	err = s.db.QueryRowContext(ctx,
+		`SELECT r.name FROM user_roles ur
+		 JOIN roles r ON ur.role_id = r.id
+		 WHERE ur.user_id = ? LIMIT 1`, userID,
+	).Scan(&roleName)
+
+	if err == sql.ErrNoRows {
+		// No role assigned - fall back to is_admin boolean
+		if !isAdmin {
+			return nil, nil // Not an admin
+		}
+		// Legacy admin without role assignment - treat as super_admin
+		user.Role = "super_admin"
+	} else if err != nil {
+		// Table might not exist yet (pre-migration) - fall back to is_admin
+		if !isAdmin {
+			return nil, nil
+		}
+		user.Role = "super_admin"
+	} else {
+		user.Role = roleName
+	}
+
+	// Load permissions for the role
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT p.name FROM permissions p
+		 JOIN role_permissions rp ON rp.permission_id = p.id
+		 JOIN roles r ON rp.role_id = r.id
+		 WHERE r.name = ?`, user.Role,
+	)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var perm string
+			if rows.Scan(&perm) == nil {
+				user.Permissions = append(user.Permissions, perm)
+			}
+		}
+	}
+
+	// If no permissions loaded (pre-migration), grant all for super_admin
+	if len(user.Permissions) == 0 && user.Role == "super_admin" {
+		user.Permissions = []string{
+			"users.create", "users.read", "users.update", "users.delete", "users.password",
+			"domains.create", "domains.read", "domains.update", "domains.delete",
+			"aliases.manage", "lists.manage", "logs.view", "audit.view",
+			"settings.manage", "features.manage", "queue.manage",
+		}
+	}
+
+	// Load scoped domain IDs for domain_admin
+	if user.Role == "domain_admin" {
+		domainRows, err := s.db.QueryContext(ctx,
+			`SELECT domain_id FROM user_roles WHERE user_id = ? AND domain_id IS NOT NULL`, userID,
+		)
+		if err == nil {
+			defer domainRows.Close()
+			for domainRows.Next() {
+				var domainID int64
+				if domainRows.Scan(&domainID) == nil {
+					user.DomainIDs = append(user.DomainIDs, domainID)
+				}
+			}
+		}
+	}
+
+	return user, nil
+}
+
+// requirePermission returns a middleware that checks if the admin user has a specific permission
+func (s *Server) requirePermission(perm string, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		user := GetAdminUser(r)
+		if user == nil || !user.HasPermission(perm) {
+			http.Error(w, "Forbidden - insufficient permissions", http.StatusForbidden)
+			return
+		}
 		next(w, r)
 	}
 }

@@ -21,10 +21,13 @@
             <option value="{{.}}" {{if eq $.FilterDomain .}}selected{{end}}>{{.}}</option>
             {{end}}
         </select>
-        <div class="form-check">
-            <input type="checkbox" id="is_admin" name="is_admin" value="1" {{if eq .FilterIsAdmin "1"}}checked{{end}} aria-label="Show admin users only">
-            <label for="is_admin">admin only</label>
-        </div>
+        <label for="role-filter" class="sr-only">role</label>
+        <select id="role-filter" name="role" class="form-control" aria-label="Filter by role">
+            <option value="">all roles</option>
+            <option value="super_admin" {{if eq .FilterRole "super_admin"}}selected{{end}}>super admin</option>
+            <option value="domain_admin" {{if eq .FilterRole "domain_admin"}}selected{{end}}>domain admin</option>
+            <option value="support" {{if eq .FilterRole "support"}}selected{{end}}>support</option>
+        </select>
         <button type="submit" class="btn btn-primary" aria-label="Apply filters">filter</button>
         <a href="/admin/users" class="btn btn-secondary" aria-label="Clear all filters">clear</a>
     </form>
@@ -37,7 +40,7 @@
             <tr role="row">
                 <th role="columnheader" scope="col">Email</th>
                 <th role="columnheader" scope="col">Domain</th>
-                <th role="columnheader" scope="col">Admin</th>
+                <th role="columnheader" scope="col">Role</th>
                 <th role="columnheader" scope="col">Created</th>
                 <th role="columnheader" scope="col">Actions</th>
             </tr>
@@ -48,10 +51,14 @@
                 <td><strong>{{.Email}}</strong></td>
                 <td>{{.Domain}}</td>
                 <td>
-                    {{if .IsAdmin}}
-                    <span class="badge badge-success">Yes</span>
+                    {{if eq .Role "super_admin"}}
+                    <span class="badge badge-success">super admin</span>
+                    {{else if eq .Role "domain_admin"}}
+                    <span class="badge badge-primary">domain admin</span>
+                    {{else if eq .Role "support"}}
+                    <span class="badge badge-warning">support</span>
                     {{else}}
-                    <span class="badge badge-secondary">No</span>
+                    <span class="badge badge-secondary">user</span>
                     {{end}}
                 </td>
                 <td>{{.CreatedAt.Format "Jan 02, 2006"}}</td>
@@ -80,21 +87,21 @@
 {{if gt .TotalPages 1}}
 <div class="pagination" role="navigation" aria-label="Pagination">
     {{if gt .CurrentPage 1}}
-    <a href="?page={{sub .CurrentPage 1}}&username={{.FilterUsername}}&domain={{.FilterDomain}}&is_admin={{.FilterIsAdmin}}" rel="prev" aria-label="Previous page">previous</a>
+    <a href="?page={{sub .CurrentPage 1}}&username={{.FilterUsername}}&domain={{.FilterDomain}}&role={{.FilterRole}}" rel="prev" aria-label="Previous page">previous</a>
     {{end}}
 
     {{range $page := untilStep 1 (add .TotalPages 1) 1}}
     {{if eq $page $.CurrentPage}}
     <span class="active" aria-current="page" aria-label="Current page, page {{$page}}">{{$page}}</span>
     {{else if or (le $page 3) (ge $page (sub $.TotalPages 2)) (and (ge $page (sub $.CurrentPage 2)) (le $page (add $.CurrentPage 2)))}}
-    <a href="?page={{$page}}&username={{$.FilterUsername}}&domain={{$.FilterDomain}}&is_admin={{$.FilterIsAdmin}}" aria-label="Go to page {{$page}}">{{$page}}</a>
+    <a href="?page={{$page}}&username={{$.FilterUsername}}&domain={{$.FilterDomain}}&role={{$.FilterRole}}" aria-label="Go to page {{$page}}">{{$page}}</a>
     {{else if eq $page 4}}
     <span>...</span>
     {{end}}
     {{end}}
 
     {{if lt .CurrentPage .TotalPages}}
-    <a href="?page={{add .CurrentPage 1}}&username={{.FilterUsername}}&domain={{.FilterDomain}}&is_admin={{.FilterIsAdmin}}" rel="next" aria-label="Next page">next</a>
+    <a href="?page={{add .CurrentPage 1}}&username={{.FilterUsername}}&domain={{.FilterDomain}}&role={{.FilterRole}}" rel="next" aria-label="Next page">next</a>
     {{end}}
 
     <span style="margin-left: 1rem; color: var(--text-muted); font-size: 11px;">

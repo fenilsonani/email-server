@@ -32,12 +32,77 @@
             <small style="color: var(--text-muted);">Only fill this if you want to change the password</small>
         </div>
 
+        {{if and .AdminUser (eq .AdminUser.Role "super_admin")}}
         <div class="form-group">
-            <label class="form-check">
-                <input type="checkbox" name="is_admin" {{if .IsAdmin}}checked{{end}}>
-                <span>Admin privileges</span>
-            </label>
+            <label for="role">Role</label>
+            <select id="role" name="role" class="form-control" onchange="toggleDomainSelect()">
+                <option value="none" {{if eq .CurrentRole ""}}selected{{end}}>None (regular user)</option>
+                <option value="super_admin" {{if eq .CurrentRole "super_admin"}}selected{{end}}>Super Admin</option>
+                <option value="domain_admin" {{if eq .CurrentRole "domain_admin"}}selected{{end}}>Domain Admin</option>
+                <option value="support" {{if eq .CurrentRole "support"}}selected{{end}}>Support</option>
+            </select>
+            <small style="color: var(--text-muted);">
+                Super Admin: full access | Domain Admin: scoped to domains | Support: read-only + password reset
+            </small>
         </div>
+
+        <div class="form-group" id="domain-select-group" style="display: none;">
+            <label>Scoped Domains</label>
+            {{range .AllDomains}}
+            <label class="form-check" style="display: block;">
+                <input type="checkbox" name="role_domains" value="{{.ID}}">
+                <span>{{.Name}}</span>
+            </label>
+            {{end}}
+            <small style="color: var(--text-muted);">Select which domains this admin can manage</small>
+        </div>
+
+        <script>
+        function toggleDomainSelect() {
+            var role = document.getElementById('role').value;
+            var group = document.getElementById('domain-select-group');
+            group.style.display = role === 'domain_admin' ? 'block' : 'none';
+        }
+        toggleDomainSelect();
+        </script>
+
+        {{if .CurrentRole}}
+        <div class="form-group">
+            <label>Current Permissions</label>
+            <div style="display: flex; flex-wrap: wrap; gap: 4px;">
+                {{if eq .CurrentRole "super_admin"}}
+                <span class="badge badge-success">all permissions</span>
+                {{else if eq .CurrentRole "domain_admin"}}
+                <span class="badge badge-primary">users.create</span>
+                <span class="badge badge-primary">users.read</span>
+                <span class="badge badge-primary">users.update</span>
+                <span class="badge badge-primary">users.delete</span>
+                <span class="badge badge-primary">users.password</span>
+                <span class="badge badge-primary">domains.read</span>
+                <span class="badge badge-primary">aliases.manage</span>
+                <span class="badge badge-primary">lists.manage</span>
+                <span class="badge badge-primary">logs.view</span>
+                <span class="badge badge-primary">features.manage</span>
+                {{else if eq .CurrentRole "support"}}
+                <span class="badge badge-secondary">users.read</span>
+                <span class="badge badge-secondary">users.password</span>
+                <span class="badge badge-secondary">domains.read</span>
+                <span class="badge badge-secondary">logs.view</span>
+                <span class="badge badge-secondary">audit.view</span>
+                {{end}}
+            </div>
+            {{if .ScopedDomains}}
+            <div style="margin-top: 0.5rem;">
+                <small style="color: var(--text-muted);">Scoped to: {{range $i, $d := .ScopedDomains}}{{if $i}}, {{end}}{{$d}}{{end}}</small>
+            </div>
+            {{end}}
+        </div>
+        {{end}}
+        {{else}}
+        <div class="form-group">
+            <p style="color: var(--text-muted); font-size: 12px;">Role management requires super admin privileges.</p>
+        </div>
+        {{end}}
 
         <div style="display: flex; gap: 1rem; margin-top: 1.5rem;">
             <button type="submit" class="btn btn-primary">Save Changes</button>
