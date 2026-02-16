@@ -368,8 +368,17 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 
 // handlePrincipal handles principal discovery requests
 func (s *Server) handlePrincipal(w http.ResponseWriter, r *http.Request) {
+	// Handle OPTIONS without authentication (Apple Calendar sends OPTIONS to principal URL during discovery)
+	if r.Method == "OPTIONS" {
+		w.Header().Set("Allow", "OPTIONS, PROPFIND")
+		w.Header().Set("DAV", "1, 2, 3, addressbook, calendar-access")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
 	user := getUserFromContext(r.Context())
 	if user == nil {
+		w.Header().Set("WWW-Authenticate", `Basic realm="Mail Server"`)
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
