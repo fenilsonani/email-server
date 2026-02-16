@@ -329,12 +329,12 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Return principal discovery response
-		principalURL := fmt.Sprintf("/principals/%s/", user.Email)
-		calendarHomeURL := fmt.Sprintf("/calendars/%s/", user.Email)
-		addressbookHomeURL := fmt.Sprintf("/addressbooks/%s/", user.Email)
+		principalURL := fmt.Sprintf("/principals/%s/", escapeXML(user.Email))
+		calendarHomeURL := fmt.Sprintf("/calendars/%s/", escapeXML(user.Email))
+		addressbookHomeURL := fmt.Sprintf("/addressbooks/%s/", escapeXML(user.Email))
 
 		response := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
-<D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav" xmlns:A="urn:ietf:params:xml:ns:carddav">
+<D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav" xmlns:A="urn:ietf:params:xml:ns:carddav" xmlns:CS="http://calendarserver.org/ns/">
   <D:response>
     <D:href>/</D:href>
     <D:propstat>
@@ -351,11 +351,14 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
         <D:resourcetype>
           <D:collection/>
         </D:resourcetype>
+        <D:principal-URL>
+          <D:href>%s</D:href>
+        </D:principal-URL>
       </D:prop>
       <D:status>HTTP/1.1 200 OK</D:status>
     </D:propstat>
   </D:response>
-</D:multistatus>`, principalURL, calendarHomeURL, addressbookHomeURL)
+</D:multistatus>`, principalURL, calendarHomeURL, addressbookHomeURL, principalURL)
 
 		w.Header().Set("Content-Type", "application/xml; charset=utf-8")
 		w.WriteHeader(http.StatusMultiStatus)
@@ -397,8 +400,13 @@ func (s *Server) handlePrincipalPropfind(w http.ResponseWriter, r *http.Request,
 	calendarHomeURL := fmt.Sprintf("/calendars/%s/", escapeXML(user.Email))
 	addressbookHomeURL := fmt.Sprintf("/addressbooks/%s/", escapeXML(user.Email))
 
+	displayName := escapeXML(user.DisplayName)
+	if displayName == "" {
+		displayName = escapeXML(user.Email)
+	}
+
 	response := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
-<D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav" xmlns:A="urn:ietf:params:xml:ns:carddav">
+<D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav" xmlns:A="urn:ietf:params:xml:ns:carddav" xmlns:CS="http://calendarserver.org/ns/">
   <D:response>
     <D:href>%s</D:href>
     <D:propstat>
@@ -417,11 +425,26 @@ func (s *Server) handlePrincipalPropfind(w http.ResponseWriter, r *http.Request,
         <D:current-user-principal>
           <D:href>%s</D:href>
         </D:current-user-principal>
+        <C:calendar-user-address-set>
+          <D:href>mailto:%s</D:href>
+        </C:calendar-user-address-set>
+        <D:principal-URL>
+          <D:href>%s</D:href>
+        </D:principal-URL>
+        <CS:calendar-proxy-read-for/>
+        <CS:calendar-proxy-write-for/>
+        <D:supported-report-set>
+          <D:supported-report><D:report><C:calendar-multiget/></D:report></D:supported-report>
+          <D:supported-report><D:report><C:calendar-query/></D:report></D:supported-report>
+          <D:supported-report><D:report><A:addressbook-multiget/></D:report></D:supported-report>
+          <D:supported-report><D:report><A:addressbook-query/></D:report></D:supported-report>
+        </D:supported-report-set>
       </D:prop>
       <D:status>HTTP/1.1 200 OK</D:status>
     </D:propstat>
   </D:response>
-</D:multistatus>`, principalURL, escapeXML(user.DisplayName), calendarHomeURL, addressbookHomeURL, principalURL)
+</D:multistatus>`, principalURL, displayName, calendarHomeURL, addressbookHomeURL, principalURL,
+		escapeXML(user.Email), principalURL)
 
 	w.Header().Set("Content-Type", "application/xml; charset=utf-8")
 	w.WriteHeader(http.StatusMultiStatus)
