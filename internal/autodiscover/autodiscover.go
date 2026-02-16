@@ -229,10 +229,7 @@ func (s *Server) handleMicrosoftAutodiscover(w http.ResponseWriter, r *http.Requ
 		slog.String("remote_addr", r.RemoteAddr))
 }
 
-// Apple mobileconfig template - Email only
-// Note: CardDAV/CalDAV cannot be included because Apple validates accounts during
-// profile installation before password entry, causing DAAccountValidationDomain:102 errors.
-// Users should add Contacts/Calendar manually via System Settings after email is configured.
+// Apple mobileconfig template - Email, CalDAV, and CardDAV
 const appleMobileconfigTemplate = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -289,9 +286,61 @@ const appleMobileconfigTemplate = `<?xml version="1.0" encoding="UTF-8"?>
             <key>SMIMEEnabled</key>
             <false/>
         </dict>
+        <dict>
+            <key>CalDAVAccountDescription</key>
+            <string>{{.DisplayName}} Calendar</string>
+            <key>CalDAVHostName</key>
+            <string>{{.Hostname}}</string>
+            <key>CalDAVPort</key>
+            <integer>443</integer>
+            <key>CalDAVPrincipalURL</key>
+            <string>/principals/{{.Email}}/</string>
+            <key>CalDAVUseSSL</key>
+            <true/>
+            <key>CalDAVUsername</key>
+            <string>{{.Email}}</string>
+            <key>PayloadDescription</key>
+            <string>CalDAV calendar account</string>
+            <key>PayloadDisplayName</key>
+            <string>{{.DisplayName}} Calendar</string>
+            <key>PayloadIdentifier</key>
+            <string>com.{{.Domain}}.caldav</string>
+            <key>PayloadType</key>
+            <string>com.apple.caldav.account</string>
+            <key>PayloadUUID</key>
+            <string>{{.CalDAVUUID}}</string>
+            <key>PayloadVersion</key>
+            <integer>1</integer>
+        </dict>
+        <dict>
+            <key>CardDAVAccountDescription</key>
+            <string>{{.DisplayName}} Contacts</string>
+            <key>CardDAVHostName</key>
+            <string>{{.Hostname}}</string>
+            <key>CardDAVPort</key>
+            <integer>443</integer>
+            <key>CardDAVPrincipalURL</key>
+            <string>/principals/{{.Email}}/</string>
+            <key>CardDAVUseSSL</key>
+            <true/>
+            <key>CardDAVUsername</key>
+            <string>{{.Email}}</string>
+            <key>PayloadDescription</key>
+            <string>CardDAV contacts account</string>
+            <key>PayloadDisplayName</key>
+            <string>{{.DisplayName}} Contacts</string>
+            <key>PayloadIdentifier</key>
+            <string>com.{{.Domain}}.carddav</string>
+            <key>PayloadType</key>
+            <string>com.apple.carddav.account</string>
+            <key>PayloadUUID</key>
+            <string>{{.CardDAVUUID}}</string>
+            <key>PayloadVersion</key>
+            <integer>1</integer>
+        </dict>
     </array>
     <key>PayloadDescription</key>
-    <string>Email configuration for {{.Domain}}</string>
+    <string>Mail, Calendar, and Contacts for {{.Domain}}</string>
     <key>PayloadDisplayName</key>
     <string>{{.DisplayName}}</string>
     <key>PayloadIdentifier</key>
@@ -335,17 +384,9 @@ func (s *Server) handleAppleMobileconfig(w http.ResponseWriter, r *http.Request)
         <input type="email" name="email" placeholder="your.email@%s" required>
         <button type="submit">Download Profile</button>
     </form>
-    <p>This profile configures <strong>Mail</strong> on your iPhone, iPad, or Mac.</p>
-    <hr style="margin: 20px 0; border: none; border-top: 1px solid #eee;">
-    <h2 style="font-size: 18px; margin-bottom: 10px;">Add Contacts &amp; Calendar</h2>
-    <p>After installing the mail profile, add Contacts and Calendar manually:</p>
-    <ol style="font-size: 13px; padding-left: 20px; color: #555;">
-        <li><strong>iPhone/iPad:</strong> Settings → Apps → Contacts → Accounts → Add Account → Other → Add CardDAV/CalDAV Account</li>
-        <li><strong>Mac:</strong> System Settings → Internet Accounts → Add Other Account → CardDAV/CalDAV</li>
-    </ol>
-    <p style="font-size: 12px; color: #888; margin-top: 10px;">Server: <code>mail.%s</code> | Username: your email | Port: 443 (SSL)</p>
+    <p>This profile configures <strong>Mail, Calendar, and Contacts</strong> on your iPhone, iPad, or Mac.</p>
 </body>
-</html>`, s.config.DisplayName, s.config.DisplayName, s.config.Domain, s.config.Domain)
+</html>`, s.config.DisplayName, s.config.DisplayName, s.config.Domain)
 		return
 	}
 
@@ -363,6 +404,8 @@ func (s *Server) handleAppleMobileconfig(w http.ResponseWriter, r *http.Request)
 	// Generate deterministic UUIDs based on email
 	emailUUID := generateUUID(email + "-email")
 	profileUUID := generateUUID(email + "-profile")
+	caldavUUID := generateUUID(email + "-caldav")
+	carddavUUID := generateUUID(email + "-carddav")
 
 	data := struct {
 		DisplayName string
@@ -373,6 +416,8 @@ func (s *Server) handleAppleMobileconfig(w http.ResponseWriter, r *http.Request)
 		SMTPPort    int
 		EmailUUID   string
 		ProfileUUID string
+		CalDAVUUID  string
+		CardDAVUUID string
 	}{
 		DisplayName: displayName,
 		Domain:      emailDomain,
@@ -382,6 +427,8 @@ func (s *Server) handleAppleMobileconfig(w http.ResponseWriter, r *http.Request)
 		SMTPPort:    s.config.SMTPPort,
 		EmailUUID:   emailUUID,
 		ProfileUUID: profileUUID,
+		CalDAVUUID:  caldavUUID,
+		CardDAVUUID: carddavUUID,
 	}
 
 	tmpl, err := template.New("mobileconfig").Parse(appleMobileconfigTemplate)
@@ -393,7 +440,7 @@ func (s *Server) handleAppleMobileconfig(w http.ResponseWriter, r *http.Request)
 
 	// Set headers for profile download
 	w.Header().Set("Content-Type", "application/x-apple-aspen-config")
-	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s-email.mobileconfig\"", emailDomain))
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s.mobileconfig\"", emailDomain))
 
 	if err := tmpl.Execute(w, data); err != nil {
 		s.logger.Error("Failed to execute mobileconfig template", slog.Any("error", err))
