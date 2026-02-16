@@ -366,25 +366,44 @@ func (s *Server) handleAppleMobileconfig(w http.ResponseWriter, r *http.Request)
 		fmt.Fprintf(w, `<!DOCTYPE html>
 <html>
 <head>
-    <title>%s - Email Setup</title>
+    <title>%s - account setup</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; max-width: 400px; margin: 50px auto; padding: 20px; }
-        h1 { font-size: 24px; }
-        input[type=email] { width: 100%%; padding: 12px; margin: 10px 0; border: 1px solid #ccc; border-radius: 8px; font-size: 16px; }
-        button { width: 100%%; padding: 12px; background: #007AFF; color: white; border: none; border-radius: 8px; font-size: 16px; cursor: pointer; }
-        button:hover { background: #0056b3; }
-        p { color: #666; font-size: 14px; }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: Georgia, 'Times New Roman', Times, serif; font-size: 14px; background: #f6f6f0; color: #000; line-height: 1.5; display: flex; justify-content: center; align-items: center; min-height: 100vh; padding: 1rem; }
+        .card { background: #fff; border: 2px solid #d0d0d0; padding: 1.5rem; width: 100%%; max-width: 380px; }
+        h1 { font-size: 1.25rem; font-weight: 700; text-transform: lowercase; margin-bottom: 0.75rem; text-align: center; }
+        p { font-size: 12px; color: #828282; margin-bottom: 0.75rem; }
+        .form-group { margin-bottom: 0.75rem; }
+        .form-group label { display: block; margin-bottom: 0.25rem; font-weight: 700; font-size: 12px; }
+        input[type=email] { width: 100%%; padding: 4px 6px; border: 1px solid #d0d0d0; font-size: 12px; font-family: inherit; }
+        input[type=email]:focus { outline: none; border-color: #000; }
+        button { width: 100%%; padding: 6px 8px; background: #000; color: #fff; border: 1px solid #000; font-size: 11px; font-family: inherit; cursor: pointer; }
+        button:hover { background: #1a1a1a; }
+        .info { margin-top: 0.75rem; padding: 0.5rem; border: 1px solid #d0d0d0; background: #f6f6f0; font-size: 11px; color: #828282; }
+        .info strong { color: #000; }
+        @media (max-width: 768px) {
+            input[type=email] { padding: 8px 10px; font-size: 14px; min-height: 44px; }
+            button { padding: 8px 12px; font-size: 12px; min-height: 44px; }
+            .card { padding: 1rem; border: 1px solid #d0d0d0; max-width: 100%%; }
+        }
     </style>
 </head>
 <body>
-    <h1>%s Account Setup</h1>
-    <p>Enter your email address to download the configuration profile.</p>
-    <form method="get">
-        <input type="email" name="email" placeholder="your.email@%s" required>
-        <button type="submit">Download Profile</button>
-    </form>
-    <p>This profile configures <strong>Mail, Calendar, and Contacts</strong> on your iPhone, iPad, or Mac.</p>
+    <div class="card">
+        <h1>%s account setup</h1>
+        <p>enter your email address to download the configuration profile for your device.</p>
+        <form method="get">
+            <div class="form-group">
+                <label>email address</label>
+                <input type="email" name="email" placeholder="you@%s" required>
+            </div>
+            <button type="submit">download profile</button>
+        </form>
+        <div class="info">
+            this profile configures <strong>mail</strong>, <strong>calendar</strong>, and <strong>contacts</strong> on your iPhone, iPad, or Mac.
+        </div>
+    </div>
 </body>
 </html>`, s.config.DisplayName, s.config.DisplayName, s.config.Domain)
 		return
