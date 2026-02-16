@@ -146,6 +146,12 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
+		// Apple Calendar/Contacts sends just the local part (e.g. "fenil") as username.
+		// Append the primary domain to make it a full email for authentication.
+		if !strings.Contains(username, "@") && s.config.Server.Domain != "" {
+			username = username + "@" + s.config.Server.Domain
+		}
+
 		user, err := s.authenticator.Authenticate(r.Context(), username, password)
 		if err != nil {
 			// Don't log the actual error to prevent information disclosure
