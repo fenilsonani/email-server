@@ -3,9 +3,15 @@ package dav
 import (
 	"context"
 	"database/sql"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 
+	"github.com/fenilsonani/email-server/internal/auth"
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -527,5 +533,246 @@ func TestCardDAVBackend_MultipleAddressBooks(t *testing.T) {
 
 	if len(workContacts) != 5 {
 		t.Errorf("Expected 5 work contacts, got %d", len(workContacts))
+	}
+}
+
+// --- HTTP-level tests ---
+
+func newTestCardDAVServer(t *testing.T) (*Server, *CardDAVBackend, func()) {
+	db, cleanup := setupCardDAVTestDB(t)
+	backend, err := NewCardDAVBackend(db)
+	if err != nil {
+		cleanup()
+		t.Fatalf("NewCardDAVBackend failed: %v", err)
+	}
+	srv := &Server{
+		carddavBackend: backend,
+		logger:         slog.Default(),
+	}
+	return srv, backend, cleanup
+}
+
+func cardDAVTestUser() *auth.User {
+	return &auth.User{
+		ID:          1,
+		Email:       "testuser@test.com",
+		DisplayName: "Test User",
+	}
+}
+
+func cardDAVRequest(method, path string, depth string, body string) *http.Request {
+	var r *http.Request
+	if body != "" {
+		r = httptest.NewRequest(method, path, strings.NewReader(body))
+	} else {
+		r = httptest.NewRequest(method, path, nil)
+	}
+	if depth != "" {
+		r.Header.Set("Depth", depth)
+	}
+	user := cardDAVTestUser()
+	ctx := context.WithValue(r.Context(), userContextKey, user)
+	return r.WithContext(ctx)
+}
+
+func TestHTTP_CardDAV_PropfindHome_Depth0(t *testing.T) {
+	srv, backend, cleanup := newTestCardDAVServer(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	backend.CreateAddressBook(ctx, 1, "Personal", "Personal contacts")
+
+	r := cardDAVRequest("PROPFIND", "/addressbooks/testuser@test.com/", "0", "")
+	w := httptest.NewRecorder()
+	srv.handleCardDAV(w, r)
+
+	if w.Code != http.StatusMultiStatus {
+		t.Fatalf("Expected 207, got %d: %s", w.Code, w.Body.String())
+	}
+
+	body := w.Body.String()
+	if !strings.Contains(body, "<D:displayname>Address Books</D:displayname>") {
+		t.Error("Expected home collection displayname")
+	}
+	if strings.Contains(body, "<D:displayname>Personal</D:displayname>") {
+		t.Error("Depth 0 should NOT include individual address books")
+	}
+}
+
+func TestHTTP_CardDAV_PropfindHome_Depth1(t *testing.T) {
+	srv, backend, cleanup := newTestCardDAVServer(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	backend.CreateAddressBook(ctx, 1, "Personal", "")
+	backend.CreateAddressBook(ctx, 1, "Work", "")
+
+	r := cardDAVRequest("PROPFIND", "/addressbooks/testuser@test.com/", "1", "")
+	w := httptest.NewRecorder()
+	srv.handleCardDAV(w, r)
+
+	if w.Code != http.StatusMultiStatus {
+		t.Fatalf("Expected 207, got %d: %s", w.Code, w.Body.String())
+	}
+
+	body := w.Body.String()
+	if !strings.Contains(body, "<D:displayname>Personal</D:displayname>") {
+		t.Error("Expected address book 'Personal' in Depth 1 response")
+	}
+	if !strings.Contains(body, "<D:displayname>Work</D:displayname>") {
+		t.Error("Expected address book 'Work' in Depth 1 response")
+	}
+	if !strings.Contains(body, "<A:addressbook/>") {
+		t.Error("Expected addressbook resourcetype in response")
+	}
+}
+
+func TestHTTP_CardDAV_PropfindAddressBook_Depth1_ReturnsContacts(t *testing.T) {
+	srv, backend, cleanup := newTestCardDAVServer(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	ab, _ := backend.CreateAddressBook(ctx, 1, "Personal", "")
+
+	contact := &Contact{
+		UID:       "contact-abc",
+		VCardData: "BEGIN:VCARD\nVERSION:3.0\nFN:John Doe\nEND:VCARD",
+		FullName:  "John Doe",
+	}
+	backend.CreateContact(ctx, ab.UID, contact)
+
+	path := fmt.Sprintf("/addressbooks/testuser@test.com/%s/", ab.UID)
+	r := cardDAVRequest("PROPFIND", path, "1", "")
+	w := httptest.NewRecorder()
+	srv.handleCardDAV(w, r)
+
+	if w.Code != http.StatusMultiStatus {
+		t.Fatalf("Expected 207, got %d: %s", w.Code, w.Body.String())
+	}
+
+	body := w.Body.String()
+	if !strings.Contains(body, "<D:displayname>Personal</D:displayname>") {
+		t.Error("Expected address book displayname")
+	}
+	if !strings.Contains(body, "contact-abc.vcf") {
+		t.Error("Expected contact href in Depth 1 response")
+	}
+	if !strings.Contains(body, "<D:getetag>") {
+		t.Error("Expected getetag in contact entry")
+	}
+	if !strings.Contains(body, "<D:getcontenttype>text/vcard") {
+		t.Error("Expected getcontenttype in contact entry")
+	}
+}
+
+func TestHTTP_CardDAV_PropfindAddressBook_Depth0_NoContacts(t *testing.T) {
+	srv, backend, cleanup := newTestCardDAVServer(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	ab, _ := backend.CreateAddressBook(ctx, 1, "Personal", "")
+
+	contact := &Contact{
+		UID:       "contact-xyz",
+		VCardData: "BEGIN:VCARD\nEND:VCARD",
+		FullName:  "Test",
+	}
+	backend.CreateContact(ctx, ab.UID, contact)
+
+	path := fmt.Sprintf("/addressbooks/testuser@test.com/%s/", ab.UID)
+	r := cardDAVRequest("PROPFIND", path, "0", "")
+	w := httptest.NewRecorder()
+	srv.handleCardDAV(w, r)
+
+	if w.Code != http.StatusMultiStatus {
+		t.Fatalf("Expected 207, got %d: %s", w.Code, w.Body.String())
+	}
+
+	body := w.Body.String()
+	if !strings.Contains(body, "<D:displayname>Personal</D:displayname>") {
+		t.Error("Expected address book displayname")
+	}
+	if strings.Contains(body, "contact-xyz.vcf") {
+		t.Error("Depth 0 should NOT include contact entries")
+	}
+}
+
+func TestHTTP_CardDAV_Report_Multiget(t *testing.T) {
+	srv, backend, cleanup := newTestCardDAVServer(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	ab, _ := backend.CreateAddressBook(ctx, 1, "Contacts", "")
+
+	for i := 0; i < 5; i++ {
+		contact := &Contact{
+			UID:       fmt.Sprintf("contact-%d", i),
+			VCardData: fmt.Sprintf("BEGIN:VCARD\nVERSION:3.0\nFN:Person %d\nEND:VCARD", i),
+			FullName:  fmt.Sprintf("Person %d", i),
+		}
+		backend.CreateContact(ctx, ab.UID, contact)
+	}
+
+	path := fmt.Sprintf("/addressbooks/testuser@test.com/%s/", ab.UID)
+	multigetBody := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<A:addressbook-multiget xmlns:D="DAV:" xmlns:A="urn:ietf:params:xml:ns:carddav">
+  <D:prop><D:getetag/><A:address-data/></D:prop>
+  <D:href>/addressbooks/testuser@test.com/%s/contact-0.vcf</D:href>
+  <D:href>/addressbooks/testuser@test.com/%s/contact-2.vcf</D:href>
+</A:addressbook-multiget>`, ab.UID, ab.UID)
+
+	r := cardDAVRequest("REPORT", path, "1", multigetBody)
+	w := httptest.NewRecorder()
+	srv.handleCardDAV(w, r)
+
+	if w.Code != http.StatusMultiStatus {
+		t.Fatalf("Expected 207, got %d: %s", w.Code, w.Body.String())
+	}
+
+	body := w.Body.String()
+	if !strings.Contains(body, "contact-0.vcf") {
+		t.Error("Expected contact-0 in multiget response")
+	}
+	if !strings.Contains(body, "contact-2.vcf") {
+		t.Error("Expected contact-2 in multiget response")
+	}
+	if strings.Contains(body, "contact-1.vcf") {
+		t.Error("Should NOT include contact-1 in multiget response")
+	}
+	if strings.Contains(body, "contact-3.vcf") {
+		t.Error("Should NOT include contact-3 in multiget response")
+	}
+}
+
+func TestHTTP_CardDAV_Report_XMLEscaping(t *testing.T) {
+	srv, backend, cleanup := newTestCardDAVServer(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	ab, _ := backend.CreateAddressBook(ctx, 1, "Contacts", "")
+
+	vcardData := "BEGIN:VCARD\nVERSION:3.0\nFN:O'Brien & Sons <LLC>\nEND:VCARD"
+	contact := &Contact{
+		UID:       "special-contact",
+		VCardData: vcardData,
+		FullName:  "O'Brien & Sons <LLC>",
+	}
+	backend.CreateContact(ctx, ab.UID, contact)
+
+	path := fmt.Sprintf("/addressbooks/testuser@test.com/%s/", ab.UID)
+	r := cardDAVRequest("REPORT", path, "1", "")
+	w := httptest.NewRecorder()
+	srv.handleCardDAV(w, r)
+
+	if w.Code != http.StatusMultiStatus {
+		t.Fatalf("Expected 207, got %d: %s", w.Code, w.Body.String())
+	}
+
+	body := w.Body.String()
+	if !strings.Contains(body, "<![CDATA[") {
+		t.Error("Expected CDATA wrapping for vCard data with special chars")
+	}
+	if !strings.Contains(body, "O'Brien & Sons <LLC>") {
+		t.Error("Expected raw vCard data preserved inside CDATA")
 	}
 }

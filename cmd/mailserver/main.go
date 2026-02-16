@@ -1049,8 +1049,23 @@ var userAddCmd = &cobra.Command{
 			}
 		}
 
+		// Create default calendar and addressbook for CalDAV/CardDAV
+		caldavBackend, caldavErr := dav.NewCalDAVBackend(db.RawDB())
+		if caldavErr == nil {
+			if _, err := caldavBackend.CreateCalendar(context.Background(), userID, "Calendar", "Default calendar"); err != nil {
+				fmt.Printf("Warning: failed to create default calendar: %v\n", err)
+			}
+		}
+		carddavBackend, carddavErr := dav.NewCardDAVBackend(db.RawDB())
+		if carddavErr == nil {
+			if _, err := carddavBackend.CreateAddressBook(context.Background(), userID, "Contacts", "Default address book"); err != nil {
+				fmt.Printf("Warning: failed to create default address book: %v\n", err)
+			}
+		}
+
 		fmt.Printf("User '%s' added with ID %d\n", email, userID)
 		fmt.Println("Default mailboxes created: INBOX, Drafts, Sent, Trash, Junk, Archive")
+		fmt.Println("Default calendar and address book created")
 		return nil
 	},
 }

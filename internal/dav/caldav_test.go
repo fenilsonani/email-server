@@ -3,10 +3,16 @@ package dav
 import (
 	"context"
 	"database/sql"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/fenilsonani/email-server/internal/auth"
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -520,5 +526,333 @@ func TestCalDAVBackend_CascadeDelete(t *testing.T) {
 	events, _ := backend.ListEvents(ctx, cal.UID)
 	if len(events) != 0 {
 		t.Errorf("Expected 0 events after calendar deletion, got %d", len(events))
+	}
+}
+
+// --- HTTP-level tests ---
+
+func newTestCalDAVServer(t *testing.T) (*Server, *CalDAVBackend, func()) {
+	db, cleanup := setupCalDAVTestDB(t)
+	backend, err := NewCalDAVBackend(db)
+	if err != nil {
+		cleanup()
+		t.Fatalf("NewCalDAVBackend failed: %v", err)
+	}
+	srv := &Server{
+		caldavBackend: backend,
+		logger:        slog.Default(),
+	}
+	return srv, backend, cleanup
+}
+
+func testUser() *auth.User {
+	return &auth.User{
+		ID:          1,
+		Email:       "testuser@test.com",
+		DisplayName: "Test User",
+	}
+}
+
+func calDAVRequest(method, path string, depth string, body string) *http.Request {
+	var r *http.Request
+	if body != "" {
+		r = httptest.NewRequest(method, path, strings.NewReader(body))
+	} else {
+		r = httptest.NewRequest(method, path, nil)
+	}
+	if depth != "" {
+		r.Header.Set("Depth", depth)
+	}
+	user := testUser()
+	ctx := context.WithValue(r.Context(), userContextKey, user)
+	return r.WithContext(ctx)
+}
+
+func TestHTTP_CalDAV_PropfindHome_Depth0(t *testing.T) {
+	srv, backend, cleanup := newTestCalDAVServer(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	backend.CreateCalendar(ctx, 1, "Work", "Work events")
+
+	r := calDAVRequest("PROPFIND", "/calendars/testuser@test.com/", "0", "")
+	w := httptest.NewRecorder()
+	srv.handleCalDAV(w, r)
+
+	if w.Code != http.StatusMultiStatus {
+		t.Fatalf("Expected 207, got %d: %s", w.Code, w.Body.String())
+	}
+
+	body := w.Body.String()
+	// Depth 0: should include the home collection but NOT individual calendars
+	if !strings.Contains(body, "<D:displayname>Calendars</D:displayname>") {
+		t.Error("Expected home collection displayname 'Calendars'")
+	}
+	if strings.Contains(body, "<D:displayname>Work</D:displayname>") {
+		t.Error("Depth 0 should NOT include individual calendars")
+	}
+}
+
+func TestHTTP_CalDAV_PropfindHome_Depth1(t *testing.T) {
+	srv, backend, cleanup := newTestCalDAVServer(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	backend.CreateCalendar(ctx, 1, "Work", "Work events")
+	backend.CreateCalendar(ctx, 1, "Personal", "")
+
+	r := calDAVRequest("PROPFIND", "/calendars/testuser@test.com/", "1", "")
+	w := httptest.NewRecorder()
+	srv.handleCalDAV(w, r)
+
+	if w.Code != http.StatusMultiStatus {
+		t.Fatalf("Expected 207, got %d: %s", w.Code, w.Body.String())
+	}
+
+	body := w.Body.String()
+	if !strings.Contains(body, "<D:displayname>Work</D:displayname>") {
+		t.Error("Expected calendar 'Work' in Depth 1 response")
+	}
+	if !strings.Contains(body, "<D:displayname>Personal</D:displayname>") {
+		t.Error("Expected calendar 'Personal' in Depth 1 response")
+	}
+	if !strings.Contains(body, "<C:calendar/>") {
+		t.Error("Expected calendar resourcetype in response")
+	}
+}
+
+func TestHTTP_CalDAV_PropfindCalendar_Depth1_ReturnsEvents(t *testing.T) {
+	srv, backend, cleanup := newTestCalDAVServer(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	cal, _ := backend.CreateCalendar(ctx, 1, "Work", "")
+
+	event := &CalendarEvent{
+		UID:           "event-abc",
+		ICalendarData: "BEGIN:VCALENDAR\nVERSION:2.0\nBEGIN:VEVENT\nUID:event-abc\nSUMMARY:Meeting\nEND:VEVENT\nEND:VCALENDAR",
+		Summary:       "Meeting",
+		StartTime:     time.Now(),
+		EndTime:       time.Now().Add(time.Hour),
+	}
+	backend.CreateEvent(ctx, cal.UID, event)
+
+	path := fmt.Sprintf("/calendars/testuser@test.com/%s/", cal.UID)
+	r := calDAVRequest("PROPFIND", path, "1", "")
+	w := httptest.NewRecorder()
+	srv.handleCalDAV(w, r)
+
+	if w.Code != http.StatusMultiStatus {
+		t.Fatalf("Expected 207, got %d: %s", w.Code, w.Body.String())
+	}
+
+	body := w.Body.String()
+	// Should include calendar props
+	if !strings.Contains(body, "<D:displayname>Work</D:displayname>") {
+		t.Error("Expected calendar displayname in response")
+	}
+	// Should include event entry with ETag and content type
+	if !strings.Contains(body, "event-abc.ics") {
+		t.Error("Expected event href in Depth 1 response")
+	}
+	if !strings.Contains(body, "<D:getetag>") {
+		t.Error("Expected getetag in event entry")
+	}
+	if !strings.Contains(body, "<D:getcontenttype>text/calendar") {
+		t.Error("Expected getcontenttype in event entry")
+	}
+}
+
+func TestHTTP_CalDAV_PropfindCalendar_Depth0_NoEvents(t *testing.T) {
+	srv, backend, cleanup := newTestCalDAVServer(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	cal, _ := backend.CreateCalendar(ctx, 1, "Work", "")
+
+	event := &CalendarEvent{
+		UID:           "event-xyz",
+		ICalendarData: "BEGIN:VCALENDAR\nEND:VCALENDAR",
+		Summary:       "Event",
+	}
+	backend.CreateEvent(ctx, cal.UID, event)
+
+	path := fmt.Sprintf("/calendars/testuser@test.com/%s/", cal.UID)
+	r := calDAVRequest("PROPFIND", path, "0", "")
+	w := httptest.NewRecorder()
+	srv.handleCalDAV(w, r)
+
+	if w.Code != http.StatusMultiStatus {
+		t.Fatalf("Expected 207, got %d: %s", w.Code, w.Body.String())
+	}
+
+	body := w.Body.String()
+	if !strings.Contains(body, "<D:displayname>Work</D:displayname>") {
+		t.Error("Expected calendar displayname")
+	}
+	if strings.Contains(body, "event-xyz.ics") {
+		t.Error("Depth 0 should NOT include event entries")
+	}
+}
+
+func TestHTTP_CalDAV_Report_CalendarQuery(t *testing.T) {
+	srv, backend, cleanup := newTestCalDAVServer(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	cal, _ := backend.CreateCalendar(ctx, 1, "Work", "")
+
+	for i := 0; i < 3; i++ {
+		event := &CalendarEvent{
+			UID:           fmt.Sprintf("event-%d", i),
+			ICalendarData: "BEGIN:VCALENDAR\nVERSION:2.0\nBEGIN:VEVENT\nEND:VEVENT\nEND:VCALENDAR",
+			Summary:       fmt.Sprintf("Event %d", i),
+		}
+		backend.CreateEvent(ctx, cal.UID, event)
+	}
+
+	path := fmt.Sprintf("/calendars/testuser@test.com/%s/", cal.UID)
+	reportBody := `<?xml version="1.0" encoding="UTF-8"?>
+<C:calendar-query xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
+  <D:prop><D:getetag/><C:calendar-data/></D:prop>
+</C:calendar-query>`
+
+	r := calDAVRequest("REPORT", path, "1", reportBody)
+	w := httptest.NewRecorder()
+	srv.handleCalDAV(w, r)
+
+	if w.Code != http.StatusMultiStatus {
+		t.Fatalf("Expected 207, got %d: %s", w.Code, w.Body.String())
+	}
+
+	body := w.Body.String()
+	// Should return all 3 events
+	for i := 0; i < 3; i++ {
+		if !strings.Contains(body, fmt.Sprintf("event-%d.ics", i)) {
+			t.Errorf("Expected event-%d in calendar-query response", i)
+		}
+	}
+	// Should use CDATA for calendar data
+	if !strings.Contains(body, "<![CDATA[") {
+		t.Error("Expected CDATA wrapping for calendar data")
+	}
+}
+
+func TestHTTP_CalDAV_Report_Multiget(t *testing.T) {
+	srv, backend, cleanup := newTestCalDAVServer(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	cal, _ := backend.CreateCalendar(ctx, 1, "Work", "")
+
+	for i := 0; i < 5; i++ {
+		event := &CalendarEvent{
+			UID:           fmt.Sprintf("event-%d", i),
+			ICalendarData: "BEGIN:VCALENDAR\nVERSION:2.0\nBEGIN:VEVENT\nEND:VEVENT\nEND:VCALENDAR",
+			Summary:       fmt.Sprintf("Event %d", i),
+		}
+		backend.CreateEvent(ctx, cal.UID, event)
+	}
+
+	path := fmt.Sprintf("/calendars/testuser@test.com/%s/", cal.UID)
+	// Request only events 1 and 3
+	multigetBody := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<C:calendar-multiget xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
+  <D:prop><D:getetag/><C:calendar-data/></D:prop>
+  <D:href>/calendars/testuser@test.com/%s/event-1.ics</D:href>
+  <D:href>/calendars/testuser@test.com/%s/event-3.ics</D:href>
+</C:calendar-multiget>`, cal.UID, cal.UID)
+
+	r := calDAVRequest("REPORT", path, "1", multigetBody)
+	w := httptest.NewRecorder()
+	srv.handleCalDAV(w, r)
+
+	if w.Code != http.StatusMultiStatus {
+		t.Fatalf("Expected 207, got %d: %s", w.Code, w.Body.String())
+	}
+
+	body := w.Body.String()
+	// Should return only events 1 and 3
+	if !strings.Contains(body, "event-1.ics") {
+		t.Error("Expected event-1 in multiget response")
+	}
+	if !strings.Contains(body, "event-3.ics") {
+		t.Error("Expected event-3 in multiget response")
+	}
+	// Should NOT return events 0, 2, 4
+	if strings.Contains(body, "event-0.ics") {
+		t.Error("Should NOT include event-0 in multiget response")
+	}
+	if strings.Contains(body, "event-2.ics") {
+		t.Error("Should NOT include event-2 in multiget response")
+	}
+	if strings.Contains(body, "event-4.ics") {
+		t.Error("Should NOT include event-4 in multiget response")
+	}
+}
+
+func TestHTTP_CalDAV_Put_ChunkedTransfer(t *testing.T) {
+	srv, backend, cleanup := newTestCalDAVServer(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	cal, _ := backend.CreateCalendar(ctx, 1, "Work", "")
+
+	icalData := "BEGIN:VCALENDAR\nVERSION:2.0\nBEGIN:VEVENT\nUID:chunked-event\nSUMMARY:Chunked\nEND:VEVENT\nEND:VCALENDAR"
+	path := fmt.Sprintf("/calendars/testuser@test.com/%s/chunked-event.ics", cal.UID)
+	r := calDAVRequest("PUT", path, "", icalData)
+	r.Header.Set("Content-Type", "text/calendar")
+	// Simulate chunked transfer by setting ContentLength to -1
+	r.ContentLength = -1
+
+	w := httptest.NewRecorder()
+	srv.handleCalDAV(w, r)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("Expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Verify event was created
+	event, err := backend.GetEvent(ctx, cal.UID, "chunked-event")
+	if err != nil {
+		t.Fatalf("Event should have been created: %v", err)
+	}
+	if event.ICalendarData != icalData {
+		t.Error("Event data mismatch")
+	}
+}
+
+func TestHTTP_CalDAV_Report_XMLEscaping(t *testing.T) {
+	srv, backend, cleanup := newTestCalDAVServer(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	cal, _ := backend.CreateCalendar(ctx, 1, "Work", "")
+
+	// Create event with XML-special characters in data
+	icalData := "BEGIN:VCALENDAR\nVERSION:2.0\nBEGIN:VEVENT\nUID:xml-event\nSUMMARY:Meeting <Room A> & B\nEND:VEVENT\nEND:VCALENDAR"
+	event := &CalendarEvent{
+		UID:           "xml-event",
+		ICalendarData: icalData,
+		Summary:       "Meeting <Room A> & B",
+	}
+	backend.CreateEvent(ctx, cal.UID, event)
+
+	path := fmt.Sprintf("/calendars/testuser@test.com/%s/", cal.UID)
+	r := calDAVRequest("REPORT", path, "1", "")
+	w := httptest.NewRecorder()
+	srv.handleCalDAV(w, r)
+
+	if w.Code != http.StatusMultiStatus {
+		t.Fatalf("Expected 207, got %d: %s", w.Code, w.Body.String())
+	}
+
+	body := w.Body.String()
+	// CDATA should wrap the raw data, preserving special chars
+	if !strings.Contains(body, "<![CDATA[") {
+		t.Error("Expected CDATA wrapping for calendar data with special chars")
+	}
+	if !strings.Contains(body, "Meeting <Room A> & B") {
+		t.Error("Expected raw iCalendar data preserved inside CDATA")
 	}
 }
