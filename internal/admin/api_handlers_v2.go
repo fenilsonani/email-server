@@ -1571,11 +1571,8 @@ func (s *Server) handleAPIToolsDoctor(w http.ResponseWriter, r *http.Request) {
 		"message": boolToMessage(s.sieveStore != nil, "Sieve store initialized", "Sieve store not initialized"),
 	})
 
-	allOK := dbOK && queueOK
-	s.jsonResponse(w, http.StatusOK, map[string]interface{}{
-		"healthy": allOK,
-		"checks":  checks,
-	})
+	_ = dbOK && queueOK
+	s.jsonResponse(w, http.StatusOK, checks)
 }
 
 // =============================================================================
@@ -1625,23 +1622,18 @@ func (s *Server) handleAPIToolsTestEmail(w http.ResponseWriter, r *http.Request)
 // =============================================================================
 
 func (s *Server) handleAPIToolsDNSCheck(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
+	if r.Method != http.MethodGet {
 		s.jsonError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
 
-	var req struct {
-		Domain string `json:"domain"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.jsonError(w, http.StatusBadRequest, "Invalid request body")
-		return
-	}
-
-	if req.Domain == "" {
+	domain := r.URL.Query().Get("domain")
+	if domain == "" {
 		s.jsonError(w, http.StatusBadRequest, "Domain is required")
 		return
 	}
+
+	req := struct{ Domain string }{Domain: domain}
 
 	mailServer := s.config.Server.Hostname
 	results := []DNSCheckResult{}

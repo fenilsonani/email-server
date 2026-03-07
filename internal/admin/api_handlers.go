@@ -712,7 +712,7 @@ func (s *Server) handleAPIDeliveryLogs(w http.ResponseWriter, r *http.Request, p
 	s.db.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM delivery_log").Scan(&totalCount)
 
 	rows, err := s.db.QueryContext(r.Context(),
-		`SELECT sender, recipient, status, message, created_at
+		`SELECT sender, recipient, status, COALESCE(error_message, ''), created_at
 		FROM delivery_log ORDER BY created_at DESC LIMIT ? OFFSET ?`,
 		p.PageSize, p.Offset,
 	)
