@@ -1,13 +1,13 @@
 package admin
 
 import (
+	"bytes"
 	"embed"
-	"io"
 	"io/fs"
-	"mime"
 	"net/http"
 	"path"
 	"strings"
+	"time"
 )
 
 //go:embed all:dashboard
@@ -25,6 +25,15 @@ func (s *Server) serveSPA() http.Handler {
 		return http.NotFoundHandler()
 	}
 
+	// Pre-read index.html for SPA fallback
+	indexHTML, err := fs.ReadFile(sub, "index.html")
+	if err != nil {
+		s.logger.Error("Failed to read index.html from dashboard", "error", err.Error())
+		return http.NotFoundHandler()
+	}
+
+	epoch := time.Unix(0, 0)
+
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		urlPath := r.URL.Path
 		if urlPath == "" || urlPath == "/" {
@@ -41,43 +50,26 @@ func (s *Server) serveSPA() http.Handler {
 		filePath := strings.TrimPrefix(cleanPath, "/")
 
 		// Try exact file
-		if f, err := sub.Open(filePath); err == nil {
-			defer f.Close()
-			serveFile(w, filePath, f)
+		if data, err := fs.ReadFile(sub, filePath); err == nil {
+			serveFileData(w, r, filePath, data)
 			return
 		}
 
 		// Try path/index.html (for trailing slash routes like /login/)
 		indexPath := strings.TrimSuffix(filePath, "/") + "/index.html"
-		if f, err := sub.Open(indexPath); err == nil {
-			defer f.Close()
-			serveFile(w, indexPath, f)
+		if data, err := fs.ReadFile(sub, indexPath); err == nil {
+			serveFileData(w, r, indexPath, data)
 			return
 		}
 
 		// SPA fallback: serve root index.html for client-side routing
-		if f, err := sub.Open("index.html"); err == nil {
-			defer f.Close()
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-			io.Copy(w, f.(io.Reader))
-			return
-		}
-
-		http.NotFound(w, r)
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		http.ServeContent(w, r, "index.html", epoch, bytes.NewReader(indexHTML))
 	})
 }
 
-// serveFile writes a file from the embedded FS directly to the response
-func serveFile(w http.ResponseWriter, name string, f fs.File) {
-	// Set content type from extension
-	ext := path.Ext(name)
-	ct := mime.TypeByExtension(ext)
-	if ct == "" {
-		ct = "application/octet-stream"
-	}
-	w.Header().Set("Content-Type", ct)
-
+// serveFileData serves file bytes with proper Content-Type, Content-Length, and caching
+func serveFileData(w http.ResponseWriter, r *http.Request, name string, data []byte) {
 	// Cache static assets aggressively, HTML pages not at all
 	if isStaticAsset(name) {
 		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
@@ -85,7 +77,8 @@ func serveFile(w http.ResponseWriter, name string, f fs.File) {
 		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 	}
 
-	io.Copy(w, f.(io.Reader))
+	// http.ServeContent sets Content-Type from name, Content-Length, handles Range, etc.
+	http.ServeContent(w, r, name, time.Unix(0, 0), bytes.NewReader(data))
 }
 
 // isStaticAsset returns true for files that can be aggressively cached
@@ -95,5 +88,10 @@ func isStaticAsset(p string) bool {
 	case ".js", ".css", ".woff", ".woff2", ".ttf", ".eot", ".svg", ".png", ".jpg", ".jpeg", ".gif", ".ico", ".webp":
 		return true
 	}
+	// Also catch hashed Next.js chunks in _next/static/
+	if strings.Contains(p, "_next/static/") {
+		return true
+	}
 	return false
 }
+
