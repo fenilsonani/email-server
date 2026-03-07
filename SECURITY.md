@@ -1,107 +1,44 @@
 # Security Policy
 
-## Supported Versions
-
-| Version | Supported          |
-| ------- | ------------------ |
-| 1.x.x   | :white_check_mark: |
-| < 1.0   | :x:                |
-
 ## Reporting a Vulnerability
 
-We take security seriously. If you discover a security vulnerability, please report it responsibly.
+**Do not** open a public GitHub issue for security vulnerabilities.
 
-### How to Report
-
-**DO NOT** open a public GitHub issue for security vulnerabilities.
-
-Instead, please email: **security@fenilsonani.com**
-
-Include:
+Email **security@fenilsonani.com** with:
 - Description of the vulnerability
 - Steps to reproduce
 - Potential impact
-- Any suggested fixes (optional)
 
-### What to Expect
+We'll acknowledge within 48 hours, assess within 7 days, and patch critical issues ASAP.
 
-1. **Acknowledgment**: We'll respond within 48 hours
-2. **Assessment**: We'll investigate and assess severity within 7 days
-3. **Fix Timeline**: Critical issues will be patched ASAP, others within 30 days
-4. **Disclosure**: We'll coordinate disclosure timing with you
+## Deployment Checklist
 
-### Security Best Practices
+- Firewall: only expose ports 25, 587, 465, 993, 8443
+- Admin panel (8080): bind to localhost, access via reverse proxy with HTTPS
+- Redis: bind to localhost or use authentication
+- Enable `auto_tls: true` in production
+- Configure SPF, DKIM, and DMARC DNS records for all domains
+- Set up fail2ban for brute force protection
+- Back up `/var/lib/mailserver/` regularly and test restores
 
-When deploying this email server, please follow these guidelines:
+## Data Storage
 
-#### Network Security
+| Data | Storage | Encryption |
+|------|---------|------------|
+| Passwords | SQLite | Argon2id hashed |
+| Emails | Maildir on filesystem | Not encrypted at rest |
+| Metadata | SQLite | Not encrypted at rest |
+| Logs | stdout/journald | May contain email addresses and IPs |
 
-- **Firewall**: Only expose necessary ports (25, 587, 465, 993, 8443)
-- **Admin Panel**: Never expose port 8080 directly; use a reverse proxy with HTTPS
-- **Redis**: Bind to localhost or use authentication if exposed
-- **VPS**: Use a reputable provider with DDoS protection
-
-#### TLS Configuration
-
-- Always enable `auto_tls: true` in production
-- Use `require_tls: true` for submission ports
-- Regularly update certificates
-
-#### Authentication
-
-- Use strong passwords (minimum 12 characters recommended)
-- Consider implementing fail2ban for brute force protection
-- Review audit logs regularly
-
-#### Updates
-
-- Keep the server updated
-- Subscribe to release notifications
-- Test updates in staging before production
-
-#### Backups
-
-- Regular backups of `/var/lib/mailserver/`
-- Test backup restoration periodically
-- Store backups securely off-server
-
-#### Monitoring
-
-- Enable Prometheus metrics
-- Set up alerts for:
-  - High queue depth
-  - Authentication failures
-  - Delivery errors
-  - Resource usage
-
-## Known Security Considerations
-
-### Email-Specific
-
-1. **Greylisting**: Enabled by default for spam prevention
-2. **SPF/DKIM/DMARC**: Should be configured for all domains
-3. **Rate Limiting**: Implemented on admin panel
-4. **TLS Fallback**: For compatibility, non-TLS delivery is allowed by default when `require_tls: false`
-
-### Data Storage
-
-1. **Passwords**: Hashed with Argon2id (OWASP recommended)
-2. **Emails**: Stored in Maildir format on filesystem (not encrypted at rest)
-3. **Metadata**: SQLite database with standard permissions (not encrypted)
-4. **Logs**: May contain email addresses and IPs; rotate and secure accordingly
-
-> **At-rest encryption**: This server does not encrypt data at rest. For sensitive deployments, use full-disk encryption (LUKS on Linux, FileVault on macOS) on your server.
+For at-rest encryption, use full-disk encryption (LUKS, FileVault) on your server.
 
 ## Security Features
 
 - Argon2id password hashing
-- TLS 1.2+ for all encrypted connections
-- DKIM signing for outbound mail
-- SPF and DMARC verification for inbound
+- TLS 1.2+ on all encrypted connections
+- DKIM signing (outbound), SPF/DMARC verification (inbound)
 - Rate limiting on authentication
-- Audit logging for administrative actions
-- Circuit breakers for delivery
-
-## Acknowledgments
-
-We appreciate security researchers who responsibly disclose vulnerabilities. Contributors will be acknowledged (with permission) in release notes.
+- Greylisting (enabled by default)
+- Audit logging for admin actions
+- Per-domain circuit breakers on delivery
+- TLS fallback is allowed by default when `require_tls: false`
