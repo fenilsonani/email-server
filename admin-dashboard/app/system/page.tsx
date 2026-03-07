@@ -11,6 +11,14 @@ import { Server, Globe, Clock, Tag, Code, HardDrive, Download, Shield, ShieldChe
 import Link from "next/link";
 import { Switch } from "@/components/ui/switch";
 import { useAdvancedMode } from "@/lib/advanced-mode";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from "@/components/ui/dialog";
 
 function InfoCard({ icon: Icon, label, value }: { icon: React.ElementType; label: string; value: string }) {
   return (
@@ -28,26 +36,59 @@ function InfoCard({ icon: Icon, label, value }: { icon: React.ElementType; label
 
 function AdvancedModeToggle() {
   const { enabled, toggle, hydrate } = useAdvancedMode();
+  const [showConfirm, setShowConfirm] = useState(false);
 
   useEffect(() => {
     hydrate();
   }, [hydrate]);
 
+  const handleToggle = () => {
+    if (enabled) {
+      // Turning off — no confirmation needed
+      toggle();
+    } else {
+      // Turning on — ask for confirmation
+      setShowConfirm(true);
+    }
+  };
+
+  const confirmEnable = () => {
+    toggle();
+    setShowConfirm(false);
+  };
+
   return (
-    <div className="rounded-lg border border-border bg-card overflow-hidden">
-      <div className="flex items-center justify-between px-4 py-3">
-        <div className="flex items-center gap-3">
-          <Wrench className="h-3.5 w-3.5 text-muted-foreground/40 shrink-0" strokeWidth={1.5} />
-          <div>
-            <span className="text-[13px] font-medium">Advanced Mode</span>
-            <p className="text-[11px] text-muted-foreground/60 mt-0.5">
-              Show logs, filters, DNS tools, and other advanced options in the sidebar
-            </p>
+    <>
+      <div className="rounded-lg border border-border bg-card overflow-hidden">
+        <div className="flex items-center justify-between px-4 py-3">
+          <div className="flex items-center gap-3">
+            <Wrench className="h-3.5 w-3.5 text-muted-foreground/40 shrink-0" strokeWidth={1.5} />
+            <div>
+              <span className="text-[13px] font-medium">Advanced Mode</span>
+              <p className="text-[11px] text-muted-foreground/60 mt-0.5">
+                Show logs, filters, DNS tools, and other advanced options in the sidebar
+              </p>
+            </div>
           </div>
+          <Switch checked={enabled} onCheckedChange={handleToggle} />
         </div>
-        <Switch checked={enabled} onCheckedChange={toggle} />
       </div>
-    </div>
+
+      <Dialog open={showConfirm} onOpenChange={setShowConfirm}>
+        <DialogContent showCloseButton={false}>
+          <DialogHeader>
+            <DialogTitle>Enable Advanced Mode?</DialogTitle>
+            <DialogDescription>
+              This will show additional tools in the sidebar including server logs, mail filters, DNS diagnostics, backup, and other system utilities. You can turn this off anytime from Settings.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowConfirm(false)}>Cancel</Button>
+            <Button onClick={confirmEnable}>Enable Advanced Mode</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
 
