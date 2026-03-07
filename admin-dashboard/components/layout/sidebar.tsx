@@ -72,7 +72,6 @@ const navGroups: NavGroup[] = [
       { label: "DNS Check", href: "/tools/dns/", icon: Globe },
       { label: "Test Email", href: "/tools/test-email/", icon: Mail },
       { label: "Doctor", href: "/tools/doctor/", icon: Wrench },
-      { label: "System", href: "/system/", icon: Settings },
       { label: "Backup", href: "/system/backup/", icon: HardDrive },
     ],
   },
@@ -136,8 +135,29 @@ export function AdminSidebar() {
         ))}
       </nav>
 
-      {/* Bottom spacer */}
-      <div className="h-2" />
+      {/* Settings — always visible at bottom */}
+      <div className="border-t border-border px-2 py-2">
+        <Link
+          href="/system/"
+          className={cn(
+            "flex items-center gap-2 rounded-md px-2 py-1.5 text-[13px] transition-colors duration-100",
+            (pathname === "/system/" || pathname.startsWith("/system/"))
+              ? "bg-accent text-foreground font-medium"
+              : "text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+          )}
+        >
+          <Settings
+            className={cn(
+              "h-4 w-4 shrink-0",
+              (pathname === "/system/" || pathname.startsWith("/system/"))
+                ? "text-foreground"
+                : "text-muted-foreground/60"
+            )}
+            strokeWidth={(pathname === "/system/" || pathname.startsWith("/system/")) ? 2 : 1.5}
+          />
+          <span>Settings</span>
+        </Link>
+      </div>
     </aside>
   );
 }
