@@ -4,6 +4,8 @@ export interface User {
   domain: string;
   email: string;
   is_admin: boolean;
+  quota_bytes: number;
+  used_bytes: number;
   created_at: string;
 }
 

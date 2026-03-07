@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/fenilsonani/email-server/internal/audit"
 	"github.com/fenilsonani/email-server/internal/auth"
+	"github.com/fenilsonani/email-server/internal/security"
 	"github.com/fenilsonani/email-server/internal/validation"
 )
 
@@ -66,12 +68,14 @@ func formatUptime(d time.Duration) string {
 
 // APIUser represents a user in API responses
 type APIUser struct {
-	ID        int64     `json:"id"`
-	Username  string    `json:"username"`
-	Domain    string    `json:"domain"`
-	Email     string    `json:"email"`
-	IsAdmin   bool      `json:"is_admin"`
-	CreatedAt time.Time `json:"created_at"`
+	ID         int64     `json:"id"`
+	Username   string    `json:"username"`
+	Domain     string    `json:"domain"`
+	Email      string    `json:"email"`
+	IsAdmin    bool      `json:"is_admin"`
+	QuotaBytes int64     `json:"quota_bytes"`
+	UsedBytes  int64     `json:"used_bytes"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 func (s *Server) handleAPIUsers(w http.ResponseWriter, r *http.Request) {
@@ -91,7 +95,7 @@ func (s *Server) handleAPIGetUsers(w http.ResponseWriter, r *http.Request) {
 	filterDomain := r.URL.Query().Get("domain")
 	filterIsAdmin := r.URL.Query().Get("is_admin")
 
-	query := `SELECT u.id, u.username, d.name as domain, u.is_admin, u.created_at
+	query := `SELECT u.id, u.username, d.name as domain, u.is_admin, COALESCE(u.quota_bytes, 1073741824), COALESCE(u.used_bytes, 0), u.created_at
 		FROM users u JOIN domains d ON u.domain_id = d.id WHERE 1=1`
 	countQuery := `SELECT COUNT(*) FROM users u JOIN domains d ON u.domain_id = d.id WHERE 1=1`
 	args := []interface{}{}
@@ -130,7 +134,7 @@ func (s *Server) handleAPIGetUsers(w http.ResponseWriter, r *http.Request) {
 	users := []APIUser{}
 	for rows.Next() {
 		var u APIUser
-		if err := rows.Scan(&u.ID, &u.Username, &u.Domain, &u.IsAdmin, &u.CreatedAt); err != nil {
+		if err := rows.Scan(&u.ID, &u.Username, &u.Domain, &u.IsAdmin, &u.QuotaBytes, &u.UsedBytes, &u.CreatedAt); err != nil {
 			continue
 		}
 		u.Email = u.Username + "@" + u.Domain
@@ -220,16 +224,36 @@ func (s *Server) handleAPICreateUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAPIUserByID(w http.ResponseWriter, r *http.Request) {
-	// Extract ID from path: /admin/api/v1/users/{id}
+	// Extract ID from path: /admin/api/v1/users/{id} or /admin/api/v1/users/{id}/quota
 	parts := strings.Split(strings.TrimSuffix(r.URL.Path, "/"), "/")
 	if len(parts) < 5 {
 		s.jsonError(w, http.StatusBadRequest, "User ID required")
 		return
 	}
-	idStr := parts[len(parts)-1]
+
+	// Find "users" in path, ID is next
+	usersIdx := -1
+	for i, p := range parts {
+		if p == "users" {
+			usersIdx = i
+			break
+		}
+	}
+	if usersIdx < 0 || usersIdx+1 >= len(parts) {
+		s.jsonError(w, http.StatusBadRequest, "User ID required")
+		return
+	}
+
+	idStr := parts[usersIdx+1]
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
 		s.jsonError(w, http.StatusBadRequest, "Invalid user ID")
+		return
+	}
+
+	// Check for sub-routes
+	if usersIdx+2 < len(parts) && parts[usersIdx+2] == "quota" {
+		s.handleAPIUpdateUserQuota(w, r, id)
 		return
 	}
 
@@ -245,12 +269,49 @@ func (s *Server) handleAPIUserByID(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *Server) handleAPIUpdateUserQuota(w http.ResponseWriter, r *http.Request, id int64) {
+	if r.Method != http.MethodPut {
+		s.jsonError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+
+	var req struct {
+		QuotaBytes int64 `json:"quota_bytes"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.jsonError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	if req.QuotaBytes <= 0 {
+		s.jsonError(w, http.StatusBadRequest, "quota_bytes must be positive")
+		return
+	}
+
+	result, err := s.db.ExecContext(r.Context(), "UPDATE users SET quota_bytes = ? WHERE id = ?", req.QuotaBytes, id)
+	if err != nil {
+		s.jsonError(w, http.StatusInternalServerError, "Failed to update quota")
+		return
+	}
+
+	affected, _ := result.RowsAffected()
+	if affected == 0 {
+		s.jsonError(w, http.StatusNotFound, "User not found")
+		return
+	}
+
+	adminUser := getSessionUser(r)
+	s.auditLogger.Log(r.Context(), adminUser, audit.EventUserUpdate, fmt.Sprintf("user:%d quota:%d", id, req.QuotaBytes), nil, s.rateLimiter.GetClientIP(r))
+
+	s.jsonResponse(w, http.StatusOK, map[string]interface{}{"updated": true, "quota_bytes": req.QuotaBytes})
+}
+
 func (s *Server) handleAPIGetUser(w http.ResponseWriter, r *http.Request, id int64) {
 	var u APIUser
 	err := s.db.QueryRowContext(r.Context(),
-		`SELECT u.id, u.username, d.name, u.is_admin, u.created_at
+		`SELECT u.id, u.username, d.name, u.is_admin, COALESCE(u.quota_bytes, 1073741824), COALESCE(u.used_bytes, 0), u.created_at
 		FROM users u JOIN domains d ON u.domain_id = d.id WHERE u.id = ?`, id,
-	).Scan(&u.ID, &u.Username, &u.Domain, &u.IsAdmin, &u.CreatedAt)
+	).Scan(&u.ID, &u.Username, &u.Domain, &u.IsAdmin, &u.QuotaBytes, &u.UsedBytes, &u.CreatedAt)
 	if err != nil {
 		s.jsonError(w, http.StatusNotFound, "User not found")
 		return
@@ -542,14 +603,14 @@ func (s *Server) handleAPIDomainDKIM(w http.ResponseWriter, r *http.Request, dom
 				s.jsonError(w, http.StatusMethodNotAllowed, "Method not allowed")
 				return
 			}
-			s.handleDKIMGenerate(w, r)
+			s.handleAPIDKIMGenerate(w, r, domainID)
 			return
 		case "rotate":
 			if r.Method != http.MethodPost {
 				s.jsonError(w, http.StatusMethodNotAllowed, "Method not allowed")
 				return
 			}
-			s.handleDKIMRotate(w, r)
+			s.handleAPIDKIMRotate(w, r, domainID)
 			return
 		}
 	}
@@ -560,21 +621,56 @@ func (s *Server) handleAPIDomainDKIM(w http.ResponseWriter, r *http.Request, dom
 		return
 	}
 
-	var dkimSelector, dkimPublicKey string
+	var domainName, dkimSelector string
+	var storageType sql.NullString
 	err := s.db.QueryRowContext(r.Context(),
-		`SELECT COALESCE(dkim_selector, ''), COALESCE(dkim_public_key, '') FROM domains WHERE id = ?`,
+		`SELECT name, COALESCE(dkim_selector, ''), dkim_storage_type FROM domains WHERE id = ?`,
 		domainID,
-	).Scan(&dkimSelector, &dkimPublicKey)
+	).Scan(&domainName, &dkimSelector, &storageType)
 	if err != nil {
 		s.jsonError(w, http.StatusNotFound, "Domain not found")
 		return
 	}
 
+	storage := "file"
+	if storageType.Valid && storageType.String != "" {
+		storage = storageType.String
+	}
+
+	// Try to get the full DKIM DNS record
+	dkimPath := s.getDKIMPath()
+	store := security.NewKeyStore(storage, dkimPath, s.db)
+	meta, metaErr := store.GetKeyMetadata(r.Context(), domainName)
+
+	enabled := metaErr == nil && meta.HasKey
+	dnsRecord := ""
+	publicKey := ""
+
+	if enabled {
+		_, recordValue, recErr := security.GetDNSRecord(r.Context(), store, domainName)
+		if recErr == nil {
+			dnsRecord = recordValue
+		}
+		if meta.Selector != "" {
+			dkimSelector = meta.Selector
+		}
+		// Extract public key from DNS record if available
+		if dnsRecord != "" {
+			// The DNS record contains p=<key>
+			for _, part := range strings.Split(dnsRecord, ";") {
+				part = strings.TrimSpace(part)
+				if strings.HasPrefix(part, "p=") {
+					publicKey = strings.TrimPrefix(part, "p=")
+				}
+			}
+		}
+	}
+
 	s.jsonResponse(w, http.StatusOK, map[string]interface{}{
-		"domain_id":  domainID,
+		"enabled":    enabled,
 		"selector":   dkimSelector,
-		"public_key": dkimPublicKey,
-		"has_dkim":   dkimPublicKey != "",
+		"public_key": publicKey,
+		"dns_record": dnsRecord,
 	})
 }
 
@@ -614,27 +710,210 @@ func (s *Server) handleAPIDomainDNS(w http.ResponseWriter, r *http.Request, doma
 		return
 	}
 
-	// Get DNS check results using individual verification methods
-	checks := map[string]interface{}{
-		"mx":            s.dnsChecker.verifyMXRecord(domainName, mailHostname),
-		"spf":           s.dnsChecker.verifySPFRecord(domainName),
-		"dmarc":         s.dnsChecker.verifyDMARCRecord(domainName),
-		"mail_hostname": s.dnsChecker.verifyMailHostnameRecord(mailHostname),
+	// Build records array matching frontend DNSRecord interface:
+	// {type, name, expected, actual, status}
+	type DNSRecord struct {
+		Type     string `json:"type"`
+		Name     string `json:"name"`
+		Expected string `json:"expected"`
+		Actual   string `json:"actual"`
+		Status   string `json:"status"`
 	}
 
-	// Check DKIM if configured
+	records := []DNSRecord{}
+	mailServer := s.config.Server.Hostname
+
+	// MX check
+	mxActual := ""
+	mxStatus := "fail"
+	mxRecords, mxErr := net.LookupMX(domainName)
+	if mxErr == nil {
+		for _, mx := range mxRecords {
+			host := strings.TrimSuffix(mx.Host, ".")
+			mxActual += host + " "
+			if strings.EqualFold(host, mailHostname) || strings.EqualFold(host, mailServer) {
+				mxStatus = "pass"
+			}
+		}
+		mxActual = strings.TrimSpace(mxActual)
+	}
+	records = append(records, DNSRecord{
+		Type: "MX", Name: domainName,
+		Expected: mailHostname, Actual: mxActual, Status: mxStatus,
+	})
+
+	// SPF check
+	spfActual := ""
+	spfStatus := "fail"
+	txtRecords, txtErr := net.LookupTXT(domainName)
+	if txtErr == nil {
+		for _, txt := range txtRecords {
+			if strings.HasPrefix(txt, "v=spf1") {
+				spfActual = txt
+				spfStatus = "pass"
+				break
+			}
+		}
+	}
+	records = append(records, DNSRecord{
+		Type: "SPF", Name: domainName,
+		Expected: "v=spf1 mx ~all", Actual: spfActual, Status: spfStatus,
+	})
+
+	// DMARC check
+	dmarcActual := ""
+	dmarcStatus := "warning"
+	dmarcRecords, dmarcErr := net.LookupTXT("_dmarc." + domainName)
+	if dmarcErr == nil {
+		for _, txt := range dmarcRecords {
+			if strings.HasPrefix(txt, "v=DMARC1") {
+				dmarcActual = txt
+				dmarcStatus = "pass"
+				break
+			}
+		}
+	}
+	records = append(records, DNSRecord{
+		Type: "DMARC", Name: "_dmarc." + domainName,
+		Expected: "v=DMARC1; p=quarantine; ...", Actual: dmarcActual, Status: dmarcStatus,
+	})
+
+	// DKIM check
 	var dkimSelector string
 	s.db.QueryRowContext(r.Context(),
 		`SELECT COALESCE(dkim_selector, '') FROM domains WHERE id = ?`, domainID,
 	).Scan(&dkimSelector)
 	if dkimSelector != "" {
-		checks["dkim"] = s.dnsChecker.verifyDKIMRecord(domainName, dkimSelector, "")
+		dkimDomain := dkimSelector + "._domainkey." + domainName
+		dkimActual := ""
+		dkimStatus := "fail"
+		dkimTxt, dkimErr := net.LookupTXT(dkimDomain)
+		if dkimErr == nil {
+			for _, txt := range dkimTxt {
+				if strings.Contains(txt, "v=DKIM1") {
+					dkimActual = txt
+					dkimStatus = "pass"
+					break
+				}
+			}
+		}
+		records = append(records, DNSRecord{
+			Type: "DKIM", Name: dkimDomain,
+			Expected: "v=DKIM1; k=rsa; p=...", Actual: dkimActual, Status: dkimStatus,
+		})
 	}
 
+	// Mail hostname A record
+	mailHostActual := ""
+	mailHostStatus := "fail"
+	ips, ipErr := net.LookupHost(mailHostname)
+	if ipErr == nil && len(ips) > 0 {
+		mailHostActual = strings.Join(ips, ", ")
+		mailHostStatus = "pass"
+	}
+	records = append(records, DNSRecord{
+		Type: "A", Name: mailHostname,
+		Expected: "Server IP", Actual: mailHostActual, Status: mailHostStatus,
+	})
+
 	s.jsonResponse(w, http.StatusOK, map[string]interface{}{
-		"domain":        domainName,
-		"mail_hostname": mailHostname,
-		"checks":        checks,
+		"records":    records,
+		"checked_at": time.Now().UTC().Format(time.RFC3339),
+	})
+}
+
+// --- DKIM API ---
+
+func (s *Server) handleAPIDKIMGenerate(w http.ResponseWriter, r *http.Request, domainID int64) {
+	var domainName string
+	err := s.db.QueryRowContext(r.Context(), "SELECT name FROM domains WHERE id = ?", domainID).Scan(&domainName)
+	if err != nil {
+		s.jsonError(w, http.StatusNotFound, "Domain not found")
+		return
+	}
+
+	// Parse JSON body
+	var req struct {
+		Selector string `json:"selector"`
+		Bits     int    `json:"bits"`
+		Storage  string `json:"storage"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		// Fallback defaults
+		req.Selector = "mail"
+		req.Bits = 2048
+		req.Storage = "database"
+	}
+	if req.Selector == "" {
+		req.Selector = "mail"
+	}
+	if req.Bits != 4096 {
+		req.Bits = 2048
+	}
+	if req.Storage == "" {
+		req.Storage = "database"
+	}
+
+	dkimPath := s.getDKIMPath()
+	store := security.NewKeyStore(req.Storage, dkimPath, s.db)
+
+	_, err = security.GenerateAndSaveKey(r.Context(), store, domainName, req.Selector, req.Bits)
+	if err != nil {
+		s.jsonError(w, http.StatusInternalServerError, "Failed to generate DKIM key: "+err.Error())
+		return
+	}
+
+	adminUser := getSessionUser(r)
+	s.auditLogger.Log(r.Context(), adminUser, audit.EventConfigChange, domainName, map[string]interface{}{
+		"action": "dkim_generate", "selector": req.Selector, "bits": req.Bits,
+	}, getIP(r))
+
+	// Return the new DKIM info
+	_, recordValue, _ := security.GetDNSRecord(r.Context(), store, domainName)
+
+	s.jsonResponse(w, http.StatusOK, map[string]interface{}{
+		"generated":  true,
+		"selector":   req.Selector,
+		"dns_record": recordValue,
+	})
+}
+
+func (s *Server) handleAPIDKIMRotate(w http.ResponseWriter, r *http.Request, domainID int64) {
+	var domainName string
+	var storageType sql.NullString
+	err := s.db.QueryRowContext(r.Context(),
+		"SELECT name, dkim_storage_type FROM domains WHERE id = ?",
+		domainID).Scan(&domainName, &storageType)
+	if err != nil {
+		s.jsonError(w, http.StatusNotFound, "Domain not found")
+		return
+	}
+
+	storage := "file"
+	if storageType.Valid && storageType.String != "" {
+		storage = storageType.String
+	}
+
+	dkimPath := s.getDKIMPath()
+	store := security.NewKeyStore(storage, dkimPath, s.db)
+
+	newSelector, _, err := security.RotateKey(r.Context(), store, domainName, 2048)
+	if err != nil {
+		s.jsonError(w, http.StatusInternalServerError, "Failed to rotate DKIM key: "+err.Error())
+		return
+	}
+
+	adminUser := getSessionUser(r)
+	s.auditLogger.Log(r.Context(), adminUser, audit.EventConfigChange, domainName, map[string]interface{}{
+		"action": "dkim_rotate", "newSelector": newSelector,
+	}, getIP(r))
+
+	_, recordValue, _ := security.GetDNSRecord(r.Context(), store, domainName)
+
+	s.jsonResponse(w, http.StatusOK, map[string]interface{}{
+		"rotated":      true,
+		"new_selector": newSelector,
+		"dns_record":   recordValue,
 	})
 }
 
@@ -820,7 +1099,10 @@ func (s *Server) handleAPIGetFeatures(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if s.featuresStore == nil {
-		s.jsonError(w, http.StatusServiceUnavailable, "Features store not initialized")
+		s.jsonResponse(w, http.StatusOK, map[string]interface{}{
+			"screener_count": 0, "alias_count": 0, "vip_count": 0,
+			"scheduled_count": 0, "snoozed_count": 0,
+		})
 		return
 	}
 
@@ -855,7 +1137,7 @@ func (s *Server) handleAPIGetLists(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if s.listsStore == nil {
-		s.jsonError(w, http.StatusServiceUnavailable, "Lists store not initialized")
+		s.jsonResponse(w, http.StatusOK, []struct{}{})
 		return
 	}
 

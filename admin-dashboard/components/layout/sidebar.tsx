@@ -19,6 +19,8 @@ import {
   Server,
   FileCode,
   HardDrive,
+  BarChart3,
+  ShieldAlert,
 } from "lucide-react";
 
 const navGroups = [
@@ -26,6 +28,7 @@ const navGroups = [
     label: "Overview",
     items: [
       { label: "Dashboard", href: "/", icon: LayoutDashboard },
+      { label: "Analytics", href: "/analytics/", icon: BarChart3 },
     ],
   },
   {
@@ -58,6 +61,12 @@ const navGroups = [
       { label: "DNS Check", href: "/tools/dns/", icon: Globe },
       { label: "Test Email", href: "/tools/test-email/", icon: Mail },
       { label: "Doctor", href: "/tools/doctor/", icon: Wrench },
+    ],
+  },
+  {
+    label: "Security",
+    items: [
+      { label: "Security", href: "/security/", icon: ShieldAlert },
     ],
   },
   {

@@ -288,6 +288,15 @@ func (s *Server) Start(listen string) error {
 	// System: DKIM Auto-Rotate
 	mux.HandleFunc("/admin/api/v1/system/dkim-autorotate", s.withAPIAuth(s.handleAPIDKIMAutoRotate))
 	mux.HandleFunc("/admin/api/v1/system/dkim-autorotate/rotate-now", s.withAPIAuth(s.handleAPIDKIMAutoRotate))
+	// Analytics
+	mux.HandleFunc("/admin/api/v1/analytics", s.withAPIAuth(s.handleAPIAnalytics))
+	// Security
+	mux.HandleFunc("/admin/api/v1/security/overview", s.withAPIAuth(s.handleAPISecurityOverview))
+	mux.HandleFunc("/admin/api/v1/security/suppression", s.withAPIAuth(s.handleAPISecuritySuppression))
+	mux.HandleFunc("/admin/api/v1/security/suppression/", s.withAPIAuth(s.handleAPISecuritySuppressionByID))
+	mux.HandleFunc("/admin/api/v1/security/greylist", s.withAPIAuth(s.handleAPISecurityGreylist))
+	mux.HandleFunc("/admin/api/v1/security/greylist/", s.withAPIAuth(s.handleAPISecurityGreylistWhitelist))
+	mux.HandleFunc("/admin/api/v1/security/failed-logins", s.withAPIAuth(s.handleAPISecurityFailedLogins))
 	// Tools
 	mux.HandleFunc("/admin/api/v1/tools/doctor", s.withAPIAuth(s.handleAPIToolsDoctor))
 	mux.HandleFunc("/admin/api/v1/tools/test-email", s.withAPIAuth(s.handleAPIToolsTestEmail))

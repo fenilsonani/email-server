@@ -1,10 +1,11 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useParams, useRouter } from "next/navigation";
+
 import Link from "next/link";
 import { AuthGuard } from "@/components/layout/auth-guard";
 import { api } from "@/lib/api";
+import { useRouteId } from "@/lib/use-route-id";
 import type { User } from "@/lib/types";
 import { PageShell } from "@/components/shared/page-shell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -23,14 +24,12 @@ import {
   DialogDescription,
   DialogFooter,
 } from "@/components/ui/dialog";
-import { ArrowLeft, Loader2, Trash2 } from "lucide-react";
+import { ArrowLeft, Loader2, Trash2, HardDrive } from "lucide-react";
 import { toast } from "sonner";
 import { formatDistanceToNow } from "date-fns";
 
 function EditUserContent() {
-  const params = useParams();
-  const router = useRouter();
-  const userId = params.id as string;
+  const userId = useRouteId("users");
 
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
@@ -41,19 +40,22 @@ function EditUserContent() {
   const [password, setPassword] = useState("");
   const [isAdmin, setIsAdmin] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [quotaBytes, setQuotaBytes] = useState<number>(1073741824);
+  const [savingQuota, setSavingQuota] = useState(false);
 
   useEffect(() => {
     api.get<User>(`/v1/users/${userId}`).then((res) => {
       if (res.success && res.data) {
         setUser(res.data);
         setIsAdmin(res.data.is_admin);
+        setQuotaBytes(res.data.quota_bytes || 1073741824);
       } else {
         toast.error("User not found");
-        router.push("/users/");
+        window.location.href = "/admin/users/";
       }
       setLoading(false);
     });
-  }, [userId, router]);
+  }, [userId]);
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -82,7 +84,7 @@ function EditUserContent() {
     const res = await api.delete(`/v1/users/${userId}`);
     if (res.success) {
       toast.success(`User ${user?.email} deleted`);
-      router.push("/users/");
+      window.location.href = "/admin/users/";
     } else {
       toast.error(res.error || "Failed to delete user");
     }
@@ -203,6 +205,79 @@ function EditUserContent() {
               </Link>
             </div>
           </form>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-[13px] font-medium flex items-center gap-1.5">
+            <HardDrive className="h-3.5 w-3.5" />
+            Storage Quota
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {(() => {
+            const used = user.used_bytes || 0;
+            const quota = user.quota_bytes || 1073741824;
+            const pct = Math.min((used / quota) * 100, 100);
+            const color = pct > 90 ? "bg-destructive" : pct > 70 ? "bg-amber-500" : "bg-primary";
+            const formatBytes = (b: number) => {
+              if (b === 0) return "0 B";
+              const k = 1024;
+              const s = ["B", "KB", "MB", "GB", "TB"];
+              const i = Math.floor(Math.log(b) / Math.log(k));
+              return parseFloat((b / Math.pow(k, i)).toFixed(1)) + " " + s[i];
+            };
+            return (
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-[12px] text-muted-foreground">
+                    {formatBytes(used)} of {formatBytes(quota)} used
+                  </span>
+                  <span className="text-[12px] text-muted-foreground tabular-nums">
+                    {pct.toFixed(1)}%
+                  </span>
+                </div>
+                <div className="h-2 w-full rounded-full bg-muted overflow-hidden">
+                  <div className={`h-full rounded-full transition-all ${color}`} style={{ width: `${pct}%` }} />
+                </div>
+              </div>
+            );
+          })()}
+
+          <div className="space-y-1.5">
+            <Label className="text-[13px]">Quota</Label>
+            <select
+              value={String(quotaBytes)}
+              onChange={(e) => setQuotaBytes(Number(e.target.value))}
+              className="h-8 w-full rounded-lg border border-border bg-background/50 px-2.5 text-[13px] text-foreground outline-none focus-visible:border-ring"
+            >
+              <option value="536870912">512 MB</option>
+              <option value="1073741824">1 GB</option>
+              <option value="2147483648">2 GB</option>
+              <option value="5368709120">5 GB</option>
+              <option value="10737418240">10 GB</option>
+            </select>
+          </div>
+
+          <Button
+            size="sm"
+            className="text-[13px]"
+            disabled={savingQuota}
+            onClick={async () => {
+              setSavingQuota(true);
+              const res = await api.put(`/v1/users/${userId}/quota`, { quota_bytes: quotaBytes });
+              if (res.success) {
+                toast.success("Quota updated");
+              } else {
+                toast.error(res.error || "Failed to update quota");
+              }
+              setSavingQuota(false);
+            }}
+          >
+            {savingQuota && <Loader2 className="h-4 w-4 animate-spin" />}
+            Save Quota
+          </Button>
         </CardContent>
       </Card>
 

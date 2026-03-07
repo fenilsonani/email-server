@@ -19,6 +19,14 @@ import { toast } from "sonner";
 import { formatDistanceToNow } from "date-fns";
 import type { ColumnDef } from "@tanstack/react-table";
 
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return "0 B";
+  const k = 1024;
+  const sizes = ["B", "KB", "MB", "GB", "TB"];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + " " + sizes[i];
+}
+
 interface DomainOption { id: number; name: string }
 
 const columns: ColumnDef<User>[] = [
@@ -42,6 +50,28 @@ const columns: ColumnDef<User>[] = [
       ) : (
         <Badge variant="secondary" className="text-[10px]">User</Badge>
       ),
+  },
+  {
+    accessorKey: "quota_bytes",
+    header: "Quota",
+    cell: ({ row }) => {
+      const used = row.original.used_bytes || 0;
+      const quota = row.original.quota_bytes || 1073741824;
+      const pct = Math.min((used / quota) * 100, 100);
+      const color = pct > 90 ? "bg-destructive" : pct > 70 ? "bg-amber-500" : "bg-primary";
+      return (
+        <div className="w-28">
+          <div className="flex items-center justify-between mb-0.5">
+            <span className="text-[11px] text-muted-foreground tabular-nums">
+              {formatBytes(used)} / {formatBytes(quota)}
+            </span>
+          </div>
+          <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
+            <div className={`h-full rounded-full transition-all ${color}`} style={{ width: `${pct}%` }} />
+          </div>
+        </div>
+      );
+    },
   },
   {
     accessorKey: "created_at",
