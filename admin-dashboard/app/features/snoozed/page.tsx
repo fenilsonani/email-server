@@ -13,9 +13,10 @@ import type { ColumnDef } from "@tanstack/react-table";
 
 interface SnoozedEmail {
   id: number;
-  subject: string;
-  from: string;
-  snoozed_until: string;
+  message_id: number;
+  original_mailbox_id: number;
+  wake_at: string;
+  mark_unread: boolean;
   created_at: string;
 }
 
@@ -34,31 +35,31 @@ function PageContent() {
 
   const columns: ColumnDef<SnoozedEmail>[] = [
     {
-      accessorKey: "subject",
-      header: "Subject",
+      accessorKey: "message_id",
+      header: "Message ID",
       cell: ({ row }) => (
-        <span className="text-[13px] max-w-[240px] truncate block">{row.original.subject}</span>
+        <span className="font-mono text-[12px]">#{row.original.message_id}</span>
       ),
     },
     {
-      accessorKey: "from",
-      header: "From",
-      cell: ({ row }) => (
-        <span className="font-mono text-[12px] text-muted-foreground">{row.original.from}</span>
-      ),
-    },
-    {
-      accessorKey: "snoozed_until",
-      header: "Snoozed Until",
+      accessorKey: "wake_at",
+      header: "Wake At",
       cell: ({ row }) => (
         <span className="text-muted-foreground tabular-nums">
-          {formatDistanceToNow(new Date(row.original.snoozed_until), { addSuffix: true })}
+          {formatDistanceToNow(new Date(row.original.wake_at), { addSuffix: true })}
         </span>
       ),
     },
     {
+      accessorKey: "mark_unread",
+      header: "Mark Unread",
+      cell: ({ row }) => (
+        <span className="text-[12px] text-muted-foreground">{row.original.mark_unread ? "Yes" : "No"}</span>
+      ),
+    },
+    {
       accessorKey: "created_at",
-      header: "Created",
+      header: "Snoozed",
       cell: ({ row }) => (
         <span className="text-muted-foreground tabular-nums">
           {formatDistanceToNow(new Date(row.original.created_at), { addSuffix: true })}
@@ -93,8 +94,8 @@ function PageContent() {
         columns={columns}
         data={emails}
         loading={loading}
-        searchKey="subject"
-        searchPlaceholder="Filter by subject..."
+        searchKey="message_id"
+        searchPlaceholder="Filter by message ID..."
         emptyMessage="No snoozed emails."
       />
     </PageShell>

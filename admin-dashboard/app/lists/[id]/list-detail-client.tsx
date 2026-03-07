@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useRouteId } from "@/lib/use-route-id";
 import Link from "next/link";
 import { AuthGuard } from "@/components/layout/auth-guard";
 import { api } from "@/lib/api";
@@ -28,9 +28,7 @@ import { toast } from "sonner";
 import { formatDistanceToNow } from "date-fns";
 
 function ListDetailContent() {
-  const params = useParams();
-  const router = useRouter();
-  const listId = params.id as string;
+  const listId = useRouteId("lists");
 
   const [list, setList] = useState<MailingList | null>(null);
   const [loading, setLoading] = useState(true);
@@ -51,11 +49,11 @@ function ListDetailContent() {
         setIsActive(res.data.is_active);
       } else {
         toast.error("Mailing list not found");
-        router.push("/lists/");
+        window.location.href = "/admin/lists/";
       }
       setLoading(false);
     });
-  }, [listId, router]);
+  }, [listId]);
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -83,7 +81,7 @@ function ListDetailContent() {
     const res = await api.delete(`/v1/lists/${listId}`);
     if (res.success) {
       toast.success(`Mailing list "${list?.name}" deleted`);
-      router.push("/lists/");
+      window.location.href = "/admin/lists/";
     } else {
       toast.error(res.error || "Failed to delete mailing list");
     }

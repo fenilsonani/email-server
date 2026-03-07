@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useParams } from "next/navigation";
+import { useRouteId } from "@/lib/use-route-id";
 import Link from "next/link";
 import { AuthGuard } from "@/components/layout/auth-guard";
 import { PageShell } from "@/components/shared/page-shell";
@@ -43,8 +43,7 @@ const roleBadgeVariant = (role: string) => {
 };
 
 function MembersContent() {
-  const params = useParams();
-  const listId = params.id as string;
+  const listId = useRouteId("lists");
 
   const [members, setMembers] = useState<ListMember[]>([]);
   const [loading, setLoading] = useState(true);

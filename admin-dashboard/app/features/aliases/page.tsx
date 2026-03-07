@@ -19,10 +19,13 @@ import type { ColumnDef } from "@tanstack/react-table";
 
 interface Alias {
   id: number;
-  alias: string;
-  forwards_to: string;
+  alias_address: string;
+  alias_local: string;
+  description: string;
   is_active: boolean;
   created_at: string;
+  last_used_at: string;
+  email_count: number;
 }
 
 function PageContent() {
@@ -30,7 +33,7 @@ function PageContent() {
   const [loading, setLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
   const [alias, setAlias] = useState("");
-  const [forwardsTo, setForwardsTo] = useState("");
+  const [description, setDescription] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Alias | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -45,13 +48,13 @@ function PageContent() {
   useEffect(() => { fetchAliases(); }, [fetchAliases]);
 
   const handleAdd = async () => {
-    if (!alias.trim() || !forwardsTo.trim()) return;
+    if (!alias.trim()) return;
     setSubmitting(true);
-    const res = await api.post("/v1/features/aliases", { alias: alias.trim(), forwards_to: forwardsTo.trim() });
+    const res = await api.post("/v1/features/aliases", { alias: alias.trim(), forwards_to: description.trim() });
     if (res.success) {
       toast.success("Alias created");
       setAlias("");
-      setForwardsTo("");
+      setDescription("");
       setShowAdd(false);
       fetchAliases();
     } else {
@@ -76,17 +79,17 @@ function PageContent() {
 
   const columns: ColumnDef<Alias>[] = [
     {
-      accessorKey: "alias",
+      accessorKey: "alias_address",
       header: "Alias",
       cell: ({ row }) => (
-        <span className="font-mono text-[12px]">{row.original.alias}</span>
+        <span className="font-mono text-[12px]">{row.original.alias_address}</span>
       ),
     },
     {
-      accessorKey: "forwards_to",
-      header: "Forwards To",
+      accessorKey: "description",
+      header: "Description",
       cell: ({ row }) => (
-        <span className="font-mono text-[12px] text-muted-foreground">{row.original.forwards_to}</span>
+        <span className="font-mono text-[12px] text-muted-foreground">{row.original.description || "—"}</span>
       ),
     },
     {
@@ -99,6 +102,15 @@ function PageContent() {
         >
           {row.original.is_active ? "Active" : "Inactive"}
         </Badge>
+      ),
+    },
+    {
+      accessorKey: "email_count",
+      header: "Emails",
+      cell: ({ row }) => (
+        <span className="text-muted-foreground tabular-nums text-[12px]">
+          {row.original.email_count}
+        </span>
       ),
     },
     {
@@ -153,7 +165,7 @@ function PageContent() {
         columns={columns}
         data={aliases}
         loading={loading}
-        searchKey="alias"
+        searchKey="alias_address"
         searchPlaceholder="Filter by alias..."
         emptyMessage="No aliases configured."
       />
@@ -177,18 +189,18 @@ function PageContent() {
               />
             </div>
             <div className="space-y-1.5">
-              <label className="text-[12px] font-medium">Forwards To</label>
+              <label className="text-[12px] font-medium">Description</label>
               <Input
-                value={forwardsTo}
-                onChange={(e) => setForwardsTo(e.target.value)}
-                placeholder="user@example.com"
-                className="h-8 text-[12px] font-mono"
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder="e.g. Shopping, Newsletters"
+                className="h-8 text-[12px]"
               />
             </div>
           </div>
           <DialogFooter>
             <Button variant="outline" size="sm" className="text-[12px]" onClick={() => setShowAdd(false)}>Cancel</Button>
-            <Button size="sm" className="text-[12px]" onClick={handleAdd} disabled={submitting || !alias.trim() || !forwardsTo.trim()}>
+            <Button size="sm" className="text-[12px]" onClick={handleAdd} disabled={submitting || !alias.trim()}>
               {submitting ? "Creating..." : "Create Alias"}
             </Button>
           </DialogFooter>
@@ -200,7 +212,7 @@ function PageContent() {
           <DialogHeader>
             <DialogTitle className="text-[15px]">Delete Alias</DialogTitle>
             <DialogDescription className="text-[13px]">
-              Are you sure you want to delete <strong className="font-mono">{deleteTarget?.alias}</strong>?
+              Are you sure you want to delete <strong className="font-mono">{deleteTarget?.alias_address}</strong>?
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>

@@ -144,6 +144,7 @@ function PageContent() {
           <CardContent className="space-y-4">
             {status && (
               <div className="rounded-md bg-muted/30 p-3 space-y-2">
+                {status.last_backup && (
                 <div className="flex items-center gap-1.5">
                   <Clock className="h-3 w-3 text-muted-foreground/40" />
                   <span className="text-[11px] text-muted-foreground/60">Last backup:</span>
@@ -151,6 +152,7 @@ function PageContent() {
                     {formatDistanceToNow(new Date(status.last_backup), { addSuffix: true })}
                   </span>
                 </div>
+                )}
                 <div className="flex items-center gap-1.5">
                   <HardDrive className="h-3 w-3 text-muted-foreground/40" />
                   <span className="text-[11px] text-muted-foreground/60">Size:</span>

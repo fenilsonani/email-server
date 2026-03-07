@@ -14,13 +14,11 @@ import Link from "next/link";
 
 interface TwoFAStatus {
   enabled: boolean;
-  recovery_codes_remaining?: number;
 }
 
 interface TwoFASetup {
   secret: string;
   qr_url: string;
-  recovery_codes: string[];
 }
 
 function PageContent() {
@@ -164,15 +162,11 @@ function PageContent() {
         <div className="space-y-3">
           <div className="rounded-lg border border-border bg-card p-4">
             <div className="flex items-center gap-2 mb-2">
-              <Key className="h-3.5 w-3.5 text-muted-foreground/40" strokeWidth={1.5} />
-              <span className="text-[13px] font-medium">Recovery Codes</span>
+              <ShieldCheck className="h-3.5 w-3.5 text-green-500/60" strokeWidth={1.5} />
+              <span className="text-[13px] font-medium">Your account is protected</span>
             </div>
             <p className="text-[12px] text-muted-foreground">
-              You have{" "}
-              <span className="font-medium text-foreground">
-                {status.recovery_codes_remaining ?? 0}
-              </span>{" "}
-              recovery codes remaining.
+              You will be asked for a verification code from your authenticator app when signing in.
             </p>
           </div>
 
@@ -201,7 +195,7 @@ function PageContent() {
                     className="h-8 text-[13px] bg-background/50 border-border mt-1.5 max-w-[240px]"
                     placeholder="000000"
                     value={disableCode}
-                    onChange={(e) => setDisableCode(e.target.value)}
+                    onChange={(e) => setDisableCode(e.target.value.replace(/\D/g, ""))}
                     maxLength={6}
                   />
                 </div>
@@ -298,32 +292,30 @@ function PageContent() {
                 className="h-8 text-[13px] bg-background/50 border-border mt-1.5 max-w-[240px]"
                 placeholder="000000"
                 value={verifyCode}
-                onChange={(e) => setVerifyCode(e.target.value)}
+                onChange={(e) => setVerifyCode(e.target.value.replace(/\D/g, ""))}
                 maxLength={6}
               />
             </div>
-            <Button
-              size="sm"
-              className="h-8 text-[12px] gap-1.5"
-              onClick={handleVerify}
-              disabled={verifying}
-            >
-              {verifying ? "Verifying..." : "Verify and Enable"}
-            </Button>
-          </div>
-
-          <div className="rounded-lg border border-border bg-card p-4 space-y-3">
             <div className="flex items-center gap-2">
-              <Key className="h-3.5 w-3.5 text-muted-foreground/40" strokeWidth={1.5} />
-              <span className="text-[13px] font-medium">Recovery Codes</span>
-            </div>
-            <p className="text-[12px] text-muted-foreground">
-              Save these recovery codes in a secure location. You can use them to access your account if you lose your authenticator device.
-            </p>
-            <div className="rounded-md bg-muted/50 border border-border p-3 grid grid-cols-2 gap-1.5">
-              {setupData.recovery_codes.map((code) => (
-                <span key={code} className="text-[12px] font-mono text-center">{code}</span>
-              ))}
+              <Button
+                size="sm"
+                className="h-8 text-[12px] gap-1.5"
+                onClick={handleVerify}
+                disabled={verifying}
+              >
+                {verifying ? "Verifying..." : "Verify and Enable"}
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-8 text-[12px]"
+                onClick={() => {
+                  setSetupData(null);
+                  setVerifyCode("");
+                }}
+              >
+                Cancel
+              </Button>
             </div>
           </div>
         </div>

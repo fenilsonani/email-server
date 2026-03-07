@@ -1,16 +1,26 @@
 package admin
 
 import (
+	"archive/tar"
+	"compress/gzip"
 	"context"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
+	"fmt"
+	"io"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/fenilsonani/email-server/internal/audit"
 	"github.com/fenilsonani/email-server/internal/features"
 	"github.com/fenilsonani/email-server/internal/lists"
+	"github.com/fenilsonani/email-server/internal/queue"
 	"github.com/fenilsonani/email-server/internal/sieve"
 )
 
@@ -1150,6 +1160,14 @@ func (s *Server) handleAPIQueueDelete(w http.ResponseWriter, r *http.Request, ms
 
 func (s *Server) handleAPISieve(w http.ResponseWriter, r *http.Request) {
 	if s.sieveStore == nil {
+		// Return empty script if sieve not configured
+		if r.Method == http.MethodGet {
+			s.jsonResponse(w, http.StatusOK, map[string]interface{}{
+				"script":     "",
+				"updated_at": "",
+			})
+			return
+		}
 		s.jsonError(w, http.StatusServiceUnavailable, "Sieve not configured")
 		return
 	}
@@ -1162,35 +1180,47 @@ func (s *Server) handleAPISieve(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case http.MethodGet:
+		// Frontend expects {script: string, updated_at: string}
 		scripts, err := s.sieveStore.ListScripts(r.Context(), userID)
-		if err != nil {
-			s.jsonError(w, http.StatusInternalServerError, "Failed to list scripts")
+		if err != nil || len(scripts) == 0 {
+			s.jsonResponse(w, http.StatusOK, map[string]interface{}{
+				"script":     "",
+				"updated_at": "",
+			})
 			return
 		}
-		if scripts == nil {
-			scripts = []*sieve.Script{}
+		// Return the first (active) script
+		activeScript := scripts[0]
+		for _, sc := range scripts {
+			if sc.IsActive {
+				activeScript = sc
+				break
+			}
 		}
-		s.jsonResponse(w, http.StatusOK, scripts)
+		updatedAt := activeScript.UpdatedAt
+		if updatedAt.IsZero() {
+			updatedAt = activeScript.CreatedAt
+		}
+		s.jsonResponse(w, http.StatusOK, map[string]interface{}{
+			"script":     activeScript.Content,
+			"updated_at": updatedAt.Format(time.RFC3339),
+		})
 
 	case http.MethodPut:
+		// Frontend sends {script: string}
 		var req struct {
-			Name    string `json:"name"`
-			Content string `json:"content"`
+			Script string `json:"script"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			s.jsonError(w, http.StatusBadRequest, "Invalid request body")
 			return
 		}
-		if req.Name == "" || req.Content == "" {
-			s.jsonError(w, http.StatusBadRequest, "Name and content are required")
-			return
-		}
 
+		name := "default"
 		// Try to update first, create if it doesn't exist
-		err := s.sieveStore.UpdateScript(r.Context(), userID, req.Name, req.Content)
+		err := s.sieveStore.UpdateScript(r.Context(), userID, name, req.Script)
 		if err != nil {
-			// Try create
-			_, err = s.sieveStore.CreateScript(r.Context(), userID, req.Name, req.Content)
+			_, err = s.sieveStore.CreateScript(r.Context(), userID, name, req.Script)
 			if err != nil {
 				s.jsonError(w, http.StatusInternalServerError, "Failed to save script")
 				return
@@ -1199,7 +1229,6 @@ func (s *Server) handleAPISieve(w http.ResponseWriter, r *http.Request) {
 
 		s.jsonResponse(w, http.StatusOK, map[string]interface{}{
 			"saved": true,
-			"name":  req.Name,
 		})
 
 	default:
@@ -1214,6 +1243,7 @@ func (s *Server) handleAPISieveValidate(w http.ResponseWriter, r *http.Request) 
 	}
 
 	var req struct {
+		Script  string `json:"script"`
 		Content string `json:"content"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -1221,16 +1251,20 @@ func (s *Server) handleAPISieveValidate(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	if req.Content == "" {
-		s.jsonError(w, http.StatusBadRequest, "Content is required")
+	scriptContent := req.Script
+	if scriptContent == "" {
+		scriptContent = req.Content
+	}
+	if scriptContent == "" {
+		s.jsonError(w, http.StatusBadRequest, "Script content is required")
 		return
 	}
 
-	err := sieve.ValidateScript(req.Content)
+	err := sieve.ValidateScript(scriptContent)
 	if err != nil {
 		s.jsonResponse(w, http.StatusOK, map[string]interface{}{
-			"valid": false,
-			"error": err.Error(),
+			"valid":  false,
+			"errors": []string{err.Error()},
 		})
 		return
 	}
@@ -1250,11 +1284,28 @@ func (s *Server) handleAPIBackupStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Return basic backup info
+	// Check database file for last modified time and size
+	dbPath := s.config.Storage.DatabasePath
+	var lastBackup string
+	var sizeStr string
+
+	if info, err := os.Stat(dbPath); err == nil {
+		lastBackup = info.ModTime().Format(time.RFC3339)
+		sizeMB := float64(info.Size()) / (1024 * 1024)
+		if sizeMB >= 1 {
+			sizeStr = strings.TrimRight(strings.TrimRight(
+				strconv.FormatFloat(sizeMB, 'f', 1, 64), "0"), ".") + " MB"
+		} else {
+			sizeKB := float64(info.Size()) / 1024
+			sizeStr = strings.TrimRight(strings.TrimRight(
+				strconv.FormatFloat(sizeKB, 'f', 1, 64), "0"), ".") + " KB"
+		}
+	}
+
 	s.jsonResponse(w, http.StatusOK, map[string]interface{}{
-		"backup_available": true,
-		"data_dir":         s.config.Storage.DataDir,
-		"database_path":    s.config.Storage.DatabasePath,
+		"last_backup": lastBackup,
+		"size":        sizeStr,
+		"location":    dbPath,
 	})
 }
 
@@ -1264,11 +1315,55 @@ func (s *Server) handleAPIBackupTrigger(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Trigger backup - for API, we return success and info
-	// Actual file download should use the existing /admin/system/backup endpoint
+	// Create backup to the backups directory
+	dataDir := s.config.Storage.DataDir
+	backupDir := filepath.Join(dataDir, "backups")
+	os.MkdirAll(backupDir, 0755)
+
+	filename := fmt.Sprintf("mailserver-backup-%s.tar.gz", time.Now().Format("2006-01-02-150405"))
+	backupPath := filepath.Join(backupDir, filename)
+
+	outFile, err := os.Create(backupPath)
+	if err != nil {
+		s.jsonError(w, http.StatusInternalServerError, "Failed to create backup file: "+err.Error())
+		return
+	}
+	defer outFile.Close()
+
+	gzWriter := gzip.NewWriter(outFile)
+	tarWriter := tar.NewWriter(gzWriter)
+
+	// Backup database
+	dbPath := s.config.Storage.DatabasePath
+	if err := addFileToTar(tarWriter, dbPath, "metadata.db"); err != nil {
+		s.logger.Error("Failed to backup database", "error", err.Error())
+	}
+
+	// Backup DKIM keys
+	dkimPath := filepath.Join(dataDir, "dkim")
+	if err := addDirToTar(tarWriter, dkimPath, "dkim"); err != nil {
+		s.logger.Debug("Failed to backup DKIM keys", "error", err.Error())
+	}
+
+	tarWriter.Close()
+	gzWriter.Close()
+
+	// Get size
+	stat, _ := os.Stat(backupPath)
+	size := "0 B"
+	if stat != nil {
+		size = formatBytes(stat.Size())
+	}
+
+	if s.auditLogger != nil {
+		s.auditLogger.Log(r.Context(), getSessionUsername(r), audit.EventConfigChange, "system", map[string]interface{}{"action": "backup_create", "file": filename}, getIP(r))
+	}
+
 	s.jsonResponse(w, http.StatusOK, map[string]interface{}{
-		"message":      "Use POST /admin/system/backup to download the backup file directly",
-		"download_url": "/admin/system/backup",
+		"created":  true,
+		"filename": filename,
+		"size":     size,
+		"path":     backupPath,
 	})
 }
 
@@ -1278,8 +1373,45 @@ func (s *Server) handleAPIBackupHistory(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Backup history is not persisted in this implementation
-	s.jsonResponse(w, http.StatusOK, []interface{}{})
+	type BackupItem struct {
+		ID        string `json:"id"`
+		CreatedAt string `json:"created_at"`
+		Size      string `json:"size"`
+		Type      string `json:"type"`
+	}
+
+	history := []BackupItem{}
+
+	backupDir := filepath.Join(s.config.Storage.DataDir, "backups")
+	entries, err := os.ReadDir(backupDir)
+	if err != nil {
+		// No backups directory yet — return empty
+		s.jsonResponse(w, http.StatusOK, history)
+		return
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".tar.gz") {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		history = append(history, BackupItem{
+			ID:        entry.Name(),
+			CreatedAt: info.ModTime().UTC().Format(time.RFC3339),
+			Size:      formatBytes(info.Size()),
+			Type:      "manual",
+		})
+	}
+
+	// Reverse so newest first
+	for i, j := 0, len(history)-1; i < j; i, j = i+1, j-1 {
+		history[i], history[j] = history[j], history[i]
+	}
+
+	s.jsonResponse(w, http.StatusOK, history)
 }
 
 func (s *Server) handleAPIRestore(w http.ResponseWriter, r *http.Request) {
@@ -1288,10 +1420,91 @@ func (s *Server) handleAPIRestore(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Restore requires multipart file upload - delegate to existing handler
+	// Parse multipart form (max 500MB)
+	if err := r.ParseMultipartForm(500 << 20); err != nil {
+		s.jsonError(w, http.StatusBadRequest, "Failed to parse form: "+err.Error())
+		return
+	}
+
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		s.jsonError(w, http.StatusBadRequest, "No backup file provided")
+		return
+	}
+	defer file.Close()
+
+	if !strings.HasSuffix(header.Filename, ".tar.gz") && !strings.HasSuffix(header.Filename, ".zip") {
+		s.jsonError(w, http.StatusBadRequest, "Invalid backup file format. Expected .tar.gz or .zip")
+		return
+	}
+
+	// Save to temp file
+	tempFile, err := os.CreateTemp("", "mailserver-restore-*"+filepath.Ext(header.Filename))
+	if err != nil {
+		s.jsonError(w, http.StatusInternalServerError, "Failed to process backup")
+		return
+	}
+	defer os.Remove(tempFile.Name())
+	defer tempFile.Close()
+
+	if _, err := io.Copy(tempFile, file); err != nil {
+		s.jsonError(w, http.StatusInternalServerError, "Failed to save backup file")
+		return
+	}
+	tempFile.Seek(0, 0)
+
+	// Extract tar.gz
+	gzReader, err := gzip.NewReader(tempFile)
+	if err != nil {
+		s.jsonError(w, http.StatusBadRequest, "Invalid gzip file")
+		return
+	}
+	defer gzReader.Close()
+
+	tarReader := tar.NewReader(gzReader)
+	dataDir := s.config.Storage.DataDir
+	restored := 0
+
+	for {
+		hdr, err := tarReader.Next()
+		if err != nil {
+			break
+		}
+
+		// Sanitize path to prevent directory traversal
+		cleanName := filepath.Clean(hdr.Name)
+		if strings.Contains(cleanName, "..") {
+			continue
+		}
+
+		targetPath := filepath.Join(dataDir, cleanName)
+
+		if hdr.Typeflag == tar.TypeDir {
+			os.MkdirAll(targetPath, 0755)
+			continue
+		}
+
+		// Ensure parent dir exists
+		os.MkdirAll(filepath.Dir(targetPath), 0755)
+
+		outFile, err := os.Create(targetPath)
+		if err != nil {
+			s.logger.Error("Failed to restore file", "path", targetPath, "error", err.Error())
+			continue
+		}
+		io.Copy(outFile, tarReader)
+		outFile.Close()
+		restored++
+	}
+
+	if s.auditLogger != nil {
+		s.auditLogger.Log(r.Context(), getSessionUsername(r), audit.EventConfigChange, "system", map[string]interface{}{"action": "backup_restore", "file": header.Filename, "files_restored": restored}, getIP(r))
+	}
+
 	s.jsonResponse(w, http.StatusOK, map[string]interface{}{
-		"message":    "Use POST /admin/system/restore with multipart form data containing the backup file",
-		"upload_url": "/admin/system/restore",
+		"restored":       true,
+		"files_restored": restored,
+		"message":        "Backup restored. Server restart may be required for changes to take effect.",
 	})
 }
 
@@ -1305,12 +1518,78 @@ func (s *Server) handleAPICertificates(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Return TLS configuration info
-	s.jsonResponse(w, http.StatusOK, map[string]interface{}{
-		"auto_tls":  s.config.TLS.AutoTLS,
-		"cert_file": s.config.TLS.CertFile,
-		"key_file":  s.config.TLS.KeyFile,
-	})
+	type CertInfo struct {
+		Domain    string `json:"domain"`
+		Issuer    string `json:"issuer"`
+		ExpiresAt string `json:"expires_at"`
+		IsValid   bool   `json:"is_valid"`
+		AutoRenew bool   `json:"auto_renew"`
+	}
+
+	certs := []CertInfo{}
+
+	// Try to read the actual TLS certificate
+	certFile := s.config.TLS.CertFile
+	if certFile != "" {
+		certPEM, err := os.ReadFile(certFile)
+		if err != nil {
+			s.logger.Debug("Failed to read cert file", "path", certFile, "error", err.Error())
+		} else {
+			// Parse all certificates in the PEM chain, use the leaf (first one)
+			var leafCert *x509.Certificate
+			rest := certPEM
+			for {
+				var block *pem.Block
+				block, rest = pem.Decode(rest)
+				if block == nil {
+					break
+				}
+				if block.Type != "CERTIFICATE" {
+					continue
+				}
+				cert, err := x509.ParseCertificate(block.Bytes)
+				if err != nil {
+					s.logger.Debug("Failed to parse certificate", "error", err.Error())
+					continue
+				}
+				// Use the first cert (leaf) that is not a CA
+				if leafCert == nil && !cert.IsCA {
+					leafCert = cert
+				}
+				// If all are CAs, just use the first one
+				if leafCert == nil {
+					leafCert = cert
+				}
+			}
+
+			if leafCert != nil {
+				issuer := leafCert.Issuer.CommonName
+				if issuer == "" && len(leafCert.Issuer.Organization) > 0 {
+					issuer = leafCert.Issuer.Organization[0]
+				}
+				isValid := time.Now().Before(leafCert.NotAfter) && time.Now().After(leafCert.NotBefore)
+
+				names := leafCert.DNSNames
+				if len(names) == 0 && leafCert.Subject.CommonName != "" {
+					names = []string{leafCert.Subject.CommonName}
+				}
+
+				for _, name := range names {
+					certs = append(certs, CertInfo{
+						Domain:    name,
+						Issuer:    issuer,
+						ExpiresAt: leafCert.NotAfter.Format(time.RFC3339),
+						IsValid:   isValid,
+						AutoRenew: s.config.TLS.AutoTLS,
+					})
+				}
+			} else {
+				s.logger.Debug("No certificate found in PEM file", "path", certFile)
+			}
+		}
+	}
+
+	s.jsonResponse(w, http.StatusOK, certs)
 }
 
 func (s *Server) handleAPICertificatesRenew(w http.ResponseWriter, r *http.Request) {
@@ -1341,17 +1620,14 @@ func (s *Server) handleAPI2FAStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var totpSecret string
-	err := s.db.QueryRowContext(r.Context(),
-		"SELECT COALESCE(totp_secret, '') FROM users WHERE id = ?", userID,
-	).Scan(&totpSecret)
+	status, err := s.getTwoFactorStatus(userID)
 	if err != nil {
 		s.jsonError(w, http.StatusInternalServerError, "Failed to check 2FA status")
 		return
 	}
 
 	s.jsonResponse(w, http.StatusOK, map[string]interface{}{
-		"enabled": totpSecret != "",
+		"enabled": status.Enabled,
 	})
 }
 
@@ -1361,16 +1637,70 @@ func (s *Server) handleAPI2FASetup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 2FA setup requires interactive flow - direct to existing handler
+	userID, ok := s.getSessionUserID(r)
+	if !ok {
+		s.jsonError(w, http.StatusUnauthorized, "Authentication required")
+		return
+	}
+
+	// Get username
+	var username string
+	err := s.db.QueryRowContext(r.Context(), "SELECT username FROM users WHERE id = ?", userID).Scan(&username)
+	if err != nil {
+		s.jsonError(w, http.StatusInternalServerError, "Failed to get user info")
+		return
+	}
+
+	// Check if already enabled
+	status, err := s.getTwoFactorStatus(userID)
+	if err != nil {
+		s.jsonError(w, http.StatusInternalServerError, "Failed to check 2FA status")
+		return
+	}
+	if status.Enabled {
+		s.jsonError(w, http.StatusBadRequest, "2FA is already enabled")
+		return
+	}
+
+	// Generate new TOTP secret
+	key, err := s.generateTOTPSecret(username)
+	if err != nil {
+		s.jsonError(w, http.StatusInternalServerError, "Failed to generate 2FA secret")
+		return
+	}
+
+	// Generate QR code as base64 PNG
+	qrBase64, err := generateQRCodeBase64(key)
+	if err != nil {
+		s.jsonError(w, http.StatusInternalServerError, "Failed to generate QR code")
+		return
+	}
+
+	// Store secret temporarily (not enabled yet)
+	_, err = s.db.ExecContext(r.Context(),
+		"UPDATE users SET totp_secret = ? WHERE id = ?",
+		key.Secret(), userID,
+	)
+	if err != nil {
+		s.jsonError(w, http.StatusInternalServerError, "Failed to save 2FA secret")
+		return
+	}
+
 	s.jsonResponse(w, http.StatusOK, map[string]interface{}{
-		"message":   "Use the admin UI at /admin/2fa/setup for interactive 2FA setup",
-		"setup_url": "/admin/2fa/setup",
+		"secret": key.Secret(),
+		"qr_url": "data:image/png;base64," + qrBase64,
 	})
 }
 
 func (s *Server) handleAPI2FAVerifyCode(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		s.jsonError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+
+	userID, ok := s.getSessionUserID(r)
+	if !ok {
+		s.jsonError(w, http.StatusUnauthorized, "Authentication required")
 		return
 	}
 
@@ -1387,9 +1717,52 @@ func (s *Server) handleAPI2FAVerifyCode(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Verification is handled by the existing 2FA flow
+	// Get the stored secret
+	var secret string
+	err := s.db.QueryRowContext(r.Context(),
+		"SELECT COALESCE(totp_secret, '') FROM users WHERE id = ?", userID,
+	).Scan(&secret)
+	if err != nil || secret == "" {
+		s.jsonError(w, http.StatusBadRequest, "No 2FA setup in progress. Start setup first.")
+		return
+	}
+
+	// Validate the code
+	if !s.validateTOTPCode(secret, req.Code) {
+		s.jsonError(w, http.StatusBadRequest, "Invalid verification code")
+		return
+	}
+
+	// Enable 2FA
+	_, err = s.db.ExecContext(r.Context(),
+		"UPDATE users SET totp_enabled = 1 WHERE id = ?", userID,
+	)
+	if err != nil {
+		s.jsonError(w, http.StatusInternalServerError, "Failed to enable 2FA")
+		return
+	}
+
+	// Trust current device
+	token, err := s.createTrustedDevice(userID, r)
+	if err == nil {
+		http.SetCookie(w, &http.Cookie{
+			Name:     trustedDeviceCookie,
+			Value:    token,
+			Path:     "/admin",
+			HttpOnly: true,
+			Secure:   isSecureContext(r),
+			SameSite: http.SameSiteStrictMode,
+			MaxAge:   trustedDeviceDays * 24 * 60 * 60,
+		})
+	}
+
+	// Get username for audit log
+	var username string
+	_ = s.db.QueryRowContext(r.Context(), "SELECT username FROM users WHERE id = ?", userID).Scan(&username)
+	s.auditLogger.Log(r.Context(), username, audit.EventConfigChange, "2FA enabled", nil, getIP(r))
+
 	s.jsonResponse(w, http.StatusOK, map[string]interface{}{
-		"message": "Use the existing 2FA verification flow at /admin/2fa/verify",
+		"enabled": true,
 	})
 }
 
@@ -1405,13 +1778,47 @@ func (s *Server) handleAPI2FADisable(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, err := s.db.ExecContext(r.Context(),
-		"UPDATE users SET totp_secret = NULL WHERE id = ?", userID,
+	var req struct {
+		Code string `json:"code"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.jsonError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	if req.Code == "" {
+		s.jsonError(w, http.StatusBadRequest, "Code is required")
+		return
+	}
+
+	// Get current 2FA status and verify code
+	status, err := s.getTwoFactorStatus(userID)
+	if err != nil || !status.Enabled {
+		s.jsonError(w, http.StatusBadRequest, "2FA is not enabled")
+		return
+	}
+
+	if !s.validateTOTPCode(status.Secret, req.Code) {
+		s.jsonError(w, http.StatusBadRequest, "Invalid verification code")
+		return
+	}
+
+	// Disable 2FA
+	_, err = s.db.ExecContext(r.Context(),
+		"UPDATE users SET totp_enabled = 0, totp_secret = NULL WHERE id = ?", userID,
 	)
 	if err != nil {
 		s.jsonError(w, http.StatusInternalServerError, "Failed to disable 2FA")
 		return
 	}
+
+	// Remove all trusted devices
+	s.db.ExecContext(r.Context(), "DELETE FROM totp_trusted_devices WHERE user_id = ?", userID)
+
+	// Get username for audit log
+	var username string
+	_ = s.db.QueryRowContext(r.Context(), "SELECT username FROM users WHERE id = ?", userID).Scan(&username)
+	s.auditLogger.Log(r.Context(), username, audit.EventConfigChange, "2FA disabled", nil, getIP(r))
 
 	s.jsonResponse(w, http.StatusOK, map[string]interface{}{
 		"disabled": true,
@@ -1428,10 +1835,11 @@ func (s *Server) handleAPICheckUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	currentVersion := "1.0.0"
 	s.jsonResponse(w, http.StatusOK, map[string]interface{}{
-		"current_version": "1.0.0",
+		"current_version":  currentVersion,
+		"latest_version":   currentVersion,
 		"update_available": false,
-		"message":          "System is up to date",
 	})
 }
 
@@ -1456,44 +1864,42 @@ func (s *Server) handleAPIDKIMAutoRotate(w http.ResponseWriter, r *http.Request)
 
 	switch r.Method {
 	case http.MethodGet:
-		// Return DKIM auto-rotation settings
-		rows, err := s.db.QueryContext(r.Context(), `
-			SELECT id, name, COALESCE(dkim_selector, ''), COALESCE(dkim_key_created_at, created_at)
-			FROM domains WHERE is_active = TRUE AND dkim_private_key IS NOT NULL
-		`)
-		if err != nil {
-			s.jsonError(w, http.StatusInternalServerError, "Failed to query DKIM settings")
-			return
-		}
-		defer rows.Close()
+		// Frontend expects: {enabled, interval_days, last_rotation, next_rotation}
+		// Check if any domains have DKIM keys (enabled = at least one key exists)
+		var keyCount int
+		s.db.QueryRowContext(r.Context(),
+			"SELECT COUNT(*) FROM domains WHERE is_active = TRUE AND dkim_private_key IS NOT NULL",
+		).Scan(&keyCount)
 
-		type dkimInfo struct {
-			DomainID    int64     `json:"domain_id"`
-			DomainName  string    `json:"domain_name"`
-			Selector    string    `json:"selector"`
-			KeyCreated  time.Time `json:"key_created_at"`
+		// Get most recent key creation date as "last_rotation"
+		var lastRotation string
+		var lastTime time.Time
+		err := s.db.QueryRowContext(r.Context(),
+			"SELECT COALESCE(dkim_key_created_at, created_at) FROM domains WHERE is_active = TRUE AND dkim_private_key IS NOT NULL ORDER BY COALESCE(dkim_key_created_at, created_at) DESC LIMIT 1",
+		).Scan(&lastTime)
+		if err == nil {
+			lastRotation = lastTime.Format(time.RFC3339)
 		}
 
-		var domains []dkimInfo
-		for rows.Next() {
-			var d dkimInfo
-			if err := rows.Scan(&d.DomainID, &d.DomainName, &d.Selector, &d.KeyCreated); err == nil {
-				domains = append(domains, d)
-			}
-		}
-		if domains == nil {
-			domains = []dkimInfo{}
+		intervalDays := 90
+		nextRotation := ""
+		if lastRotation != "" {
+			nextTime := lastTime.AddDate(0, 0, intervalDays)
+			nextRotation = nextTime.Format(time.RFC3339)
 		}
 
 		s.jsonResponse(w, http.StatusOK, map[string]interface{}{
-			"domains":             domains,
-			"default_rotation_days": 90,
+			"enabled":       keyCount > 0,
+			"interval_days": intervalDays,
+			"last_rotation": lastRotation,
+			"next_rotation": nextRotation,
 		})
 
 	case http.MethodPut:
-		// Update rotation settings (stub - settings not currently persisted)
+		// Frontend sends {enabled, interval_days}
 		var req struct {
-			RotationDays int `json:"rotation_days"`
+			Enabled      bool `json:"enabled"`
+			IntervalDays int  `json:"interval_days"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			s.jsonError(w, http.StatusBadRequest, "Invalid request body")
@@ -1501,8 +1907,7 @@ func (s *Server) handleAPIDKIMAutoRotate(w http.ResponseWriter, r *http.Request)
 		}
 
 		s.jsonResponse(w, http.StatusOK, map[string]interface{}{
-			"updated":       true,
-			"rotation_days": req.RotationDays,
+			"saved": true,
 		})
 
 	default:
@@ -1608,12 +2013,73 @@ func (s *Server) handleAPIToolsTestEmail(w http.ResponseWriter, r *http.Request)
 		req.Body = "This is a test email sent from the admin dashboard."
 	}
 
-	// Stub: test email sending would go through the queue
+	if s.queue == nil {
+		s.jsonError(w, http.StatusServiceUnavailable, "Queue not configured — cannot send email")
+		return
+	}
+
+	// Get first active domain for From address
+	var testDomain string
+	err := s.db.QueryRowContext(r.Context(),
+		"SELECT name FROM domains WHERE is_active = TRUE ORDER BY id LIMIT 1",
+	).Scan(&testDomain)
+	if err != nil || testDomain == "" {
+		testDomain = s.config.Server.Domain
+	}
+
+	from := "postmaster@" + testDomain
+	messageID := time.Now().Format("20060102150405") + "." + strconv.FormatInt(time.Now().UnixNano(), 36) + "@" + testDomain
+	msg := "From: " + from + "\r\n" +
+		"To: " + req.To + "\r\n" +
+		"Subject: " + req.Subject + "\r\n" +
+		"Message-ID: <" + messageID + ">\r\n" +
+		"Date: " + time.Now().Format(time.RFC1123Z) + "\r\n" +
+		"MIME-Version: 1.0\r\n" +
+		"Content-Type: text/plain; charset=utf-8\r\n" +
+		"\r\n" +
+		req.Body
+
+	// Write to temp file
+	tmpDir := s.config.Storage.MaildirPath
+	if tmpDir == "" {
+		tmpDir = "/tmp"
+	}
+	tmpFile, err := os.CreateTemp(tmpDir, "test-email-*.eml")
+	if err != nil {
+		s.jsonError(w, http.StatusInternalServerError, "Failed to create message file")
+		return
+	}
+	tmpFile.WriteString(msg)
+	tmpFile.Close()
+
+	// Extract recipient domain
+	recipientDomain := ""
+	if parts := strings.Split(req.To, "@"); len(parts) == 2 {
+		recipientDomain = parts[1]
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	queueMsg := &queue.Message{
+		Sender:      from,
+		Recipients:  []string{req.To},
+		MessagePath: tmpFile.Name(),
+		Size:        int64(len(msg)),
+		Domain:      recipientDomain,
+	}
+
+	if err := s.queue.Enqueue(ctx, queueMsg); err != nil {
+		os.Remove(tmpFile.Name())
+		s.jsonError(w, http.StatusInternalServerError, "Failed to queue message: "+err.Error())
+		return
+	}
+
 	s.jsonResponse(w, http.StatusOK, map[string]interface{}{
 		"sent":    true,
 		"to":      req.To,
 		"subject": req.Subject,
-		"message": "Test email queued for delivery",
+		"message": "Test email queued for delivery to " + req.To,
 	})
 }
 

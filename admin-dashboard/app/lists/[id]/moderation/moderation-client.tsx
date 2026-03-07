@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useParams } from "next/navigation";
+import { useRouteId } from "@/lib/use-route-id";
 import Link from "next/link";
 import { AuthGuard } from "@/components/layout/auth-guard";
 import { PageShell } from "@/components/shared/page-shell";
@@ -15,14 +15,14 @@ import type { ColumnDef } from "@tanstack/react-table";
 
 interface ModerationItem {
   id: number;
-  from: string;
+  sender_email: string;
   subject: string;
-  received_at: string;
+  created_at: string;
+  status: string;
 }
 
 function ModerationContent() {
-  const params = useParams();
-  const listId = params.id as string;
+  const listId = useRouteId("lists");
 
   const [items, setItems] = useState<ModerationItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -47,7 +47,7 @@ function ModerationContent() {
       `/v1/lists/${listId}/moderation/${item.id}/approve`
     );
     if (res.success) {
-      toast.success(`Approved message from ${item.from}`);
+      toast.success(`Approved message from ${item.sender_email}`);
       setItems((prev) => prev.filter((i) => i.id !== item.id));
     } else {
       toast.error(res.error || "Failed to approve message");
@@ -61,7 +61,7 @@ function ModerationContent() {
       `/v1/lists/${listId}/moderation/${item.id}/reject`
     );
     if (res.success) {
-      toast.success(`Rejected message from ${item.from}`);
+      toast.success(`Rejected message from ${item.sender_email}`);
       setItems((prev) => prev.filter((i) => i.id !== item.id));
     } else {
       toast.error(res.error || "Failed to reject message");
@@ -71,10 +71,10 @@ function ModerationContent() {
 
   const columns: ColumnDef<ModerationItem, unknown>[] = [
     {
-      accessorKey: "from",
+      accessorKey: "sender_email",
       header: "From",
       cell: ({ row }) => (
-        <span className="font-mono text-[12px]">{row.original.from}</span>
+        <span className="font-mono text-[12px]">{row.original.sender_email}</span>
       ),
     },
     {
@@ -85,11 +85,11 @@ function ModerationContent() {
       ),
     },
     {
-      accessorKey: "received_at",
+      accessorKey: "created_at",
       header: "Received",
       cell: ({ row }) => (
         <span className="text-[12px] text-muted-foreground/60">
-          {formatDistanceToNow(new Date(row.original.received_at), {
+          {formatDistanceToNow(new Date(row.original.created_at), {
             addSuffix: true,
           })}
         </span>

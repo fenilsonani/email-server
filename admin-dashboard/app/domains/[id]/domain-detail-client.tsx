@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useRouteId } from "@/lib/use-route-id";
 import Link from "next/link";
 import { AuthGuard } from "@/components/layout/auth-guard";
 import { api } from "@/lib/api";
@@ -30,6 +30,7 @@ import {
   Globe,
   Users,
   RefreshCw,
+  Loader2,
 } from "lucide-react";
 import { toast } from "sonner";
 import { formatDistanceToNow } from "date-fns";
@@ -55,15 +56,14 @@ interface DNSCheck {
 }
 
 function DomainDetailContent() {
-  const params = useParams();
-  const router = useRouter();
-  const domainId = params.id as string;
+  const domainId = useRouteId("domains");
 
   const [domain, setDomain] = useState<Domain | null>(null);
   const [dkim, setDkim] = useState<DKIMInfo | null>(null);
   const [dns, setDns] = useState<DNSCheck | null>(null);
   const [loading, setLoading] = useState(true);
   const [dnsLoading, setDnsLoading] = useState(false);
+  const [dkimGenerating, setDkimGenerating] = useState(false);
   const [showDelete, setShowDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
@@ -77,14 +77,37 @@ function DomainDetailContent() {
         setDomain(domainRes.data);
       } else {
         toast.error("Domain not found");
-        router.push("/domains/");
+        window.location.href = "/admin/domains/";
         return;
       }
       if (dkimRes.success && dkimRes.data) setDkim(dkimRes.data);
       if (dnsRes.success && dnsRes.data) setDns(dnsRes.data);
       setLoading(false);
     });
-  }, [domainId, router]);
+  }, [domainId]);
+
+  const generateDKIM = async () => {
+    setDkimGenerating(true);
+    try {
+      const res = await api.post(`/v1/domains/${domainId}/dkim/generate`, {
+        selector: "mail",
+        bits: 2048,
+        storage: "database",
+      });
+      if (res.success) {
+        toast.success("DKIM key generated");
+        // Refresh DKIM info
+        const dkimRes = await api.get<DKIMInfo>(`/v1/domains/${domainId}/dkim`);
+        if (dkimRes.success && dkimRes.data) setDkim(dkimRes.data);
+      } else {
+        toast.error(res.error || "Failed to generate DKIM key");
+      }
+    } catch {
+      toast.error("Failed to generate DKIM key");
+    } finally {
+      setDkimGenerating(false);
+    }
+  };
 
   const refreshDNS = async () => {
     setDnsLoading(true);
@@ -103,7 +126,7 @@ function DomainDetailContent() {
     const res = await api.delete(`/v1/domains/${domainId}`);
     if (res.success) {
       toast.success(`Domain ${domain?.name} deleted`);
-      router.push("/domains/");
+      window.location.href = "/admin/domains/";
     } else {
       toast.error(res.error || "Failed to delete domain");
     }
@@ -234,11 +257,11 @@ function DomainDetailContent() {
                   </Badge>
                 ) : (
                   <Badge variant="destructive" className="text-[10px]">
-                    Disabled
+                    Not configured
                   </Badge>
                 )}
               </div>
-              {dkim.selector && (
+              {dkim.enabled && dkim.selector && (
                 <div>
                   <p className="text-muted-foreground">Selector</p>
                   <p className="font-mono text-[12px] mt-0.5 bg-muted/50 px-2 py-1 rounded">
@@ -246,19 +269,49 @@ function DomainDetailContent() {
                   </p>
                 </div>
               )}
-              {dkim.dns_record && (
+              {dkim.enabled && dkim.dns_record && (
                 <div>
-                  <p className="text-muted-foreground">DNS Record</p>
-                  <p className="font-mono text-[12px] mt-0.5 bg-muted/50 px-2 py-1 rounded break-all">
-                    {dkim.dns_record}
+                  <p className="text-muted-foreground">DNS TXT Record</p>
+                  <p className="font-mono text-[11px] mt-0.5 bg-muted/50 px-2 py-1.5 rounded break-all leading-relaxed">
+                    {dkim.selector}._domainkey.{domain.name} IN TXT &quot;{dkim.dns_record}&quot;
                   </p>
                 </div>
               )}
+              {!dkim.enabled && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="text-[12px] gap-1.5"
+                  onClick={generateDKIM}
+                  disabled={dkimGenerating}
+                >
+                  {dkimGenerating ? (
+                    <><Loader2 className="h-3.5 w-3.5 animate-spin" />Generating...</>
+                  ) : (
+                    <><KeyRound className="h-3.5 w-3.5" />Generate DKIM Key</>
+                  )}
+                </Button>
+              )}
             </div>
           ) : (
-            <p className="text-[13px] text-muted-foreground">
-              DKIM information unavailable
-            </p>
+            <div className="space-y-3">
+              <p className="text-[13px] text-muted-foreground">
+                No DKIM key configured for this domain.
+              </p>
+              <Button
+                variant="outline"
+                size="sm"
+                className="text-[12px] gap-1.5"
+                onClick={generateDKIM}
+                disabled={dkimGenerating}
+              >
+                {dkimGenerating ? (
+                  <><Loader2 className="h-3.5 w-3.5 animate-spin" />Generating...</>
+                ) : (
+                  <><KeyRound className="h-3.5 w-3.5" />Generate DKIM Key</>
+                )}
+              </Button>
+            </div>
           )}
         </CardContent>
       </Card>

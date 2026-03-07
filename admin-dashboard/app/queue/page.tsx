@@ -15,12 +15,18 @@ import type { ColumnDef } from "@tanstack/react-table";
 interface QueueMessage {
   id: string;
   sender: string;
-  recipient: string;
-  subject: string;
-  status: string;
+  recipients: string[];
+  message_path: string;
+  size: number;
   attempts: number;
-  next_retry: string;
+  max_attempts: number;
+  last_attempt: string;
+  next_attempt: string;
+  last_error: string;
+  status: string;
   created_at: string;
+  domain: string;
+  priority: string;
 }
 
 function PageContent() {
@@ -52,18 +58,21 @@ function PageContent() {
     {
       accessorKey: "sender",
       header: "Sender",
-      cell: ({ row }) => <span className="font-medium">{row.original.sender}</span>,
+      cell: ({ row }) => <span className="font-mono text-[12px]">{row.original.sender}</span>,
     },
     {
-      accessorKey: "recipient",
-      header: "Recipient",
-      cell: ({ row }) => <span className="text-muted-foreground">{row.original.recipient}</span>,
+      accessorKey: "recipients",
+      header: "Recipients",
+      cell: ({ row }) => (
+        <span className="font-mono text-[12px] text-muted-foreground max-w-[200px] truncate block">
+          {(row.original.recipients || []).join(", ")}
+        </span>
+      ),
     },
     {
-      accessorKey: "subject",
-      header: "Subject",
-      enableSorting: false,
-      cell: ({ row }) => <span className="max-w-[180px] truncate block">{row.original.subject}</span>,
+      accessorKey: "domain",
+      header: "Domain",
+      cell: ({ row }) => <span className="text-[12px] text-muted-foreground">{row.original.domain}</span>,
     },
     {
       accessorKey: "status",
@@ -77,14 +86,28 @@ function PageContent() {
     {
       accessorKey: "attempts",
       header: "Tries",
-      cell: ({ row }) => <span className="text-muted-foreground tabular-nums">{row.original.attempts}</span>,
+      cell: ({ row }) => (
+        <span className="text-muted-foreground tabular-nums text-[12px]">
+          {row.original.attempts}/{row.original.max_attempts}
+        </span>
+      ),
     },
     {
-      accessorKey: "next_retry",
-      header: "Next Retry",
+      accessorKey: "next_attempt",
+      header: "Next Attempt",
       cell: ({ row }) => (
-        <span className="text-muted-foreground tabular-nums">
-          {row.original.next_retry ? formatDistanceToNow(new Date(row.original.next_retry), { addSuffix: true }) : "-"}
+        <span className="text-muted-foreground tabular-nums text-[12px]">
+          {row.original.next_attempt ? formatDistanceToNow(new Date(row.original.next_attempt), { addSuffix: true }) : "—"}
+        </span>
+      ),
+    },
+    {
+      accessorKey: "last_error",
+      header: "Error",
+      enableSorting: false,
+      cell: ({ row }) => (
+        <span className="text-[12px] text-destructive/80 max-w-[200px] truncate block">
+          {row.original.last_error || "—"}
         </span>
       ),
     },

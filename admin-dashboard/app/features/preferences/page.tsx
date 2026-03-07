@@ -10,27 +10,23 @@ import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Reply, Forward, FileSignature, ArrowLeft, Save } from "lucide-react";
+import { Shield, Timer, Eye, Layers, BellOff, ArrowLeft, Save } from "lucide-react";
 import Link from "next/link";
 
 interface Preferences {
-  auto_reply_enabled: boolean;
-  auto_reply_subject: string;
-  auto_reply_body: string;
-  forwarding_enabled: boolean;
-  forwarding_address: string;
-  forwarding_keep_copy: boolean;
-  signature: string;
+  undo_send_delay: number;
+  screener_enabled: boolean;
+  tracker_blocking: string;
+  zones_enabled: boolean;
+  snooze_mark_unread: boolean;
 }
 
 const defaultPreferences: Preferences = {
-  auto_reply_enabled: false,
-  auto_reply_subject: "",
-  auto_reply_body: "",
-  forwarding_enabled: false,
-  forwarding_address: "",
-  forwarding_keep_copy: true,
-  signature: "",
+  undo_send_delay: 10,
+  screener_enabled: true,
+  tracker_blocking: "block",
+  zones_enabled: true,
+  snooze_mark_unread: true,
 };
 
 function PageContent() {
@@ -106,99 +102,116 @@ function PageContent() {
       </Link>
 
       <div className="space-y-4">
-        {/* Auto Reply */}
-        <Card className="rounded-lg border border-border bg-card">
-          <CardHeader className="pb-3">
-            <div className="flex items-center justify-between">
-              <CardTitle className="flex items-center gap-2 text-[14px] font-medium">
-                <Reply className="h-4 w-4 text-muted-foreground/60" />
-                Auto Reply
-              </CardTitle>
-              <Switch
-                checked={prefs.auto_reply_enabled}
-                onCheckedChange={(checked) => update("auto_reply_enabled", checked)}
-              />
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <div className="space-y-1.5">
-              <label className="text-[12px] text-muted-foreground font-normal">Subject</label>
-              <Input
-                value={prefs.auto_reply_subject}
-                onChange={(e) => update("auto_reply_subject", e.target.value)}
-                placeholder="Out of office"
-                className="h-8 text-[13px] bg-background/50 border-border"
-                disabled={!prefs.auto_reply_enabled}
-              />
-            </div>
-            <div className="space-y-1.5">
-              <label className="text-[12px] text-muted-foreground font-normal">Message</label>
-              <textarea
-                value={prefs.auto_reply_body}
-                onChange={(e) => update("auto_reply_body", e.target.value)}
-                placeholder="I am currently out of the office and will respond when I return."
-                className="w-full text-[13px] bg-background/50 border-border rounded-lg p-3 min-h-[120px] resize-y border focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 focus:ring-offset-background disabled:opacity-50 disabled:cursor-not-allowed"
-                disabled={!prefs.auto_reply_enabled}
-              />
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Forwarding */}
-        <Card className="rounded-lg border border-border bg-card">
-          <CardHeader className="pb-3">
-            <div className="flex items-center justify-between">
-              <CardTitle className="flex items-center gap-2 text-[14px] font-medium">
-                <Forward className="h-4 w-4 text-muted-foreground/60" />
-                Forwarding
-              </CardTitle>
-              <Switch
-                checked={prefs.forwarding_enabled}
-                onCheckedChange={(checked) => update("forwarding_enabled", checked)}
-              />
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <div className="space-y-1.5">
-              <label className="text-[12px] text-muted-foreground font-normal">Forward to address</label>
-              <Input
-                type="email"
-                value={prefs.forwarding_address}
-                onChange={(e) => update("forwarding_address", e.target.value)}
-                placeholder="user@example.com"
-                className="h-8 text-[13px] bg-background/50 border-border"
-                disabled={!prefs.forwarding_enabled}
-              />
-            </div>
-            <div className="flex items-center justify-between">
-              <label className="text-[12px] text-muted-foreground font-normal">Keep a copy of forwarded messages</label>
-              <Switch
-                checked={prefs.forwarding_keep_copy}
-                onCheckedChange={(checked) => update("forwarding_keep_copy", checked)}
-                disabled={!prefs.forwarding_enabled}
-              />
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Signature */}
+        {/* Undo Send */}
         <Card className="rounded-lg border border-border bg-card">
           <CardHeader className="pb-3">
             <CardTitle className="flex items-center gap-2 text-[14px] font-medium">
-              <FileSignature className="h-4 w-4 text-muted-foreground/60" />
-              Email Signature
+              <Timer className="h-4 w-4 text-muted-foreground/60" />
+              Undo Send Delay
             </CardTitle>
           </CardHeader>
           <CardContent>
             <div className="space-y-1.5">
-              <label className="text-[12px] text-muted-foreground font-normal">Signature text</label>
-              <textarea
-                value={prefs.signature}
-                onChange={(e) => update("signature", e.target.value)}
-                placeholder="Best regards,&#10;Your Name"
-                className="w-full text-[13px] bg-background/50 border-border rounded-lg p-3 min-h-[120px] resize-y border focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 focus:ring-offset-background"
+              <label className="text-[12px] text-muted-foreground font-normal">Delay before sending (seconds)</label>
+              <select
+                value={prefs.undo_send_delay}
+                onChange={(e) => update("undo_send_delay", parseInt(e.target.value))}
+                className="h-8 w-full rounded-lg border border-border bg-background/50 px-2.5 text-[13px] text-foreground outline-none focus-visible:border-ring"
+              >
+                <option value={0}>Off</option>
+                <option value={5}>5 seconds</option>
+                <option value={10}>10 seconds</option>
+                <option value={20}>20 seconds</option>
+                <option value={30}>30 seconds</option>
+              </select>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Screener */}
+        <Card className="rounded-lg border border-border bg-card">
+          <CardHeader className="pb-3">
+            <div className="flex items-center justify-between">
+              <CardTitle className="flex items-center gap-2 text-[14px] font-medium">
+                <Shield className="h-4 w-4 text-muted-foreground/60" />
+                Screener
+              </CardTitle>
+              <Switch
+                checked={prefs.screener_enabled}
+                onCheckedChange={(checked) => update("screener_enabled", checked)}
               />
             </div>
+          </CardHeader>
+          <CardContent>
+            <p className="text-[12px] text-muted-foreground">
+              Screen emails from unknown senders before they reach your inbox.
+            </p>
+          </CardContent>
+        </Card>
+
+        {/* Tracker Blocking */}
+        <Card className="rounded-lg border border-border bg-card">
+          <CardHeader className="pb-3">
+            <CardTitle className="flex items-center gap-2 text-[14px] font-medium">
+              <Eye className="h-4 w-4 text-muted-foreground/60" />
+              Tracker Blocking
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-1.5">
+              <label className="text-[12px] text-muted-foreground font-normal">Tracking pixel handling</label>
+              <select
+                value={prefs.tracker_blocking}
+                onChange={(e) => update("tracker_blocking", e.target.value)}
+                className="h-8 w-full rounded-lg border border-border bg-background/50 px-2.5 text-[13px] text-foreground outline-none focus-visible:border-ring"
+              >
+                <option value="block">Block trackers</option>
+                <option value="proxy">Proxy through server</option>
+                <option value="off">Allow all</option>
+              </select>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Smart Zones */}
+        <Card className="rounded-lg border border-border bg-card">
+          <CardHeader className="pb-3">
+            <div className="flex items-center justify-between">
+              <CardTitle className="flex items-center gap-2 text-[14px] font-medium">
+                <Layers className="h-4 w-4 text-muted-foreground/60" />
+                Smart Zones
+              </CardTitle>
+              <Switch
+                checked={prefs.zones_enabled}
+                onCheckedChange={(checked) => update("zones_enabled", checked)}
+              />
+            </div>
+          </CardHeader>
+          <CardContent>
+            <p className="text-[12px] text-muted-foreground">
+              Automatically categorize incoming emails into zones (Priority, Feed, Paper Trail).
+            </p>
+          </CardContent>
+        </Card>
+
+        {/* Snooze */}
+        <Card className="rounded-lg border border-border bg-card">
+          <CardHeader className="pb-3">
+            <div className="flex items-center justify-between">
+              <CardTitle className="flex items-center gap-2 text-[14px] font-medium">
+                <BellOff className="h-4 w-4 text-muted-foreground/60" />
+                Snooze Mark Unread
+              </CardTitle>
+              <Switch
+                checked={prefs.snooze_mark_unread}
+                onCheckedChange={(checked) => update("snooze_mark_unread", checked)}
+              />
+            </div>
+          </CardHeader>
+          <CardContent>
+            <p className="text-[12px] text-muted-foreground">
+              Mark snoozed emails as unread when they reappear in your inbox.
+            </p>
           </CardContent>
         </Card>
       </div>

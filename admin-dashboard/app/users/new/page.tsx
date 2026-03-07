@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
 import { AuthGuard } from "@/components/layout/auth-guard";
 import { api } from "@/lib/api";
 import { PageShell } from "@/components/shared/page-shell";
@@ -20,7 +19,6 @@ interface DomainOption {
 }
 
 function CreateUserContent() {
-  const router = useRouter();
   const [domains, setDomains] = useState<DomainOption[]>([]);
   const [loading, setLoading] = useState(false);
 
@@ -68,7 +66,7 @@ function CreateUserContent() {
 
     if (res.success) {
       toast.success("User created successfully");
-      router.push("/users/");
+      window.location.href = "/admin/users/";
     } else {
       toast.error(res.error || "Failed to create user");
     }

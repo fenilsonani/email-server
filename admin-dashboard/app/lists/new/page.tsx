@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { AuthGuard } from "@/components/layout/auth-guard";
 import { api } from "@/lib/api";
@@ -14,7 +13,6 @@ import { ArrowLeft, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 
 function CreateListContent() {
-  const router = useRouter();
   const [loading, setLoading] = useState(false);
 
   const [name, setName] = useState("");
@@ -46,7 +44,7 @@ function CreateListContent() {
 
     if (res.success) {
       toast.success("Mailing list created successfully");
-      router.push("/lists/");
+      window.location.href = "/admin/lists/";
     } else {
       toast.error(res.error || "Failed to create mailing list");
     }

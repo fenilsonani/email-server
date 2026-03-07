@@ -18,8 +18,8 @@ import type { ColumnDef } from "@tanstack/react-table";
 
 interface VipSender {
   id: number;
-  sender: string;
-  label: string;
+  email: string;
+  name: string;
   created_at: string;
 }
 
@@ -27,8 +27,8 @@ function PageContent() {
   const [vips, setVips] = useState<VipSender[]>([]);
   const [loading, setLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
-  const [sender, setSender] = useState("");
-  const [label, setLabel] = useState("");
+  const [email, setEmail] = useState("");
+  const [name, setName] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<VipSender | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -43,13 +43,13 @@ function PageContent() {
   useEffect(() => { fetchVips(); }, [fetchVips]);
 
   const handleAdd = async () => {
-    if (!sender.trim() || !label.trim()) return;
+    if (!email.trim()) return;
     setSubmitting(true);
-    const res = await api.post("/v1/features/vip", { sender: sender.trim(), label: label.trim() });
+    const res = await api.post("/v1/features/vip", { sender: email.trim(), label: name.trim() });
     if (res.success) {
       toast.success("VIP sender added");
-      setSender("");
-      setLabel("");
+      setEmail("");
+      setName("");
       setShowAdd(false);
       fetchVips();
     } else {
@@ -74,17 +74,17 @@ function PageContent() {
 
   const columns: ColumnDef<VipSender>[] = [
     {
-      accessorKey: "sender",
+      accessorKey: "email",
       header: "Sender",
       cell: ({ row }) => (
-        <span className="font-mono text-[12px]">{row.original.sender}</span>
+        <span className="font-mono text-[12px]">{row.original.email}</span>
       ),
     },
     {
-      accessorKey: "label",
-      header: "Label",
+      accessorKey: "name",
+      header: "Name",
       cell: ({ row }) => (
-        <span className="text-[13px]">{row.original.label}</span>
+        <span className="text-[13px]">{row.original.name || "—"}</span>
       ),
     },
     {
@@ -139,7 +139,7 @@ function PageContent() {
         columns={columns}
         data={vips}
         loading={loading}
-        searchKey="sender"
+        searchKey="email"
         searchPlaceholder="Filter by sender..."
         emptyMessage="No VIP senders."
       />
@@ -156,17 +156,17 @@ function PageContent() {
             <div className="space-y-1.5">
               <label className="text-[12px] font-medium">Sender Email</label>
               <Input
-                value={sender}
-                onChange={(e) => setSender(e.target.value)}
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
                 placeholder="sender@example.com"
                 className="h-8 text-[12px] font-mono"
               />
             </div>
             <div className="space-y-1.5">
-              <label className="text-[12px] font-medium">Label</label>
+              <label className="text-[12px] font-medium">Name</label>
               <Input
-                value={label}
-                onChange={(e) => setLabel(e.target.value)}
+                value={name}
+                onChange={(e) => setName(e.target.value)}
                 placeholder="e.g. CEO, Important Client"
                 className="h-8 text-[12px]"
               />
@@ -174,7 +174,7 @@ function PageContent() {
           </div>
           <DialogFooter>
             <Button variant="outline" size="sm" className="text-[12px]" onClick={() => setShowAdd(false)}>Cancel</Button>
-            <Button size="sm" className="text-[12px]" onClick={handleAdd} disabled={submitting || !sender.trim() || !label.trim()}>
+            <Button size="sm" className="text-[12px]" onClick={handleAdd} disabled={submitting || !email.trim()}>
               {submitting ? "Adding..." : "Add VIP"}
             </Button>
           </DialogFooter>
@@ -186,7 +186,7 @@ function PageContent() {
           <DialogHeader>
             <DialogTitle className="text-[15px]">Remove VIP</DialogTitle>
             <DialogDescription className="text-[13px]">
-              Are you sure you want to remove <strong className="font-mono">{deleteTarget?.sender}</strong> from VIP?
+              Are you sure you want to remove <strong className="font-mono">{deleteTarget?.email}</strong> from VIP?
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>

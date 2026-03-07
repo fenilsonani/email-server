@@ -1,16 +1,14 @@
 "use client";
 
 import { useAuthStore } from "@/lib/auth-store";
-import { useRouter } from "next/navigation";
 import { LogOut, CircleUser } from "lucide-react";
 
 export function AdminHeader() {
-  const router = useRouter();
   const { username, email, logout } = useAuthStore();
 
   const handleLogout = async () => {
     await logout();
-    router.push("/login/");
+    window.location.href = "/admin/login/";
   };
 
   return (

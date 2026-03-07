@@ -7,8 +7,10 @@ import { api } from "@/lib/api";
 import type { SystemInfo } from "@/lib/types";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
-import { Server, Globe, Clock, Tag, Code, HardDrive, Download, Shield, ShieldCheck, KeyRound, Archive, ChevronRight } from "lucide-react";
+import { Server, Globe, Clock, Tag, Code, HardDrive, Download, Shield, ShieldCheck, KeyRound, Archive, ChevronRight, Wrench } from "lucide-react";
 import Link from "next/link";
+import { Switch } from "@/components/ui/switch";
+import { useAdvancedMode } from "@/lib/advanced-mode";
 
 function InfoCard({ icon: Icon, label, value }: { icon: React.ElementType; label: string; value: string }) {
   return (
@@ -19,6 +21,31 @@ function InfoCard({ icon: Icon, label, value }: { icon: React.ElementType; label
           <p className="text-[11px] text-muted-foreground/60 font-medium uppercase tracking-wider">{label}</p>
           <p className="text-[13px] font-medium mt-0.5">{value}</p>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function AdvancedModeToggle() {
+  const { enabled, toggle, hydrate } = useAdvancedMode();
+
+  useEffect(() => {
+    hydrate();
+  }, [hydrate]);
+
+  return (
+    <div className="rounded-lg border border-border bg-card overflow-hidden">
+      <div className="flex items-center justify-between px-4 py-3">
+        <div className="flex items-center gap-3">
+          <Wrench className="h-3.5 w-3.5 text-muted-foreground/40 shrink-0" strokeWidth={1.5} />
+          <div>
+            <span className="text-[13px] font-medium">Advanced Mode</span>
+            <p className="text-[11px] text-muted-foreground/60 mt-0.5">
+              Show logs, filters, DNS tools, and other advanced options in the sidebar
+            </p>
+          </div>
+        </div>
+        <Switch checked={enabled} onCheckedChange={toggle} />
       </div>
     </div>
   );
@@ -110,6 +137,7 @@ function PageContent() {
           ))}
         </div>
       </div>
+      <AdvancedModeToggle />
     </PageShell>
   );
 }

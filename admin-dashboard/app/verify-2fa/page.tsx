@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
 import { useAuthStore } from "@/lib/auth-store";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -9,7 +8,6 @@ import { Label } from "@/components/ui/label";
 import { Shield, Loader2 } from "lucide-react";
 
 export default function Verify2FAPage() {
-  const router = useRouter();
   const verify2FA = useAuthStore((s) => s.verify2FA);
   const [code, setCode] = useState("");
   const [error, setError] = useState("");
@@ -22,7 +20,7 @@ export default function Verify2FAPage() {
 
     try {
       await verify2FA(code);
-      router.push("/");
+      window.location.href = "/admin/";
     } catch (err) {
       setError(err instanceof Error ? err.message : "Verification failed");
     } finally {

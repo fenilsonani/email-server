@@ -19,8 +19,9 @@ import type { ColumnDef } from "@tanstack/react-table";
 
 interface ScreenerRule {
   id: number;
-  sender: string;
-  action: "allow" | "block";
+  email: string;
+  domain: string;
+  status: "pending" | "approved" | "blocked";
   created_at: string;
 }
 
@@ -29,7 +30,7 @@ function PageContent() {
   const [loading, setLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
   const [sender, setSender] = useState("");
-  const [action, setAction] = useState<"allow" | "block">("block");
+  const [action, setAction] = useState<"approve" | "block">("block");
   const [submitting, setSubmitting] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<ScreenerRule | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -75,21 +76,21 @@ function PageContent() {
 
   const columns: ColumnDef<ScreenerRule>[] = [
     {
-      accessorKey: "sender",
+      accessorKey: "email",
       header: "Sender",
       cell: ({ row }) => (
-        <span className="font-mono text-[12px]">{row.original.sender}</span>
+        <span className="font-mono text-[12px]">{row.original.email || row.original.domain}</span>
       ),
     },
     {
-      accessorKey: "action",
-      header: "Action",
+      accessorKey: "status",
+      header: "Status",
       cell: ({ row }) => (
         <Badge
-          variant={row.original.action === "allow" ? "default" : "outline"}
+          variant={row.original.status === "approved" ? "default" : "outline"}
           className="text-[10px]"
         >
-          {row.original.action}
+          {row.original.status}
         </Badge>
       ),
     },
@@ -145,7 +146,7 @@ function PageContent() {
         columns={columns}
         data={rules}
         loading={loading}
-        searchKey="sender"
+        searchKey="email"
         searchPlaceholder="Filter by sender..."
         emptyMessage="No screener rules."
       />
@@ -172,11 +173,11 @@ function PageContent() {
               <label className="text-[12px] font-medium">Action</label>
               <select
                 value={action}
-                onChange={(e) => setAction(e.target.value as "allow" | "block")}
+                onChange={(e) => setAction(e.target.value as "approve" | "block")}
                 className="h-8 w-full rounded-lg border border-border bg-background/50 px-2.5 text-[12px] text-foreground outline-none focus-visible:border-ring"
               >
                 <option value="block">Block</option>
-                <option value="allow">Allow</option>
+                <option value="approve">Approve</option>
               </select>
             </div>
           </div>
@@ -194,7 +195,7 @@ function PageContent() {
           <DialogHeader>
             <DialogTitle className="text-[15px]">Delete Rule</DialogTitle>
             <DialogDescription className="text-[13px]">
-              Are you sure you want to delete the rule for <strong className="font-mono">{deleteTarget?.sender}</strong>?
+              Are you sure you want to delete the rule for <strong className="font-mono">{deleteTarget?.email || deleteTarget?.domain}</strong>?
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>

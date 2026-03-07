@@ -1,15 +1,15 @@
 "use client";
 
+import { useEffect } from "react";
 import { usePathname } from "next/navigation";
 import Link from "next/link";
 import { cn } from "@/lib/utils";
+import { useAdvancedMode } from "@/lib/advanced-mode";
 import {
   LayoutDashboard,
   Users,
   Globe,
-  ListTodo,
   Mail,
-  Settings,
   Wrench,
   Shield,
   MailOpen,
@@ -21,57 +21,57 @@ import {
   HardDrive,
   BarChart3,
   ShieldAlert,
+  ListTodo,
+  Settings,
 } from "lucide-react";
 
-const navGroups = [
+interface NavItem {
+  label: string;
+  href: string;
+  icon: React.ComponentType<{ className?: string; strokeWidth?: number }>;
+}
+
+interface NavGroup {
+  label: string;
+  items: NavItem[];
+  advanced?: boolean;
+}
+
+const navGroups: NavGroup[] = [
   {
-    label: "Overview",
+    label: "Home",
     items: [
       { label: "Dashboard", href: "/", icon: LayoutDashboard },
       { label: "Analytics", href: "/analytics/", icon: BarChart3 },
     ],
   },
   {
-    label: "Management",
+    label: "Manage",
     items: [
       { label: "Users", href: "/users/", icon: Users },
       { label: "Domains", href: "/domains/", icon: Globe },
-      { label: "Mailing Lists", href: "/lists/", icon: List },
-    ],
-  },
-  {
-    label: "Monitoring",
-    items: [
-      { label: "Auth Logs", href: "/logs/auth/", icon: Shield },
-      { label: "Delivery Logs", href: "/logs/delivery/", icon: MailOpen },
-      { label: "Audit Logs", href: "/logs/audit/", icon: FileText },
-      { label: "Queue", href: "/queue/", icon: ListTodo },
-    ],
-  },
-  {
-    label: "Features",
-    items: [
+      { label: "Lists", href: "/lists/", icon: List },
       { label: "Features", href: "/features/", icon: Sparkles },
     ],
   },
   {
-    label: "Tools",
+    label: "Email",
     items: [
-      { label: "Sieve Filters", href: "/sieve/", icon: FileCode },
-      { label: "DNS Check", href: "/tools/dns/", icon: Globe },
-      { label: "Test Email", href: "/tools/test-email/", icon: Mail },
-      { label: "Doctor", href: "/tools/doctor/", icon: Wrench },
-    ],
-  },
-  {
-    label: "Security",
-    items: [
+      { label: "Queue", href: "/queue/", icon: ListTodo },
       { label: "Security", href: "/security/", icon: ShieldAlert },
     ],
   },
   {
-    label: "System",
+    label: "Advanced",
+    advanced: true,
     items: [
+      { label: "Auth Logs", href: "/logs/auth/", icon: Shield },
+      { label: "Delivery Logs", href: "/logs/delivery/", icon: MailOpen },
+      { label: "Audit Logs", href: "/logs/audit/", icon: FileText },
+      { label: "Mail Filters", href: "/sieve/", icon: FileCode },
+      { label: "DNS Check", href: "/tools/dns/", icon: Globe },
+      { label: "Test Email", href: "/tools/test-email/", icon: Mail },
+      { label: "Doctor", href: "/tools/doctor/", icon: Wrench },
       { label: "System", href: "/system/", icon: Settings },
       { label: "Backup", href: "/system/backup/", icon: HardDrive },
     ],
@@ -80,6 +80,13 @@ const navGroups = [
 
 export function AdminSidebar() {
   const pathname = usePathname();
+  const { enabled: advancedEnabled, hydrate } = useAdvancedMode();
+
+  useEffect(() => {
+    hydrate();
+  }, [hydrate]);
+
+  const visibleGroups = navGroups.filter((g) => !g.advanced || advancedEnabled);
 
   return (
     <aside className="hidden md:flex w-52 shrink-0 flex-col border-r border-border bg-sidebar">
@@ -93,7 +100,7 @@ export function AdminSidebar() {
 
       {/* Navigation */}
       <nav className="flex-1 overflow-y-auto scrollbar-none pt-2 px-2 space-y-4">
-        {navGroups.map((group) => (
+        {visibleGroups.map((group) => (
           <div key={group.label}>
             <p className="px-2 mb-0.5 text-[10px] font-medium uppercase tracking-widest text-muted-foreground/50">
               {group.label}

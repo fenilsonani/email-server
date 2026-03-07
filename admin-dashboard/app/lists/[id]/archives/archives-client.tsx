@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useParams } from "next/navigation";
+import { useRouteId } from "@/lib/use-route-id";
 import Link from "next/link";
 import { AuthGuard } from "@/components/layout/auth-guard";
 import { PageShell } from "@/components/shared/page-shell";
@@ -14,17 +14,21 @@ import type { ColumnDef } from "@tanstack/react-table";
 
 interface ArchiveMessage {
   id: number;
-  from: string;
+  sender_email: string;
+  sender_name: string;
   subject: string;
   sent_at: string;
+  body_preview: string;
 }
 
 const columns: ColumnDef<ArchiveMessage, unknown>[] = [
   {
-    accessorKey: "from",
+    accessorKey: "sender_email",
     header: "From",
     cell: ({ row }) => (
-      <span className="font-mono text-[12px]">{row.original.from}</span>
+      <span className="font-mono text-[12px]">
+        {row.original.sender_name ? `${row.original.sender_name} <${row.original.sender_email}>` : row.original.sender_email}
+      </span>
     ),
   },
   {
@@ -48,8 +52,7 @@ const columns: ColumnDef<ArchiveMessage, unknown>[] = [
 ];
 
 function ArchivesContent() {
-  const params = useParams();
-  const listId = params.id as string;
+  const listId = useRouteId("lists");
 
   const [messages, setMessages] = useState<ArchiveMessage[]>([]);
   const [loading, setLoading] = useState(true);

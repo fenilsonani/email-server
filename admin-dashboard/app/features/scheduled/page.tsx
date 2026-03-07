@@ -14,16 +14,20 @@ import type { ColumnDef } from "@tanstack/react-table";
 
 interface ScheduledEmail {
   id: number;
-  to: string;
+  from_address: string;
+  recipients: string[];
   subject: string;
-  scheduled_at: string;
-  status: "pending" | "sent" | "failed";
+  send_at: string;
+  status: "pending" | "sending" | "sent" | "cancelled" | "failed";
   created_at: string;
+  error: string;
 }
 
-const statusVariant: Record<ScheduledEmail["status"], "default" | "outline" | "destructive"> = {
+const statusVariant: Record<string, "default" | "outline" | "destructive"> = {
   pending: "outline",
+  sending: "outline",
   sent: "default",
+  cancelled: "outline",
   failed: "destructive",
 };
 
@@ -42,10 +46,10 @@ function PageContent() {
 
   const columns: ColumnDef<ScheduledEmail>[] = [
     {
-      accessorKey: "to",
+      accessorKey: "recipients",
       header: "To",
       cell: ({ row }) => (
-        <span className="font-mono text-[12px]">{row.original.to}</span>
+        <span className="font-mono text-[12px]">{(row.original.recipients || []).join(", ")}</span>
       ),
     },
     {
@@ -56,11 +60,11 @@ function PageContent() {
       ),
     },
     {
-      accessorKey: "scheduled_at",
+      accessorKey: "send_at",
       header: "Scheduled",
       cell: ({ row }) => (
         <span className="text-muted-foreground tabular-nums">
-          {formatDistanceToNow(new Date(row.original.scheduled_at), { addSuffix: true })}
+          {formatDistanceToNow(new Date(row.original.send_at), { addSuffix: true })}
         </span>
       ),
     },

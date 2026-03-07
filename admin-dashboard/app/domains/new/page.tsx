@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { AuthGuard } from "@/components/layout/auth-guard";
 import { api } from "@/lib/api";
@@ -14,7 +13,6 @@ import { ArrowLeft, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 
 function CreateDomainContent() {
-  const router = useRouter();
   const [loading, setLoading] = useState(false);
 
   const [name, setName] = useState("");
@@ -57,7 +55,7 @@ function CreateDomainContent() {
     const res = await api.post("/v1/domains", body);
     if (res.success) {
       toast.success(`Domain ${name} created successfully`);
-      router.push("/domains/");
+      window.location.href = "/admin/domains/";
     } else {
       toast.error(res.error || "Failed to create domain");
     }
