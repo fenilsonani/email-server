@@ -2,7 +2,9 @@ package admin
 
 import (
 	"embed"
+	"io"
 	"io/fs"
+	"mime"
 	"net/http"
 	"path"
 	"strings"
@@ -12,6 +14,7 @@ import (
 var dashboardFS embed.FS
 
 // serveSPA returns an http.Handler that serves the Next.js static export.
+// It expects the /admin prefix to already be stripped (via http.StripPrefix).
 // For requests matching a real file, it serves the file directly.
 // For all other requests, it falls back to index.html (SPA routing).
 func (s *Server) serveSPA() http.Handler {
@@ -22,13 +25,10 @@ func (s *Server) serveSPA() http.Handler {
 		return http.NotFoundHandler()
 	}
 
-	fileServer := http.FileServer(http.FS(sub))
-
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Strip /admin prefix to get the path within the SPA
-		urlPath := strings.TrimPrefix(r.URL.Path, "/admin")
-		if urlPath == "" {
-			urlPath = "/"
+		urlPath := r.URL.Path
+		if urlPath == "" || urlPath == "/" {
+			urlPath = "/index.html"
 		}
 
 		// Don't serve SPA for API routes
@@ -37,43 +37,55 @@ func (s *Server) serveSPA() http.Handler {
 			return
 		}
 
-		// Try to serve the exact file first
 		cleanPath := path.Clean(urlPath)
-		if cleanPath == "/" {
-			cleanPath = "/index.html"
-		}
-
-		// Check if the file exists in the embedded FS
 		filePath := strings.TrimPrefix(cleanPath, "/")
 
 		// Try exact file
 		if f, err := sub.Open(filePath); err == nil {
-			f.Close()
-			// Serve static assets with cache headers
-			if isStaticAsset(filePath) {
-				w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
-			}
-			r.URL.Path = urlPath
-			fileServer.ServeHTTP(w, r)
+			defer f.Close()
+			serveFile(w, filePath, f)
 			return
 		}
 
-		// Try path/index.html (for trailing slash routes)
+		// Try path/index.html (for trailing slash routes like /login/)
 		indexPath := strings.TrimSuffix(filePath, "/") + "/index.html"
 		if f, err := sub.Open(indexPath); err == nil {
-			f.Close()
-			r.URL.Path = "/" + indexPath
-			fileServer.ServeHTTP(w, r)
+			defer f.Close()
+			serveFile(w, indexPath, f)
 			return
 		}
 
 		// SPA fallback: serve root index.html for client-side routing
-		// The Next.js client-side router will pick up the URL and render correctly
-		r.URL.Path = "/index.html"
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-		fileServer.ServeHTTP(w, r)
+		if f, err := sub.Open("index.html"); err == nil {
+			defer f.Close()
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+			io.Copy(w, f.(io.Reader))
+			return
+		}
+
+		http.NotFound(w, r)
 	})
+}
+
+// serveFile writes a file from the embedded FS directly to the response
+func serveFile(w http.ResponseWriter, name string, f fs.File) {
+	// Set content type from extension
+	ext := path.Ext(name)
+	ct := mime.TypeByExtension(ext)
+	if ct == "" {
+		ct = "application/octet-stream"
+	}
+	w.Header().Set("Content-Type", ct)
+
+	// Cache static assets aggressively, HTML pages not at all
+	if isStaticAsset(name) {
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	} else {
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	}
+
+	io.Copy(w, f.(io.Reader))
 }
 
 // isStaticAsset returns true for files that can be aggressively cached

@@ -635,18 +635,18 @@ func (s *Server) withSecurityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("Referrer-Policy", "no-referrer")
 
 		// Content Security Policy - restrict resource loading
-		// Note: 'unsafe-inline' needed for admin panel inline scripts
+		// Note: 'unsafe-inline' + 'unsafe-eval' needed for Next.js SPA
 		w.Header().Set("Content-Security-Policy",
 			"default-src 'self'; "+
-				"script-src 'self' 'unsafe-inline'; "+ // Allow inline scripts for admin UI
+				"script-src 'self' 'unsafe-inline' 'unsafe-eval'; "+
 				"style-src 'self' 'unsafe-inline'; "+
-				"img-src 'self' data:; "+
-				"font-src 'self'; "+
+				"img-src 'self' data: blob:; "+
+				"font-src 'self' data:; "+
 				"connect-src 'self'; "+
 				"form-action 'self'; "+
 				"frame-ancestors 'none'; "+
 				"base-uri 'self'; "+
-				"object-src 'none'; "+ // Block plugins
+				"object-src 'none'; "+
 				"upgrade-insecure-requests")
 
 		// Permissions Policy - disable unnecessary browser features
@@ -656,7 +656,8 @@ func (s *Server) withSecurityHeaders(next http.Handler) http.Handler {
 				"interest-cohort=()") // Block FLoC tracking
 
 		// Cache control for admin pages - don't cache sensitive data
-		if r.URL.Path != "/admin/login" {
+		// Skip for static assets (SPA handler sets its own cache headers)
+		if r.URL.Path != "/admin/login" && !strings.HasPrefix(r.URL.Path, "/admin/_next/") {
 			w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, private")
 			w.Header().Set("Pragma", "no-cache")
 			w.Header().Set("Expires", "0")

@@ -296,7 +296,8 @@ func (s *Server) Start(listen string) error {
 	// SPA catch-all: serve Next.js static export for all /admin/ paths
 	// (API routes above are more specific and match first)
 	// No withAuth — the SPA handles auth client-side via /admin/api/auth/session
-	mux.Handle("/admin/", s.serveSPA())
+	// StripPrefix removes /admin so the SPA handler sees paths relative to root
+	mux.Handle("/admin/", http.StripPrefix("/admin", s.serveSPA()))
 
 	// User portal (separate auth from admin)
 	userPortal, err := userportal.NewServer(s.db, s.authenticator, s.auditLogger, s.logger)
