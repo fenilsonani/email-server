@@ -422,10 +422,10 @@ type Stats struct {
 
 // ActivityItem represents a recent activity entry
 type ActivityItem struct {
-	Time        time.Time
-	Type        string
-	Description string
-	Status      string
+	Time        time.Time `json:"time"`
+	Type        string    `json:"type"`
+	Description string    `json:"description"`
+	Status      string    `json:"status"`
 }
 
 // getStats retrieves dashboard statistics
