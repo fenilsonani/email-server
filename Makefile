@@ -1,4 +1,4 @@
-.PHONY: help test test-short test-coverage test-coverage-func test-coverage-html test-integration test-e2e test-all test-race test-failfast benchmark lint clean install-tools
+.PHONY: help test test-short test-coverage test-coverage-func test-coverage-html test-integration test-e2e test-all test-race test-failfast benchmark lint clean install-tools admin-dashboard build build-prod
 
 # Default target
 help:
@@ -136,11 +136,26 @@ test-integration-verbose:
 	go test -v -timeout=10m -run TestAdminAPI -timeout=30s ./tests/integration/...
 	go test -v -timeout=10m -run TestQueueDelivery -timeout=30s ./tests/integration/...
 
-# Build the project
+# Build the admin dashboard (Next.js static export → go:embed target)
+.PHONY: admin-dashboard
+admin-dashboard:
+	cd admin-dashboard && bun install --frozen-lockfile && bun run build
+	rm -rf internal/admin/dashboard
+	cp -r admin-dashboard/out internal/admin/dashboard
+	@echo ""
+	@echo "Admin dashboard built and copied to internal/admin/dashboard/"
+
+# Build the project (Go only, uses whatever is in internal/admin/dashboard/)
 build:
 	go build -v ./...
 	@echo ""
 	@echo "Build completed successfully"
+
+# Full production build: admin dashboard + Go binary
+build-prod: admin-dashboard
+	CGO_ENABLED=1 go build -o mailserver ./cmd/mailserver/
+	@echo ""
+	@echo "Production build complete: ./mailserver"
 
 # Run build and all checks
 all: clean install-tools lint build test-all

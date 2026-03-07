@@ -41,6 +41,15 @@ config.yaml
 /bin/
 /dist/
 
+# Admin dashboard (built from admin-dashboard/, embedded via go:embed)
+internal/admin/dashboard/
+!internal/admin/dashboard/index.html
+
+# Admin dashboard Node artifacts
+admin-dashboard/node_modules/
+admin-dashboard/.next/
+admin-dashboard/out/
+
 # Test scripts
 send_test.py
 build.sh

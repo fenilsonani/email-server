@@ -164,9 +164,10 @@ type DeliveryConfig struct {
 
 // AdminConfig holds admin web panel configuration
 type AdminConfig struct {
-	Enabled bool   `koanf:"enabled"` // Enable admin web panel
-	Port    int    `koanf:"port"`    // Admin port (default 8080)
-	Listen  string `koanf:"listen"`  // Listen address (default 127.0.0.1)
+	Enabled bool   `koanf:"enabled"`  // Enable admin web panel
+	Port    int    `koanf:"port"`     // Admin port (default 8080)
+	Listen  string `koanf:"listen"`   // Listen address (default 127.0.0.1)
+	DevMode bool   `koanf:"dev_mode"` // Enable dev mode (CORS for localhost)
 }
 
 // SieveConfig holds Sieve filtering configuration
