@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
 import { useAuthStore } from "@/lib/auth-store";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -9,7 +8,6 @@ import { Label } from "@/components/ui/label";
 import { Loader2, Server, Lock } from "lucide-react";
 
 export default function LoginPage() {
-  const router = useRouter();
   const login = useAuthStore((s) => s.login);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -24,9 +22,9 @@ export default function LoginPage() {
     try {
       const result = await login(username, password);
       if (result.needs_2fa) {
-        router.push("/verify-2fa/");
+        window.location.href = "/admin/verify-2fa/";
       } else {
-        router.push("/");
+        window.location.href = "/admin/";
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Login failed");
