@@ -10,7 +10,7 @@ import (
 	"strings"
 )
 
-//go:embed dashboard
+//go:embed all:dashboard
 var dashboardFS embed.FS
 
 // serveSPA returns an http.Handler that serves the Next.js static export.
