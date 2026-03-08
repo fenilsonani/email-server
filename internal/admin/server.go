@@ -21,6 +21,7 @@ import (
 	"github.com/fenilsonani/email-server/internal/features"
 	"github.com/fenilsonani/email-server/internal/lists"
 	"github.com/fenilsonani/email-server/internal/logging"
+	"github.com/fenilsonani/email-server/internal/org"
 	"github.com/fenilsonani/email-server/internal/queue"
 	"github.com/fenilsonani/email-server/internal/sieve"
 	"github.com/fenilsonani/email-server/internal/storage/maildir"
@@ -43,6 +44,7 @@ type Server struct {
 	sieveStore    *sieve.Store
 	featuresStore *features.Store
 	listsStore    *lists.Store
+	orgStore      *org.Store
 	queue         *queue.RedisQueue
 	logger        *logging.Logger
 	auditLogger   *audit.Logger
@@ -202,6 +204,11 @@ func (s *Server) SetListsStore(store *lists.Store) {
 	s.listsStore = store
 }
 
+// SetOrgStore sets the org store for multi-organization management
+func (s *Server) SetOrgStore(store *org.Store) {
+	s.orgStore = store
+}
+
 // Start starts the admin server
 func (s *Server) Start(listen string) error {
 	mux := http.NewServeMux()
@@ -301,6 +308,32 @@ func (s *Server) Start(listen string) error {
 	mux.HandleFunc("/admin/api/v1/tools/doctor", s.withAPIAuth(s.handleAPIToolsDoctor))
 	mux.HandleFunc("/admin/api/v1/tools/test-email", s.withAPIAuth(s.handleAPIToolsTestEmail))
 	mux.HandleFunc("/admin/api/v1/tools/dns-check", s.withAPIAuth(s.handleAPIToolsDNSCheck))
+
+	// Organizations
+	mux.HandleFunc("/admin/api/v1/orgs", s.withAPIAuth(s.handleAPIOrgs))
+	mux.HandleFunc("/admin/api/v1/orgs/", s.withAPIAuth(s.handleAPIOrgByID))
+
+	// API Keys management (admin dashboard)
+	mux.HandleFunc("/admin/api/v1/api-keys", s.withAPIAuth(s.handleAPIKeysCollection))
+	mux.HandleFunc("/admin/api/v1/api-keys/", s.withAPIAuth(s.handleAPIKeyByID))
+	// Webhooks management (admin dashboard)
+	mux.HandleFunc("/admin/api/v1/webhooks", s.withAPIAuth(s.handleAPIWebhooksCollection))
+	mux.HandleFunc("/admin/api/v1/webhooks/", s.withAPIAuth(s.handleAPIWebhookByID))
+	// Templates management (admin dashboard)
+	mux.HandleFunc("/admin/api/v1/templates", s.withAPIAuth(s.handleAPITemplatesCollection))
+	mux.HandleFunc("/admin/api/v1/templates/", s.withAPIAuth(s.handleAPITemplateByID))
+	// Sent emails / send logs (admin dashboard)
+	mux.HandleFunc("/admin/api/v1/emails", s.withAPIAuth(s.handleAPISentEmails))
+	mux.HandleFunc("/admin/api/v1/emails/", s.withAPIAuth(s.handleAPISentEmailByID))
+	// API stats
+	mux.HandleFunc("/admin/api/v1/api-stats", s.withAPIAuth(s.handleAPIEmailStats))
+	// Presets
+	mux.HandleFunc("/admin/api/v1/presets", s.withAPIAuth(s.handleAPIPresets))
+	// Setup wizard
+	mux.HandleFunc("/admin/api/v1/setup/status", s.handleAPISetupStatus)
+	mux.HandleFunc("/admin/api/v1/setup/check-dns", s.handleAPISetupCheckDNS)
+	mux.HandleFunc("/admin/api/v1/setup/preflight", s.handleAPISetupPreflight)
+	mux.HandleFunc("/admin/api/v1/setup/install", s.handleAPISetupInstall)
 
 	// SPA catch-all: serve Next.js static export for all /admin/ paths
 	// (API routes above are more specific and match first)
