@@ -9,12 +9,27 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { api } from "@/lib/api";
 import { Ban, ShieldCheck, AlertTriangle, ArrowRight } from "lucide-react";
+import { AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
+
+interface DayCount { date: string; count: number }
+interface IPCount { ip: string; count: number }
+interface ProtoCount { protocol: string; count: number }
 
 interface SecurityOverview {
   suppression_count: number;
   greylist_count: number;
   failed_login_count: number;
+  daily_trend: DayCount[];
+  top_ips: IPCount[];
+  protocol_breakdown: ProtoCount[];
 }
+
+const PROTO_COLORS: Record<string, string> = {
+  imap: "#6366f1",
+  smtp: "#f59e0b",
+  pop3: "#10b981",
+  unknown: "#6b7280",
+};
 
 function SecurityContent() {
   const [data, setData] = useState<SecurityOverview | null>(null);
@@ -89,6 +104,82 @@ function SecurityContent() {
               </Link>
             ))}
       </div>
+
+      {/* Trend Charts */}
+      {data && (
+        <div className="grid md:grid-cols-2 gap-4 mt-4">
+          {/* Failed Logins Trend */}
+          {Array.isArray(data.daily_trend) && data.daily_trend.length > 0 && (
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-[13px] font-medium">Failed Logins (30 days)</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <ResponsiveContainer width="100%" height={200}>
+                  <AreaChart data={data.daily_trend}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                    <XAxis dataKey="date" tick={{ fontSize: 10 }} tickFormatter={(v: string) => v.slice(5)} stroke="hsl(var(--muted-foreground))" />
+                    <YAxis tick={{ fontSize: 10 }} stroke="hsl(var(--muted-foreground))" allowDecimals={false} />
+                    <Tooltip contentStyle={{ fontSize: 12, background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: 8 }} />
+                    <Area type="monotone" dataKey="count" stroke="#ef4444" fill="#ef444420" name="Failed Logins" />
+                  </AreaChart>
+                </ResponsiveContainer>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Top Offending IPs */}
+          {Array.isArray(data.top_ips) && data.top_ips.length > 0 && (
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-[13px] font-medium">Top Offending IPs (7 days)</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <ResponsiveContainer width="100%" height={200}>
+                  <BarChart data={data.top_ips} layout="vertical">
+                    <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                    <XAxis type="number" tick={{ fontSize: 10 }} stroke="hsl(var(--muted-foreground))" allowDecimals={false} />
+                    <YAxis type="category" dataKey="ip" tick={{ fontSize: 10 }} stroke="hsl(var(--muted-foreground))" width={120} />
+                    <Tooltip contentStyle={{ fontSize: 12, background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: 8 }} />
+                    <Bar dataKey="count" fill="#f59e0b" name="Attempts" radius={[0, 4, 4, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Protocol Breakdown */}
+          {Array.isArray(data.protocol_breakdown) && data.protocol_breakdown.length > 0 && (
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-[13px] font-medium">Failed Logins by Protocol (30 days)</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-2">
+                  {(() => {
+                    const total = data.protocol_breakdown.reduce((s, p) => s + p.count, 0);
+                    return data.protocol_breakdown.map((p) => {
+                      const pct = total > 0 ? (p.count / total * 100) : 0;
+                      const color = PROTO_COLORS[p.protocol.toLowerCase()] || "#6b7280";
+                      return (
+                        <div key={p.protocol} className="space-y-1">
+                          <div className="flex items-center justify-between text-[12px]">
+                            <span className="font-medium uppercase">{p.protocol}</span>
+                            <span className="text-muted-foreground tabular-nums">{p.count} ({pct.toFixed(0)}%)</span>
+                          </div>
+                          <div className="h-2 w-full rounded-full bg-muted overflow-hidden">
+                            <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, backgroundColor: color }} />
+                          </div>
+                        </div>
+                      );
+                    });
+                  })()}
+                </div>
+              </CardContent>
+            </Card>
+          )}
+        </div>
+      )}
     </PageShell>
   );
 }

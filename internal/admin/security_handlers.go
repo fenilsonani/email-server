@@ -309,9 +309,72 @@ func (s *Server) handleAPISecurityOverview(w http.ResponseWriter, r *http.Reques
 	s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM greylist").Scan(&greylistCount)
 	s.db.QueryRowContext(ctx, "SELECT COUNT(DISTINCT remote_addr) FROM auth_log WHERE success = 0").Scan(&failedLoginCount)
 
+	// Daily failed logins trend (last 30 days)
+	type DayCount struct {
+		Date  string `json:"date"`
+		Count int    `json:"count"`
+	}
+	dailyTrend := []DayCount{}
+	trendRows, trendErr := s.db.QueryContext(ctx,
+		`SELECT date(created_at) as d, COUNT(*) as c FROM auth_log
+		 WHERE success = 0 AND created_at >= datetime('now', '-30 days')
+		 GROUP BY d ORDER BY d`)
+	if trendErr == nil {
+		defer trendRows.Close()
+		for trendRows.Next() {
+			var dc DayCount
+			if err := trendRows.Scan(&dc.Date, &dc.Count); err == nil {
+				dailyTrend = append(dailyTrend, dc)
+			}
+		}
+	}
+
+	// Top offending IPs (last 7 days)
+	type IPCount struct {
+		IP    string `json:"ip"`
+		Count int    `json:"count"`
+	}
+	topIPs := []IPCount{}
+	ipRows, ipErr := s.db.QueryContext(ctx,
+		`SELECT remote_addr, COUNT(*) as c FROM auth_log
+		 WHERE success = 0 AND created_at >= datetime('now', '-7 days')
+		 GROUP BY remote_addr ORDER BY c DESC LIMIT 10`)
+	if ipErr == nil {
+		defer ipRows.Close()
+		for ipRows.Next() {
+			var ic IPCount
+			if err := ipRows.Scan(&ic.IP, &ic.Count); err == nil {
+				topIPs = append(topIPs, ic)
+			}
+		}
+	}
+
+	// Protocol breakdown
+	type ProtoCount struct {
+		Protocol string `json:"protocol"`
+		Count    int    `json:"count"`
+	}
+	protocols := []ProtoCount{}
+	protoRows, protoErr := s.db.QueryContext(ctx,
+		`SELECT COALESCE(protocol, 'unknown'), COUNT(*) as c FROM auth_log
+		 WHERE success = 0 AND created_at >= datetime('now', '-30 days')
+		 GROUP BY protocol ORDER BY c DESC`)
+	if protoErr == nil {
+		defer protoRows.Close()
+		for protoRows.Next() {
+			var pc ProtoCount
+			if err := protoRows.Scan(&pc.Protocol, &pc.Count); err == nil {
+				protocols = append(protocols, pc)
+			}
+		}
+	}
+
 	s.jsonResponse(w, http.StatusOK, map[string]interface{}{
 		"suppression_count":  suppressionCount,
 		"greylist_count":     greylistCount,
 		"failed_login_count": failedLoginCount,
+		"daily_trend":        dailyTrend,
+		"top_ips":            topIPs,
+		"protocol_breakdown": protocols,
 	})
 }
