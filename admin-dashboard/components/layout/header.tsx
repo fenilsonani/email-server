@@ -2,6 +2,7 @@
 
 import { useAuthStore } from "@/lib/auth-store";
 import { LogOut, CircleUser } from "lucide-react";
+import { ThemeToggle } from "./theme-toggle";
 
 export function AdminHeader() {
   const { username, email, logout } = useAuthStore();
@@ -19,6 +20,8 @@ export function AdminHeader() {
           <CircleUser className="h-3.5 w-3.5" strokeWidth={1.5} />
           <span>{email || username || "admin"}</span>
         </div>
+        <div className="h-3 w-px bg-border" />
+        <ThemeToggle />
         <div className="h-3 w-px bg-border" />
         <button
           onClick={handleLogout}

@@ -7,6 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { api } from "@/lib/api";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Mail, MailOpen, AlertTriangle, ArrowUpDown } from "lucide-react";
+import { useChartColors } from "@/lib/chart-colors";
 import {
   AreaChart,
   Area,
@@ -94,6 +95,7 @@ function AnalyticsContent() {
   const [data, setData] = useState<AnalyticsData | null>(null);
   const [loading, setLoading] = useState(true);
   const [range, setRange] = useState<"7d" | "30d">("7d");
+  const colors = useChartColors();
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -123,10 +125,10 @@ function AnalyticsContent() {
 
   const tooltipStyle = {
     fontSize: 12,
-    backgroundColor: "#18181b",
-    border: "1px solid #27272a",
+    backgroundColor: colors.tooltipBg,
+    border: `1px solid ${colors.tooltipBorder}`,
     borderRadius: 8,
-    color: "#fafafa",
+    color: colors.tooltipText,
   };
 
   return (
@@ -198,14 +200,14 @@ function AnalyticsContent() {
                     <stop offset="95%" stopColor="hsl(160, 84%, 39%)" stopOpacity={0} />
                   </linearGradient>
                 </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="#27272a" />
+                <CartesianGrid strokeDasharray="3 3" stroke={colors.grid} />
                 <XAxis
                   dataKey="time"
                   tickFormatter={(t) => formatTimeLabel(t, range)}
-                  tick={{ fontSize: 11, fill: "#a1a1aa" }}
-                  stroke="#a1a1aa"
+                  tick={{ fontSize: 11, fill: colors.tick }}
+                  stroke={colors.tick}
                 />
-                <YAxis tick={{ fontSize: 11, fill: "#a1a1aa" }} stroke="#a1a1aa" />
+                <YAxis tick={{ fontSize: 11, fill: colors.tick }} stroke={colors.tick} />
                 <Tooltip
                   contentStyle={tooltipStyle}
                   labelFormatter={(t) => formatTimeLabel(t as string, range)}
@@ -245,16 +247,16 @@ function AnalyticsContent() {
             ) : (data?.bounce_trend?.length || 0) > 0 ? (
               <ResponsiveContainer width="100%" height={220}>
                 <LineChart data={data?.bounce_trend || []}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#27272a" />
+                  <CartesianGrid strokeDasharray="3 3" stroke={colors.grid} />
                   <XAxis
                     dataKey="time"
                     tickFormatter={(t) => formatTimeLabel(t, range)}
-                    tick={{ fontSize: 11, fill: "#a1a1aa" }}
-                    stroke="#a1a1aa"
+                    tick={{ fontSize: 11, fill: colors.tick }}
+                    stroke={colors.tick}
                   />
                   <YAxis
-                    tick={{ fontSize: 11, fill: "#a1a1aa" }}
-                    stroke="#a1a1aa"
+                    tick={{ fontSize: 11, fill: colors.tick }}
+                    stroke={colors.tick}
                     tickFormatter={(v) => `${v}%`}
                   />
                   <Tooltip
@@ -297,7 +299,7 @@ function AnalyticsContent() {
                       outerRadius={80}
                       innerRadius={45}
                       strokeWidth={2}
-                      stroke="#18181b"
+                      stroke={colors.pieSeparator}
                     >
                       {(data?.status_breakdown || []).map((entry, i) => (
                         <Cell
@@ -342,14 +344,14 @@ function AnalyticsContent() {
           ) : (
             <ResponsiveContainer width="100%" height={200}>
               <BarChart data={data?.hourly_distribution || []}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#27272a" />
+                <CartesianGrid strokeDasharray="3 3" stroke={colors.grid} />
                 <XAxis
                   dataKey="hour"
-                  tick={{ fontSize: 11, fill: "#a1a1aa" }}
-                  stroke="#a1a1aa"
+                  tick={{ fontSize: 11, fill: colors.tick }}
+                  stroke={colors.tick}
                   tickFormatter={(h) => `${h}:00`}
                 />
-                <YAxis tick={{ fontSize: 11, fill: "#a1a1aa" }} stroke="#a1a1aa" />
+                <YAxis tick={{ fontSize: 11, fill: colors.tick }} stroke={colors.tick} />
                 <Tooltip
                   contentStyle={tooltipStyle}
                   labelFormatter={(h) => `${h}:00 - ${h}:59`}
@@ -373,14 +375,14 @@ function AnalyticsContent() {
             ) : data?.top_domains.length ? (
               <ResponsiveContainer width="100%" height={220}>
                 <BarChart data={data.top_domains} layout="vertical" margin={{ left: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#27272a" />
-                  <XAxis type="number" tick={{ fontSize: 11, fill: "#a1a1aa" }} stroke="#a1a1aa" />
+                  <CartesianGrid strokeDasharray="3 3" stroke={colors.grid} />
+                  <XAxis type="number" tick={{ fontSize: 11, fill: colors.tick }} stroke={colors.tick} />
                   <YAxis
                     dataKey="domain"
                     type="category"
-                    tick={{ fontSize: 11, fill: "#a1a1aa" }}
+                    tick={{ fontSize: 11, fill: colors.tick }}
                     width={120}
-                    stroke="#a1a1aa"
+                    stroke={colors.tick}
                   />
                   <Tooltip contentStyle={tooltipStyle} />
                   <Bar dataKey="count" fill="hsl(217, 91%, 60%)" radius={[0, 4, 4, 0]} />
@@ -402,14 +404,14 @@ function AnalyticsContent() {
             ) : data?.top_senders.length ? (
               <ResponsiveContainer width="100%" height={220}>
                 <BarChart data={data.top_senders} layout="vertical" margin={{ left: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#27272a" />
-                  <XAxis type="number" tick={{ fontSize: 11, fill: "#a1a1aa" }} stroke="#a1a1aa" />
+                  <CartesianGrid strokeDasharray="3 3" stroke={colors.grid} />
+                  <XAxis type="number" tick={{ fontSize: 11, fill: colors.tick }} stroke={colors.tick} />
                   <YAxis
                     dataKey="email"
                     type="category"
-                    tick={{ fontSize: 11, fill: "#a1a1aa" }}
+                    tick={{ fontSize: 11, fill: colors.tick }}
                     width={140}
-                    stroke="#a1a1aa"
+                    stroke={colors.tick}
                   />
                   <Tooltip contentStyle={tooltipStyle} />
                   <Bar dataKey="count" fill="hsl(160, 84%, 39%)" radius={[0, 4, 4, 0]} />

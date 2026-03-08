@@ -10,6 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { api } from "@/lib/api";
 import { Ban, ShieldCheck, AlertTriangle, ArrowRight } from "lucide-react";
 import { AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
+import { useChartColors } from "@/lib/chart-colors";
 
 interface DayCount { date: string; count: number }
 interface IPCount { ip: string; count: number }
@@ -34,6 +35,7 @@ const PROTO_COLORS: Record<string, string> = {
 function SecurityContent() {
   const [data, setData] = useState<SecurityOverview | null>(null);
   const [loading, setLoading] = useState(true);
+  const colors = useChartColors();
 
   useEffect(() => {
     api.get<SecurityOverview>("/v1/security/overview").then((res) => {
@@ -117,10 +119,10 @@ function SecurityContent() {
               <CardContent>
                 <ResponsiveContainer width="100%" height={200}>
                   <AreaChart data={data.daily_trend}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#27272a" />
-                    <XAxis dataKey="date" tick={{ fontSize: 10, fill: "#a1a1aa" }} tickFormatter={(v: string) => v.slice(5)} stroke="#a1a1aa" />
-                    <YAxis tick={{ fontSize: 10, fill: "#a1a1aa" }} stroke="#a1a1aa" allowDecimals={false} />
-                    <Tooltip contentStyle={{ fontSize: 12, background: "#18181b", border: "1px solid #27272a", borderRadius: 8, color: "#fafafa" }} />
+                    <CartesianGrid strokeDasharray="3 3" stroke={colors.grid} />
+                    <XAxis dataKey="date" tick={{ fontSize: 10, fill: colors.tick }} tickFormatter={(v: string) => v.slice(5)} stroke={colors.tick} />
+                    <YAxis tick={{ fontSize: 10, fill: colors.tick }} stroke={colors.tick} allowDecimals={false} />
+                    <Tooltip contentStyle={{ fontSize: 12, background: colors.tooltipBg, border: `1px solid ${colors.tooltipBorder}`, borderRadius: 8, color: colors.tooltipText }} />
                     <Area type="monotone" dataKey="count" stroke="#ef4444" fill="#ef444420" name="Failed Logins" />
                   </AreaChart>
                 </ResponsiveContainer>
@@ -137,10 +139,10 @@ function SecurityContent() {
               <CardContent>
                 <ResponsiveContainer width="100%" height={200}>
                   <BarChart data={data.top_ips} layout="vertical">
-                    <CartesianGrid strokeDasharray="3 3" stroke="#27272a" />
-                    <XAxis type="number" tick={{ fontSize: 10, fill: "#a1a1aa" }} stroke="#a1a1aa" allowDecimals={false} />
-                    <YAxis type="category" dataKey="ip" tick={{ fontSize: 10, fill: "#a1a1aa" }} stroke="#a1a1aa" width={120} />
-                    <Tooltip contentStyle={{ fontSize: 12, background: "#18181b", border: "1px solid #27272a", borderRadius: 8, color: "#fafafa" }} />
+                    <CartesianGrid strokeDasharray="3 3" stroke={colors.grid} />
+                    <XAxis type="number" tick={{ fontSize: 10, fill: colors.tick }} stroke={colors.tick} allowDecimals={false} />
+                    <YAxis type="category" dataKey="ip" tick={{ fontSize: 10, fill: colors.tick }} stroke={colors.tick} width={120} />
+                    <Tooltip contentStyle={{ fontSize: 12, background: colors.tooltipBg, border: `1px solid ${colors.tooltipBorder}`, borderRadius: 8, color: colors.tooltipText }} />
                     <Bar dataKey="count" fill="#f59e0b" name="Attempts" radius={[0, 4, 4, 0]} />
                   </BarChart>
                 </ResponsiveContainer>
