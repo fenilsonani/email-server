@@ -13,7 +13,7 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from "@/components/ui/dialog";
 import { api } from "@/lib/api";
-import { Plus, Trash2, ArrowLeft } from "lucide-react";
+import { Plus, Trash2, ArrowLeft, FileDown, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { formatDistanceToNow } from "date-fns";
 import type { ColumnDef } from "@tanstack/react-table";
@@ -76,6 +76,8 @@ function BlocklistContent() {
   const [adding, setAdding] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<SuppressionEntry | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [showImport, setShowImport] = useState(false);
+  const [importing, setImporting] = useState(false);
 
   const fetchEntries = useCallback(async () => {
     setLoading(true);
@@ -148,10 +150,24 @@ function BlocklistContent() {
       title="Blocklist"
       description="Suppressed email addresses"
       actions={
-        <Button size="sm" className="h-8 text-[12px] gap-1.5" onClick={() => setShowAdd(true)}>
-          <Plus className="h-3.5 w-3.5" />
-          Add Entry
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" className="h-8 text-[12px] gap-1.5" onClick={() => {
+            const csv = ["Email,Reason,Domain,Added"];
+            entries.forEach(e => csv.push(`${e.email},${e.reason},${e.domain},${e.created_at}`));
+            const blob = new Blob([csv.join("\n")], { type: "text/csv" });
+            const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "blocklist.csv"; a.click(); URL.revokeObjectURL(a.href);
+            toast.success("Blocklist exported");
+          }}>
+            <FileDown className="h-3.5 w-3.5" />Export
+          </Button>
+          <Button variant="outline" size="sm" className="h-8 text-[12px] gap-1.5" onClick={() => setShowImport(true)}>
+            <Upload className="h-3.5 w-3.5" />Import
+          </Button>
+          <Button size="sm" className="h-8 text-[12px] gap-1.5" onClick={() => setShowAdd(true)}>
+            <Plus className="h-3.5 w-3.5" />
+            Add Entry
+          </Button>
+        </div>
       }
     >
       <Link href="/security/" className="inline-flex items-center gap-1.5 text-[12px] text-muted-foreground/60 hover:text-foreground transition-colors mb-2">
@@ -206,6 +222,47 @@ function BlocklistContent() {
             <Button size="sm" className="text-[12px]" onClick={handleAdd} disabled={adding || !addEmail}>
               {adding ? "Adding..." : "Add"}
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Import Dialog */}
+      <Dialog open={showImport} onOpenChange={setShowImport}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="text-[15px]">Import Blocklist</DialogTitle>
+            <DialogDescription className="text-[13px]">
+              Upload a CSV or text file with one email address per line.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="py-2">
+            <input
+              type="file"
+              accept=".csv,.txt"
+              className="text-[13px] file:mr-3 file:rounded-md file:border-0 file:bg-primary file:px-3 file:py-1.5 file:text-[12px] file:font-medium file:text-primary-foreground hover:file:bg-primary/90"
+              onChange={async (e) => {
+                const file = e.target.files?.[0];
+                if (!file) return;
+                setImporting(true);
+                const text = await file.text();
+                const lines = text.split(/[\r\n]+/).map(l => l.split(",")[0].trim()).filter(l => l && l.includes("@"));
+                let added = 0;
+                for (const email of lines) {
+                  const res = await api.post("/v1/security/suppression", { email, reason: "manual" });
+                  if (res.success) added++;
+                }
+                toast.success(`Imported ${added} of ${lines.length} entries`);
+                setShowImport(false);
+                setImporting(false);
+                fetchEntries();
+                e.target.value = "";
+              }}
+              disabled={importing}
+            />
+            {importing && <p className="text-[12px] text-muted-foreground mt-2">Importing...</p>}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" size="sm" className="text-[12px]" onClick={() => setShowImport(false)}>Cancel</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
