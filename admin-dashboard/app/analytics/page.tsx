@@ -123,10 +123,10 @@ function AnalyticsContent() {
 
   const tooltipStyle = {
     fontSize: 12,
-    backgroundColor: "hsl(var(--card))",
-    border: "1px solid hsl(var(--border))",
+    backgroundColor: "#18181b",
+    border: "1px solid #27272a",
     borderRadius: 8,
-    color: "hsl(var(--foreground))",
+    color: "#fafafa",
   };
 
   return (
@@ -198,14 +198,14 @@ function AnalyticsContent() {
                     <stop offset="95%" stopColor="hsl(160, 84%, 39%)" stopOpacity={0} />
                   </linearGradient>
                 </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                <CartesianGrid strokeDasharray="3 3" stroke="#27272a" />
                 <XAxis
                   dataKey="time"
                   tickFormatter={(t) => formatTimeLabel(t, range)}
-                  tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }}
-                  stroke="hsl(var(--muted-foreground))"
+                  tick={{ fontSize: 11, fill: "#a1a1aa" }}
+                  stroke="#a1a1aa"
                 />
-                <YAxis tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--muted-foreground))" />
+                <YAxis tick={{ fontSize: 11, fill: "#a1a1aa" }} stroke="#a1a1aa" />
                 <Tooltip
                   contentStyle={tooltipStyle}
                   labelFormatter={(t) => formatTimeLabel(t as string, range)}
@@ -245,16 +245,16 @@ function AnalyticsContent() {
             ) : (data?.bounce_trend?.length || 0) > 0 ? (
               <ResponsiveContainer width="100%" height={220}>
                 <LineChart data={data?.bounce_trend || []}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                  <CartesianGrid strokeDasharray="3 3" stroke="#27272a" />
                   <XAxis
                     dataKey="time"
                     tickFormatter={(t) => formatTimeLabel(t, range)}
-                    tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }}
-                    stroke="hsl(var(--muted-foreground))"
+                    tick={{ fontSize: 11, fill: "#a1a1aa" }}
+                    stroke="#a1a1aa"
                   />
                   <YAxis
-                    tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }}
-                    stroke="hsl(var(--muted-foreground))"
+                    tick={{ fontSize: 11, fill: "#a1a1aa" }}
+                    stroke="#a1a1aa"
                     tickFormatter={(v) => `${v}%`}
                   />
                   <Tooltip
@@ -297,7 +297,7 @@ function AnalyticsContent() {
                       outerRadius={80}
                       innerRadius={45}
                       strokeWidth={2}
-                      stroke="hsl(var(--card))"
+                      stroke="#18181b"
                     >
                       {(data?.status_breakdown || []).map((entry, i) => (
                         <Cell
@@ -342,14 +342,14 @@ function AnalyticsContent() {
           ) : (
             <ResponsiveContainer width="100%" height={200}>
               <BarChart data={data?.hourly_distribution || []}>
-                <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                <CartesianGrid strokeDasharray="3 3" stroke="#27272a" />
                 <XAxis
                   dataKey="hour"
-                  tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }}
-                  stroke="hsl(var(--muted-foreground))"
+                  tick={{ fontSize: 11, fill: "#a1a1aa" }}
+                  stroke="#a1a1aa"
                   tickFormatter={(h) => `${h}:00`}
                 />
-                <YAxis tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--muted-foreground))" />
+                <YAxis tick={{ fontSize: 11, fill: "#a1a1aa" }} stroke="#a1a1aa" />
                 <Tooltip
                   contentStyle={tooltipStyle}
                   labelFormatter={(h) => `${h}:00 - ${h}:59`}
@@ -373,14 +373,14 @@ function AnalyticsContent() {
             ) : data?.top_domains.length ? (
               <ResponsiveContainer width="100%" height={220}>
                 <BarChart data={data.top_domains} layout="vertical" margin={{ left: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                  <XAxis type="number" tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--muted-foreground))" />
+                  <CartesianGrid strokeDasharray="3 3" stroke="#27272a" />
+                  <XAxis type="number" tick={{ fontSize: 11, fill: "#a1a1aa" }} stroke="#a1a1aa" />
                   <YAxis
                     dataKey="domain"
                     type="category"
-                    tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }}
+                    tick={{ fontSize: 11, fill: "#a1a1aa" }}
                     width={120}
-                    stroke="hsl(var(--muted-foreground))"
+                    stroke="#a1a1aa"
                   />
                   <Tooltip contentStyle={tooltipStyle} />
                   <Bar dataKey="count" fill="hsl(217, 91%, 60%)" radius={[0, 4, 4, 0]} />
@@ -402,14 +402,14 @@ function AnalyticsContent() {
             ) : data?.top_senders.length ? (
               <ResponsiveContainer width="100%" height={220}>
                 <BarChart data={data.top_senders} layout="vertical" margin={{ left: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                  <XAxis type="number" tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--muted-foreground))" />
+                  <CartesianGrid strokeDasharray="3 3" stroke="#27272a" />
+                  <XAxis type="number" tick={{ fontSize: 11, fill: "#a1a1aa" }} stroke="#a1a1aa" />
                   <YAxis
                     dataKey="email"
                     type="category"
-                    tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }}
+                    tick={{ fontSize: 11, fill: "#a1a1aa" }}
                     width={140}
-                    stroke="hsl(var(--muted-foreground))"
+                    stroke="#a1a1aa"
                   />
                   <Tooltip contentStyle={tooltipStyle} />
                   <Bar dataKey="count" fill="hsl(160, 84%, 39%)" radius={[0, 4, 4, 0]} />

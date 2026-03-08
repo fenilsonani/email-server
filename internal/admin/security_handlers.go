@@ -2,6 +2,7 @@ package admin
 
 import (
 	"encoding/json"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -269,7 +270,6 @@ func (s *Server) handleAPISecurityFailedLogins(w http.ResponseWriter, r *http.Re
 		WHERE success = 0
 		GROUP BY remote_addr
 		ORDER BY attempt_count DESC
-		LIMIT 100
 	`)
 	if err != nil {
 		s.jsonError(w, http.StatusInternalServerError, "Failed to query failed logins")
@@ -283,15 +283,51 @@ func (s *Server) handleAPISecurityFailedLogins(w http.ResponseWriter, r *http.Re
 		LastAttempt  string `json:"last_attempt"`
 	}
 
-	entries := []FailedLogin{}
+	// Aggregate by IP (strip port from remote_addr)
+	ipMap := make(map[string]*FailedLogin)
 	for rows.Next() {
-		var e FailedLogin
-		if err := rows.Scan(&e.IP, &e.AttemptCount, &e.LastAttempt); err == nil {
-			entries = append(entries, e)
+		var addr string
+		var count int
+		var lastAttempt string
+		if err := rows.Scan(&addr, &count, &lastAttempt); err != nil {
+			continue
+		}
+		ip := stripPort(addr)
+		if existing, ok := ipMap[ip]; ok {
+			existing.AttemptCount += count
+			if lastAttempt > existing.LastAttempt {
+				existing.LastAttempt = lastAttempt
+			}
+		} else {
+			ipMap[ip] = &FailedLogin{IP: ip, AttemptCount: count, LastAttempt: lastAttempt}
 		}
 	}
 
+	// Sort by attempt count descending
+	entries := make([]FailedLogin, 0, len(ipMap))
+	for _, e := range ipMap {
+		entries = append(entries, *e)
+	}
+	for i := 0; i < len(entries); i++ {
+		for j := i + 1; j < len(entries); j++ {
+			if entries[j].AttemptCount > entries[i].AttemptCount {
+				entries[i], entries[j] = entries[j], entries[i]
+			}
+		}
+	}
+	if len(entries) > 100 {
+		entries = entries[:100]
+	}
+
 	s.jsonResponse(w, http.StatusOK, entries)
+}
+
+// stripPort removes the port from a host:port address string.
+func stripPort(addr string) string {
+	if host, _, err := net.SplitHostPort(addr); err == nil {
+		return host
+	}
+	return addr
 }
 
 // --- Security: Overview counts ---
@@ -307,7 +343,21 @@ func (s *Server) handleAPISecurityOverview(w http.ResponseWriter, r *http.Reques
 
 	s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM suppression_list").Scan(&suppressionCount)
 	s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM greylist").Scan(&greylistCount)
-	s.db.QueryRowContext(ctx, "SELECT COUNT(DISTINCT remote_addr) FROM auth_log WHERE success = 0").Scan(&failedLoginCount)
+	// Count distinct IPs (strip port from remote_addr in Go since SQLite lacks easy port-stripping)
+	var rawCount int
+	countRows, countErr := s.db.QueryContext(ctx, "SELECT DISTINCT remote_addr FROM auth_log WHERE success = 0")
+	if countErr == nil {
+		defer countRows.Close()
+		ipSet := make(map[string]struct{})
+		for countRows.Next() {
+			var addr string
+			if countRows.Scan(&addr) == nil {
+				ipSet[stripPort(addr)] = struct{}{}
+			}
+		}
+		rawCount = len(ipSet)
+	}
+	failedLoginCount = rawCount
 
 	// Daily failed logins trend (last 30 days)
 	type DayCount struct {
@@ -338,14 +388,30 @@ func (s *Server) handleAPISecurityOverview(w http.ResponseWriter, r *http.Reques
 	ipRows, ipErr := s.db.QueryContext(ctx,
 		`SELECT remote_addr, COUNT(*) as c FROM auth_log
 		 WHERE success = 0 AND created_at >= datetime('now', '-7 days')
-		 GROUP BY remote_addr ORDER BY c DESC LIMIT 10`)
+		 GROUP BY remote_addr ORDER BY c DESC`)
 	if ipErr == nil {
 		defer ipRows.Close()
+		ipAgg := make(map[string]int)
 		for ipRows.Next() {
-			var ic IPCount
-			if err := ipRows.Scan(&ic.IP, &ic.Count); err == nil {
-				topIPs = append(topIPs, ic)
+			var addr string
+			var count int
+			if err := ipRows.Scan(&addr, &count); err == nil {
+				ipAgg[stripPort(addr)] += count
 			}
+		}
+		for ip, count := range ipAgg {
+			topIPs = append(topIPs, IPCount{IP: ip, Count: count})
+		}
+		// Sort descending by count
+		for i := 0; i < len(topIPs); i++ {
+			for j := i + 1; j < len(topIPs); j++ {
+				if topIPs[j].Count > topIPs[i].Count {
+					topIPs[i], topIPs[j] = topIPs[j], topIPs[i]
+				}
+			}
+		}
+		if len(topIPs) > 10 {
+			topIPs = topIPs[:10]
 		}
 	}
 
