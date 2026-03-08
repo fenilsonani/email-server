@@ -39,11 +39,15 @@ function DomainsContent() {
       if (dnsStatus[d.id]) return;
       setDnsStatus(prev => ({ ...prev, [d.id]: "loading" }));
       api.get<{ type: string; status: string }[]>(`/v1/domains/${d.id}/dns`).then((res) => {
-        if (res.success && res.data) {
+        if (res.success && res.data && Array.isArray(res.data)) {
           const records = res.data;
           const get = (type: string) => records.find(r => r.type.toLowerCase() === type.toLowerCase())?.status || "missing";
           setDnsStatus(prev => ({ ...prev, [d.id]: { spf: get("TXT (SPF)"), dkim: get("TXT (DKIM)"), dmarc: get("TXT (DMARC)"), mx: get("MX") } }));
+        } else {
+          setDnsStatus(prev => ({ ...prev, [d.id]: { spf: "missing", dkim: "missing", dmarc: "missing", mx: "missing" } }));
         }
+      }).catch(() => {
+        setDnsStatus(prev => ({ ...prev, [d.id]: { spf: "missing", dkim: "missing", dmarc: "missing", mx: "missing" } }));
       });
     });
   }, [domains]); // eslint-disable-line react-hooks/exhaustive-deps
