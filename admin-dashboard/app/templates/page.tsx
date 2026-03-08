@@ -115,7 +115,8 @@ function TemplatesContent() {
   const startTestSend = (t: Template) => {
     setTestTarget(t);
     setTestTo("");
-    const vars: string[] = (() => { try { return JSON.parse(t.variables || "[]"); } catch { return []; } })();
+    const parsed = (() => { try { return JSON.parse(t.variables || "[]"); } catch { return []; } })();
+    const vars: string[] = Array.isArray(parsed) ? parsed : [];
     const defaults: Record<string, string> = {};
     vars.forEach((v) => { defaults[v] = `test_${v}`; });
     setTestVars(defaults);
@@ -241,7 +242,8 @@ function TemplatesContent() {
             ) : templates.length === 0 ? (
               <tr><td colSpan={6} className="px-4 py-8 text-center text-muted-foreground">No templates yet</td></tr>
             ) : templates.map((t) => {
-              const vars: string[] = (() => { try { return JSON.parse(t.variables || "[]"); } catch { return []; } })();
+              const parsed = (() => { try { return JSON.parse(t.variables || "[]"); } catch { return []; } })();
+              const vars: string[] = Array.isArray(parsed) ? parsed : [];
               return (
                 <tr key={t.id}>
                   <td className="px-4 py-2.5 font-medium">{t.name}</td>
