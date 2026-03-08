@@ -47,11 +47,11 @@ function DomainsContent() {
     domains.forEach((d) => {
       if (dnsStatus[d.id]) return;
       setDnsStatus(prev => ({ ...prev, [d.id]: "loading" }));
-      api.get<{ type: string; status: string; expected?: string; actual?: string }[]>(`/v1/domains/${d.id}/dns`).then((res) => {
-        if (res.success && res.data && Array.isArray(res.data)) {
-          const records = res.data;
+      api.get<{ records: { type: string; name: string; status: string; expected: string; actual: string }[]; checked_at: string }>(`/v1/domains/${d.id}/dns`).then((res) => {
+        if (res.success && res.data && Array.isArray(res.data.records)) {
+          const records = res.data.records;
           const get = (type: string) => records.find(r => r.type.toLowerCase() === type.toLowerCase())?.status || "missing";
-          setDnsStatus(prev => ({ ...prev, [d.id]: { spf: get("TXT (SPF)"), dkim: get("TXT (DKIM)"), dmarc: get("TXT (DMARC)"), mx: get("MX") } }));
+          setDnsStatus(prev => ({ ...prev, [d.id]: { spf: get("SPF"), dkim: get("DKIM"), dmarc: get("DMARC"), mx: get("MX") } }));
           setDnsRecords(prev => ({ ...prev, [d.id]: records.map(r => ({ type: r.type, expected: r.expected || "", actual: r.actual || "", status: r.status })) }));
         } else {
           setDnsStatus(prev => ({ ...prev, [d.id]: { spf: "missing", dkim: "missing", dmarc: "missing", mx: "missing" } }));
@@ -126,16 +126,16 @@ function DomainsContent() {
             {label}
           </span>
         );
-        const hasIssues = status.spf !== "ok" || status.dkim !== "ok" || status.dmarc !== "ok";
+        const hasIssues = status.spf !== "pass" || status.dkim !== "pass" || status.dmarc !== "pass";
         return (
           <button
             onClick={() => setExpandedDns(expandedDns === row.original.id ? null : row.original.id)}
             className="flex items-center gap-2 group"
             title={hasIssues ? "Click to see required DNS records" : "Click to see DNS details"}
           >
-            <DnsBadge label="SPF" ok={status.spf === "ok"} />
-            <DnsBadge label="DKIM" ok={status.dkim === "ok"} />
-            <DnsBadge label="DMARC" ok={status.dmarc === "ok"} />
+            <DnsBadge label="SPF" ok={status.spf === "pass"} />
+            <DnsBadge label="DKIM" ok={status.dkim === "pass"} />
+            <DnsBadge label="DMARC" ok={status.dmarc === "pass"} />
             <ChevronDown className={`h-3 w-3 text-muted-foreground/40 transition-transform ${expandedDns === row.original.id ? "rotate-180" : ""}`} />
           </button>
         );
