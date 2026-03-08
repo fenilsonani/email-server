@@ -118,9 +118,9 @@ function SecurityContent() {
                 <ResponsiveContainer width="100%" height={200}>
                   <AreaChart data={data.daily_trend}>
                     <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                    <XAxis dataKey="date" tick={{ fontSize: 10 }} tickFormatter={(v: string) => v.slice(5)} stroke="hsl(var(--muted-foreground))" />
-                    <YAxis tick={{ fontSize: 10 }} stroke="hsl(var(--muted-foreground))" allowDecimals={false} />
-                    <Tooltip contentStyle={{ fontSize: 12, background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: 8 }} />
+                    <XAxis dataKey="date" tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} tickFormatter={(v: string) => v.slice(5)} stroke="hsl(var(--muted-foreground))" />
+                    <YAxis tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--muted-foreground))" allowDecimals={false} />
+                    <Tooltip contentStyle={{ fontSize: 12, background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: 8, color: "hsl(var(--foreground))" }} />
                     <Area type="monotone" dataKey="count" stroke="#ef4444" fill="#ef444420" name="Failed Logins" />
                   </AreaChart>
                 </ResponsiveContainer>
@@ -138,9 +138,9 @@ function SecurityContent() {
                 <ResponsiveContainer width="100%" height={200}>
                   <BarChart data={data.top_ips} layout="vertical">
                     <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                    <XAxis type="number" tick={{ fontSize: 10 }} stroke="hsl(var(--muted-foreground))" allowDecimals={false} />
-                    <YAxis type="category" dataKey="ip" tick={{ fontSize: 10 }} stroke="hsl(var(--muted-foreground))" width={120} />
-                    <Tooltip contentStyle={{ fontSize: 12, background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: 8 }} />
+                    <XAxis type="number" tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--muted-foreground))" allowDecimals={false} />
+                    <YAxis type="category" dataKey="ip" tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--muted-foreground))" width={120} />
+                    <Tooltip contentStyle={{ fontSize: 12, background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: 8, color: "hsl(var(--foreground))" }} />
                     <Bar dataKey="count" fill="#f59e0b" name="Attempts" radius={[0, 4, 4, 0]} />
                   </BarChart>
                 </ResponsiveContainer>

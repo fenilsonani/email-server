@@ -126,6 +126,7 @@ function AnalyticsContent() {
     backgroundColor: "hsl(var(--card))",
     border: "1px solid hsl(var(--border))",
     borderRadius: 8,
+    color: "hsl(var(--foreground))",
   };
 
   return (
@@ -201,10 +202,10 @@ function AnalyticsContent() {
                 <XAxis
                   dataKey="time"
                   tickFormatter={(t) => formatTimeLabel(t, range)}
-                  tick={{ fontSize: 11 }}
+                  tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }}
                   stroke="hsl(var(--muted-foreground))"
                 />
-                <YAxis tick={{ fontSize: 11 }} stroke="hsl(var(--muted-foreground))" />
+                <YAxis tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--muted-foreground))" />
                 <Tooltip
                   contentStyle={tooltipStyle}
                   labelFormatter={(t) => formatTimeLabel(t as string, range)}
@@ -248,11 +249,11 @@ function AnalyticsContent() {
                   <XAxis
                     dataKey="time"
                     tickFormatter={(t) => formatTimeLabel(t, range)}
-                    tick={{ fontSize: 11 }}
+                    tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }}
                     stroke="hsl(var(--muted-foreground))"
                   />
                   <YAxis
-                    tick={{ fontSize: 11 }}
+                    tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }}
                     stroke="hsl(var(--muted-foreground))"
                     tickFormatter={(v) => `${v}%`}
                   />
@@ -344,11 +345,11 @@ function AnalyticsContent() {
                 <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
                 <XAxis
                   dataKey="hour"
-                  tick={{ fontSize: 11 }}
+                  tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }}
                   stroke="hsl(var(--muted-foreground))"
                   tickFormatter={(h) => `${h}:00`}
                 />
-                <YAxis tick={{ fontSize: 11 }} stroke="hsl(var(--muted-foreground))" />
+                <YAxis tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--muted-foreground))" />
                 <Tooltip
                   contentStyle={tooltipStyle}
                   labelFormatter={(h) => `${h}:00 - ${h}:59`}
@@ -373,11 +374,11 @@ function AnalyticsContent() {
               <ResponsiveContainer width="100%" height={220}>
                 <BarChart data={data.top_domains} layout="vertical" margin={{ left: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                  <XAxis type="number" tick={{ fontSize: 11 }} stroke="hsl(var(--muted-foreground))" />
+                  <XAxis type="number" tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--muted-foreground))" />
                   <YAxis
                     dataKey="domain"
                     type="category"
-                    tick={{ fontSize: 11 }}
+                    tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }}
                     width={120}
                     stroke="hsl(var(--muted-foreground))"
                   />
@@ -402,11 +403,11 @@ function AnalyticsContent() {
               <ResponsiveContainer width="100%" height={220}>
                 <BarChart data={data.top_senders} layout="vertical" margin={{ left: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                  <XAxis type="number" tick={{ fontSize: 11 }} stroke="hsl(var(--muted-foreground))" />
+                  <XAxis type="number" tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--muted-foreground))" />
                   <YAxis
                     dataKey="email"
                     type="category"
-                    tick={{ fontSize: 11 }}
+                    tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }}
                     width={140}
                     stroke="hsl(var(--muted-foreground))"
                   />
