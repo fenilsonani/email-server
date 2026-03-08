@@ -278,9 +278,9 @@ func (s *Server) handleAPISecurityFailedLogins(w http.ResponseWriter, r *http.Re
 	defer rows.Close()
 
 	type FailedLogin struct {
-		IP           string    `json:"ip"`
-		AttemptCount int       `json:"attempt_count"`
-		LastAttempt  time.Time `json:"last_attempt"`
+		IP           string `json:"ip"`
+		AttemptCount int    `json:"attempt_count"`
+		LastAttempt  string `json:"last_attempt"`
 	}
 
 	entries := []FailedLogin{}
