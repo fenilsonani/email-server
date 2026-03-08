@@ -31,7 +31,7 @@ function ModerationContent() {
   const fetchItems = () => {
     setLoading(true);
     api.get<ModerationItem[]>(`/v1/lists/${listId}/moderation`).then((res) => {
-      if (res.success && res.data) setItems(res.data);
+      if (res.success && Array.isArray(res.data)) setItems(res.data);
       setLoading(false);
     });
   };

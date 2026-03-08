@@ -38,7 +38,7 @@ function PageContent() {
   const fetchEmails = useCallback(async () => {
     setLoading(true);
     const res = await api.get<ScheduledEmail[]>("/v1/features/scheduled");
-    if (res.success && res.data) setEmails(res.data);
+    if (res.success && Array.isArray(res.data)) setEmails(res.data);
     setLoading(false);
   }, []);
 

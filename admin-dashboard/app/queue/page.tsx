@@ -37,7 +37,7 @@ function PageContent() {
   const fetchQueue = useCallback(async () => {
     setLoading(true);
     const res = await api.get<QueueMessage[]>("/v1/queue");
-    if (res.success && res.data) setMessages(res.data);
+    if (res.success && Array.isArray(res.data)) setMessages(res.data);
     setLoading(false);
   }, []);
 

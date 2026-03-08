@@ -42,7 +42,7 @@ function APIKeysContent() {
 
   const loadKeys = () => {
     api.get<APIKey[]>("/v1/api-keys").then((res) => {
-      if (res.success && res.data) setKeys(res.data);
+      if (res.success && Array.isArray(res.data)) setKeys(res.data);
       setLoading(false);
     });
   };
@@ -50,7 +50,7 @@ function APIKeysContent() {
   useEffect(() => {
     loadKeys();
     api.get<Domain[]>("/v1/domains-list").then((res) => {
-      if (res.success && res.data) {
+      if (res.success && Array.isArray(res.data)) {
         setDomains(res.data);
         if (res.data.length > 0) setDomainId(res.data[0].id);
       }

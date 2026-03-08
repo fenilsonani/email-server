@@ -36,7 +36,7 @@ function PageContent() {
   const fetchVips = useCallback(async () => {
     setLoading(true);
     const res = await api.get<VipSender[]>("/v1/features/vip");
-    if (res.success && res.data) setVips(res.data);
+    if (res.success && Array.isArray(res.data)) setVips(res.data);
     setLoading(false);
   }, []);
 

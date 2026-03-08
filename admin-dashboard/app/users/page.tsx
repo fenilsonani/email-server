@@ -104,7 +104,7 @@ function UsersContent() {
     if (domainFilter) params.domain = domainFilter;
     if (adminOnly) params.is_admin = "true";
     const res = await api.get<User[]>("/v1/users", params);
-    if (res.success && res.data) {
+    if (res.success && Array.isArray(res.data)) {
       setUsers(res.data);
       if (res.meta) {
         setTotalPages(res.meta.total_pages);
@@ -118,7 +118,7 @@ function UsersContent() {
 
   useEffect(() => {
     api.get<DomainOption[]>("/v1/domains-list").then((res) => {
-      if (res.success && res.data) setDomains(res.data);
+      if (res.success && Array.isArray(res.data)) setDomains(res.data);
     });
     api.get<SystemInfo>("/v1/system").then((res) => {
       if (res.success && res.data) setSystemInfo(res.data);

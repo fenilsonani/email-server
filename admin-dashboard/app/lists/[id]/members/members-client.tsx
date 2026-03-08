@@ -56,7 +56,7 @@ function MembersContent() {
   const fetchMembers = () => {
     setLoading(true);
     api.get<ListMember[]>(`/v1/lists/${listId}/members`).then((res) => {
-      if (res.success && res.data) setMembers(res.data);
+      if (res.success && Array.isArray(res.data)) setMembers(res.data);
       setLoading(false);
     });
   };

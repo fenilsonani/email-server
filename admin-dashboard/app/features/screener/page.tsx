@@ -38,7 +38,7 @@ function PageContent() {
   const fetchRules = useCallback(async () => {
     setLoading(true);
     const res = await api.get<ScreenerRule[]>("/v1/features/screener");
-    if (res.success && res.data) setRules(res.data);
+    if (res.success && Array.isArray(res.data)) setRules(res.data);
     setLoading(false);
   }, []);
 

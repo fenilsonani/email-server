@@ -36,7 +36,7 @@ function DomainsContent() {
   const fetchDomains = useCallback(async () => {
     setLoading(true);
     const res = await api.get<Domain[]>("/v1/domains");
-    if (res.success && res.data) setDomains(res.data);
+    if (res.success && Array.isArray(res.data)) setDomains(res.data);
     setLoading(false);
   }, []);
 

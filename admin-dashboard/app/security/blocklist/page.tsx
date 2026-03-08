@@ -84,7 +84,7 @@ function BlocklistContent() {
     const res = await api.get<SuppressionEntry[]>("/v1/security/suppression", {
       page: String(page), page_size: "20",
     });
-    if (res.success && res.data) {
+    if (res.success && Array.isArray(res.data)) {
       setEntries(res.data);
       if (res.meta) {
         setTotalPages(res.meta.total_pages);

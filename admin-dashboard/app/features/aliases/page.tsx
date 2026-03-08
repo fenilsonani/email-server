@@ -41,7 +41,7 @@ function PageContent() {
   const fetchAliases = useCallback(async () => {
     setLoading(true);
     const res = await api.get<Alias[]>("/v1/features/aliases");
-    if (res.success && res.data) setAliases(res.data);
+    if (res.success && Array.isArray(res.data)) setAliases(res.data);
     setLoading(false);
   }, []);
 

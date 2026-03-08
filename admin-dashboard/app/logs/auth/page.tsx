@@ -87,7 +87,7 @@ function PageContent() {
     setLoading(true);
     const dateParams = getDateRange(dateRange, customFrom, customTo);
     const res = await api.get<AuthLog[]>("/v1/logs/auth", { page: String(page), ...dateParams });
-    if (res.success && res.data) {
+    if (res.success && Array.isArray(res.data)) {
       setLogs(res.data);
       if (res.meta) {
         setTotalPages(res.meta.total_pages);

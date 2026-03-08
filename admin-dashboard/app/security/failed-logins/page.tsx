@@ -25,7 +25,7 @@ function FailedLoginsContent() {
 
   useEffect(() => {
     api.get<FailedLogin[]>("/v1/security/failed-logins").then((res) => {
-      if (res.success && res.data) setEntries(res.data);
+      if (res.success && Array.isArray(res.data)) setEntries(res.data);
       setLoading(false);
     });
   }, []);

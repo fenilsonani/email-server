@@ -59,7 +59,7 @@ function ArchivesContent() {
 
   useEffect(() => {
     api.get<ArchiveMessage[]>(`/v1/lists/${listId}/archives`).then((res) => {
-      if (res.success && res.data) setMessages(res.data);
+      if (res.success && Array.isArray(res.data)) setMessages(res.data);
       setLoading(false);
     });
   }, [listId]);

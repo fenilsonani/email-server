@@ -111,7 +111,7 @@ function PageContent() {
 
   useEffect(() => {
     api.get<MailingList[]>("/v1/lists").then((res) => {
-      if (res.success && res.data) setLists(res.data);
+      if (res.success && Array.isArray(res.data)) setLists(res.data);
       setLoading(false);
     });
   }, []);

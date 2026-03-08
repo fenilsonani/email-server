@@ -50,7 +50,7 @@ function TemplatesContent() {
 
   const load = () => {
     api.get<Template[]>("/v1/templates").then((res) => {
-      if (res.success && res.data) setTemplates(res.data);
+      if (res.success && Array.isArray(res.data)) setTemplates(res.data);
       setLoading(false);
     });
   };
@@ -58,7 +58,7 @@ function TemplatesContent() {
   useEffect(() => {
     load();
     api.get<Domain[]>("/v1/domains-list").then((res) => {
-      if (res.success && res.data) {
+      if (res.success && Array.isArray(res.data)) {
         setDomains(res.data);
         if (res.data.length > 0) setDomainId(res.data[0].id);
       }
