@@ -17,12 +17,34 @@ import {
   ResponsiveContainer,
   BarChart,
   Bar,
+  PieChart,
+  Pie,
+  Cell,
+  LineChart,
+  Line,
 } from "recharts";
 
 interface TimePoint {
   time: string;
   inbound: number;
   outbound: number;
+}
+
+interface HourCount {
+  hour: number;
+  count: number;
+}
+
+interface StatusCount {
+  status: string;
+  count: number;
+}
+
+interface BouncePoint {
+  time: string;
+  total: number;
+  bounced: number;
+  bounce_rate: number;
 }
 
 interface AnalyticsData {
@@ -35,6 +57,9 @@ interface AnalyticsData {
   };
   top_domains: { domain: string; count: number }[];
   top_senders: { email: string; count: number }[];
+  hourly_distribution: HourCount[];
+  status_breakdown: StatusCount[];
+  bounce_trend: BouncePoint[];
   range: string;
 }
 
@@ -53,6 +78,17 @@ function formatTimeLabel(time: string, range: string): string {
   }
   return d.toLocaleDateString("en-US", { month: "short", day: "numeric", hour: "numeric" });
 }
+
+const STATUS_COLORS: Record<string, string> = {
+  delivered: "hsl(160, 84%, 39%)",
+  failed: "hsl(0, 84%, 60%)",
+  bounced: "hsl(38, 92%, 50%)",
+  deferred: "hsl(217, 91%, 60%)",
+  rejected: "hsl(330, 80%, 55%)",
+  unknown: "hsl(var(--muted-foreground))",
+};
+
+const PIE_COLORS = ["hsl(160, 84%, 39%)", "hsl(0, 84%, 60%)", "hsl(38, 92%, 50%)", "hsl(217, 91%, 60%)", "hsl(330, 80%, 55%)", "hsl(270, 70%, 55%)"];
 
 function AnalyticsContent() {
   const [data, setData] = useState<AnalyticsData | null>(null);
@@ -80,6 +116,17 @@ function AnalyticsContent() {
         { label: "Avg Size", value: formatSize(data.summary.avg_size_bytes), icon: ArrowUpDown, color: "text-purple-500" },
       ]
     : [];
+
+  const bounceRate = data && (data.summary.total_inbound + data.summary.total_outbound) > 0
+    ? ((data.summary.bounces / (data.summary.total_inbound + data.summary.total_outbound)) * 100).toFixed(1)
+    : "0.0";
+
+  const tooltipStyle = {
+    fontSize: 12,
+    backgroundColor: "hsl(var(--card))",
+    border: "1px solid hsl(var(--border))",
+    borderRadius: 8,
+  };
 
   return (
     <PageShell
@@ -159,12 +206,7 @@ function AnalyticsContent() {
                 />
                 <YAxis tick={{ fontSize: 11 }} stroke="hsl(var(--muted-foreground))" />
                 <Tooltip
-                  contentStyle={{
-                    fontSize: 12,
-                    backgroundColor: "hsl(var(--card))",
-                    border: "1px solid hsl(var(--border))",
-                    borderRadius: 8,
-                  }}
+                  contentStyle={tooltipStyle}
                   labelFormatter={(t) => formatTimeLabel(t as string, range)}
                 />
                 <Area
@@ -182,6 +224,137 @@ function AnalyticsContent() {
                   strokeWidth={2}
                 />
               </AreaChart>
+            </ResponsiveContainer>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Bounce Rate Trend + Status Breakdown */}
+      <div className="grid md:grid-cols-2 gap-4">
+        <Card>
+          <CardHeader className="pb-2">
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-[13px] font-medium">Bounce Rate Trend</CardTitle>
+              <span className="text-[11px] text-muted-foreground tabular-nums">Overall: {bounceRate}%</span>
+            </div>
+          </CardHeader>
+          <CardContent>
+            {loading ? (
+              <Skeleton className="h-[220px] w-full" />
+            ) : (data?.bounce_trend?.length || 0) > 0 ? (
+              <ResponsiveContainer width="100%" height={220}>
+                <LineChart data={data?.bounce_trend || []}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                  <XAxis
+                    dataKey="time"
+                    tickFormatter={(t) => formatTimeLabel(t, range)}
+                    tick={{ fontSize: 11 }}
+                    stroke="hsl(var(--muted-foreground))"
+                  />
+                  <YAxis
+                    tick={{ fontSize: 11 }}
+                    stroke="hsl(var(--muted-foreground))"
+                    tickFormatter={(v) => `${v}%`}
+                  />
+                  <Tooltip
+                    contentStyle={tooltipStyle}
+                    labelFormatter={(t) => formatTimeLabel(t as string, range)}
+                    formatter={(value: number) => [`${value.toFixed(1)}%`, "Bounce Rate"]}
+                  />
+                  <Line
+                    type="monotone"
+                    dataKey="bounce_rate"
+                    stroke="hsl(38, 92%, 50%)"
+                    strokeWidth={2}
+                    dot={false}
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            ) : (
+              <p className="text-[13px] text-muted-foreground py-8 text-center">No data</p>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-[13px] font-medium">Delivery Status Breakdown</CardTitle>
+          </CardHeader>
+          <CardContent>
+            {loading ? (
+              <Skeleton className="h-[220px] w-full" />
+            ) : (data?.status_breakdown?.length || 0) > 0 ? (
+              <div className="flex items-center gap-4">
+                <ResponsiveContainer width="50%" height={220}>
+                  <PieChart>
+                    <Pie
+                      data={data?.status_breakdown || []}
+                      dataKey="count"
+                      nameKey="status"
+                      cx="50%"
+                      cy="50%"
+                      outerRadius={80}
+                      innerRadius={45}
+                      strokeWidth={2}
+                      stroke="hsl(var(--card))"
+                    >
+                      {(data?.status_breakdown || []).map((entry, i) => (
+                        <Cell
+                          key={entry.status}
+                          fill={STATUS_COLORS[entry.status] || PIE_COLORS[i % PIE_COLORS.length]}
+                        />
+                      ))}
+                    </Pie>
+                    <Tooltip contentStyle={tooltipStyle} />
+                  </PieChart>
+                </ResponsiveContainer>
+                <div className="flex-1 space-y-2">
+                  {(data?.status_breakdown || []).map((entry, i) => (
+                    <div key={entry.status} className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <div
+                          className="h-2.5 w-2.5 rounded-full shrink-0"
+                          style={{ backgroundColor: STATUS_COLORS[entry.status] || PIE_COLORS[i % PIE_COLORS.length] }}
+                        />
+                        <span className="text-[12px] capitalize">{entry.status}</span>
+                      </div>
+                      <span className="text-[12px] text-muted-foreground tabular-nums">{entry.count}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <p className="text-[13px] text-muted-foreground py-8 text-center">No data</p>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Busiest Hours */}
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-[13px] font-medium">Busiest Hours of Day</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {loading ? (
+            <Skeleton className="h-[200px] w-full" />
+          ) : (
+            <ResponsiveContainer width="100%" height={200}>
+              <BarChart data={data?.hourly_distribution || []}>
+                <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                <XAxis
+                  dataKey="hour"
+                  tick={{ fontSize: 11 }}
+                  stroke="hsl(var(--muted-foreground))"
+                  tickFormatter={(h) => `${h}:00`}
+                />
+                <YAxis tick={{ fontSize: 11 }} stroke="hsl(var(--muted-foreground))" />
+                <Tooltip
+                  contentStyle={tooltipStyle}
+                  labelFormatter={(h) => `${h}:00 - ${h}:59`}
+                />
+                <Bar dataKey="count" fill="hsl(217, 91%, 60%)" radius={[3, 3, 0, 0]} />
+              </BarChart>
             </ResponsiveContainer>
           )}
         </CardContent>
@@ -208,14 +381,7 @@ function AnalyticsContent() {
                     width={120}
                     stroke="hsl(var(--muted-foreground))"
                   />
-                  <Tooltip
-                    contentStyle={{
-                      fontSize: 12,
-                      backgroundColor: "hsl(var(--card))",
-                      border: "1px solid hsl(var(--border))",
-                      borderRadius: 8,
-                    }}
-                  />
+                  <Tooltip contentStyle={tooltipStyle} />
                   <Bar dataKey="count" fill="hsl(217, 91%, 60%)" radius={[0, 4, 4, 0]} />
                 </BarChart>
               </ResponsiveContainer>
@@ -244,14 +410,7 @@ function AnalyticsContent() {
                     width={140}
                     stroke="hsl(var(--muted-foreground))"
                   />
-                  <Tooltip
-                    contentStyle={{
-                      fontSize: 12,
-                      backgroundColor: "hsl(var(--card))",
-                      border: "1px solid hsl(var(--border))",
-                      borderRadius: 8,
-                    }}
-                  />
+                  <Tooltip contentStyle={tooltipStyle} />
                   <Bar dataKey="count" fill="hsl(160, 84%, 39%)" radius={[0, 4, 4, 0]} />
                 </BarChart>
               </ResponsiveContainer>

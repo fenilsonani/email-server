@@ -157,11 +157,99 @@ func (s *Server) handleAPIAnalytics(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Hourly distribution (busiest hours of day)
+	type HourCount struct {
+		Hour  int `json:"hour"`
+		Count int `json:"count"`
+	}
+
+	hourRows, err := s.db.QueryContext(ctx, `
+		SELECT CAST(strftime('%H', created_at) AS INTEGER) as hr, COUNT(*) as cnt
+		FROM delivery_log
+		WHERE created_at >= ?
+		GROUP BY hr
+		ORDER BY hr
+	`, sinceStr)
+
+	hourlyDist := make([]HourCount, 24)
+	for i := range hourlyDist {
+		hourlyDist[i] = HourCount{Hour: i, Count: 0}
+	}
+	if err == nil {
+		defer hourRows.Close()
+		for hourRows.Next() {
+			var hr, cnt int
+			if err := hourRows.Scan(&hr, &cnt); err == nil && hr >= 0 && hr < 24 {
+				hourlyDist[hr].Count = cnt
+			}
+		}
+	}
+
+	// Delivery status breakdown (pie chart data)
+	type StatusCount struct {
+		Status string `json:"status"`
+		Count  int    `json:"count"`
+	}
+
+	statusRows, err := s.db.QueryContext(ctx, `
+		SELECT COALESCE(status, 'unknown'), COUNT(*) as cnt
+		FROM delivery_log
+		WHERE created_at >= ?
+		GROUP BY status
+		ORDER BY cnt DESC
+	`, sinceStr)
+
+	statusBreakdown := []StatusCount{}
+	if err == nil {
+		defer statusRows.Close()
+		for statusRows.Next() {
+			var sc StatusCount
+			if err := statusRows.Scan(&sc.Status, &sc.Count); err == nil {
+				statusBreakdown = append(statusBreakdown, sc)
+			}
+		}
+	}
+
+	// Bounce rate over time
+	type BouncePoint struct {
+		Time       string  `json:"time"`
+		Total      int     `json:"total"`
+		Bounced    int     `json:"bounced"`
+		BounceRate float64 `json:"bounce_rate"`
+	}
+
+	bounceRows, err := s.db.QueryContext(ctx, fmt.Sprintf(`
+		SELECT strftime('%s', created_at) as t,
+			COUNT(*) as total,
+			SUM(CASE WHEN status='bounced' OR status='failed' THEN 1 ELSE 0 END) as bounced
+		FROM delivery_log
+		WHERE created_at >= ?
+		GROUP BY t
+		ORDER BY t
+	`, groupFormat), sinceStr)
+
+	bounceTimeSeries := []BouncePoint{}
+	if err == nil {
+		defer bounceRows.Close()
+		for bounceRows.Next() {
+			var bp BouncePoint
+			if err := bounceRows.Scan(&bp.Time, &bp.Total, &bp.Bounced); err == nil {
+				if bp.Total > 0 {
+					bp.BounceRate = float64(bp.Bounced) / float64(bp.Total) * 100
+				}
+				bounceTimeSeries = append(bounceTimeSeries, bp)
+			}
+		}
+	}
+
 	s.jsonResponse(w, http.StatusOK, map[string]interface{}{
-		"time_series":  timeSeries,
-		"summary":      summary,
-		"top_domains":  topDomains,
-		"top_senders":  topSenders,
-		"range":        rangeParam,
+		"time_series":       timeSeries,
+		"summary":           summary,
+		"top_domains":       topDomains,
+		"top_senders":       topSenders,
+		"hourly_distribution": hourlyDist,
+		"status_breakdown":  statusBreakdown,
+		"bounce_trend":      bounceTimeSeries,
+		"range":             rangeParam,
 	})
 }

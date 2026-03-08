@@ -8,10 +8,33 @@ import { api } from "@/lib/api";
 import type { DeliveryLog } from "@/lib/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { FileDown } from "lucide-react";
+import { FileDown, Calendar } from "lucide-react";
 import { toast } from "sonner";
-import { formatDistanceToNow } from "date-fns";
+import { formatDistanceToNow, subDays, format } from "date-fns";
 import type { ColumnDef } from "@tanstack/react-table";
+
+type DateRange = "all" | "today" | "7d" | "30d" | "custom";
+
+function getDateRange(range: DateRange, customFrom: string, customTo: string) {
+  const params: Record<string, string> = {};
+  const now = new Date();
+  switch (range) {
+    case "today":
+      params.from = format(new Date(now.getFullYear(), now.getMonth(), now.getDate()), "yyyy-MM-dd");
+      break;
+    case "7d":
+      params.from = format(subDays(now, 7), "yyyy-MM-dd");
+      break;
+    case "30d":
+      params.from = format(subDays(now, 30), "yyyy-MM-dd");
+      break;
+    case "custom":
+      if (customFrom) params.from = customFrom;
+      if (customTo) params.to = customTo;
+      break;
+  }
+  return params;
+}
 
 function statusVariant(status: string) {
   switch (status.toLowerCase()) {
@@ -70,10 +93,14 @@ function PageContent() {
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const [totalCount, setTotalCount] = useState(0);
+  const [dateRange, setDateRange] = useState<DateRange>("all");
+  const [customFrom, setCustomFrom] = useState("");
+  const [customTo, setCustomTo] = useState("");
 
   const fetchLogs = useCallback(async () => {
     setLoading(true);
-    const res = await api.get<DeliveryLog[]>("/v1/logs/delivery", { page: String(page) });
+    const dateParams = getDateRange(dateRange, customFrom, customTo);
+    const res = await api.get<DeliveryLog[]>("/v1/logs/delivery", { page: String(page), ...dateParams });
     if (res.success && res.data) {
       setLogs(res.data);
       if (res.meta) {
@@ -82,9 +109,14 @@ function PageContent() {
       }
     }
     setLoading(false);
-  }, [page]);
+  }, [page, dateRange, customFrom, customTo]);
 
   useEffect(() => { fetchLogs(); }, [fetchLogs]);
+
+  const handleRangeChange = (r: DateRange) => {
+    setDateRange(r);
+    setPage(1);
+  };
 
   return (
     <PageShell title="Delivery Logs" description="Outbound email delivery status"
@@ -100,6 +132,43 @@ function PageContent() {
         </Button>
       }
     >
+      {/* Date Range Filter */}
+      <div className="flex items-center gap-2 flex-wrap">
+        <div className="flex items-center gap-1 rounded-lg border border-border bg-background/50 p-0.5">
+          {([["all", "All"], ["today", "Today"], ["7d", "7 Days"], ["30d", "30 Days"], ["custom", "Custom"]] as const).map(([value, label]) => (
+            <button
+              key={value}
+              onClick={() => handleRangeChange(value as DateRange)}
+              className={`px-2.5 py-1 text-[12px] rounded-md transition-colors ${
+                dateRange === value
+                  ? "bg-accent text-foreground font-medium"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        {dateRange === "custom" && (
+          <div className="flex items-center gap-1.5">
+            <Calendar className="h-3.5 w-3.5 text-muted-foreground/50" />
+            <input
+              type="date"
+              value={customFrom}
+              onChange={(e) => { setCustomFrom(e.target.value); setPage(1); }}
+              className="h-8 px-2 text-[12px] rounded-md border border-border bg-background/50"
+            />
+            <span className="text-[11px] text-muted-foreground/50">to</span>
+            <input
+              type="date"
+              value={customTo}
+              onChange={(e) => { setCustomTo(e.target.value); setPage(1); }}
+              className="h-8 px-2 text-[12px] rounded-md border border-border bg-background/50"
+            />
+          </div>
+        )}
+      </div>
+
       <DataTable
         columns={columns}
         data={logs}

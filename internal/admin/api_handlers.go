@@ -950,13 +950,18 @@ func (s *Server) handleAPIGetLogs(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAPIAuthLogs(w http.ResponseWriter, r *http.Request, p PaginationParams) {
-	var totalCount int
-	s.db.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM auth_log").Scan(&totalCount)
+	fromParam := r.URL.Query().Get("from")
+	toParam := r.URL.Query().Get("to")
+	whereClause, dateArgs := buildDateFilter("created_at", fromParam, toParam)
 
+	var totalCount int
+	s.db.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM auth_log"+whereClause, dateArgs...).Scan(&totalCount)
+
+	args := append(dateArgs, p.PageSize, p.Offset)
 	rows, err := s.db.QueryContext(r.Context(),
 		`SELECT username, remote_addr, protocol, success, created_at
-		FROM auth_log ORDER BY created_at DESC LIMIT ? OFFSET ?`,
-		p.PageSize, p.Offset,
+		FROM auth_log`+whereClause+` ORDER BY created_at DESC LIMIT ? OFFSET ?`,
+		args...,
 	)
 	if err != nil {
 		s.jsonError(w, http.StatusInternalServerError, "Failed to query auth logs")
@@ -987,13 +992,18 @@ func (s *Server) handleAPIAuthLogs(w http.ResponseWriter, r *http.Request, p Pag
 }
 
 func (s *Server) handleAPIDeliveryLogs(w http.ResponseWriter, r *http.Request, p PaginationParams) {
-	var totalCount int
-	s.db.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM delivery_log").Scan(&totalCount)
+	fromParam := r.URL.Query().Get("from")
+	toParam := r.URL.Query().Get("to")
+	whereClause, dateArgs := buildDateFilter("created_at", fromParam, toParam)
 
+	var totalCount int
+	s.db.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM delivery_log"+whereClause, dateArgs...).Scan(&totalCount)
+
+	args := append(dateArgs, p.PageSize, p.Offset)
 	rows, err := s.db.QueryContext(r.Context(),
 		`SELECT sender, recipient, status, COALESCE(error_message, ''), created_at
-		FROM delivery_log ORDER BY created_at DESC LIMIT ? OFFSET ?`,
-		p.PageSize, p.Offset,
+		FROM delivery_log`+whereClause+` ORDER BY created_at DESC LIMIT ? OFFSET ?`,
+		args...,
 	)
 	if err != nil {
 		s.jsonError(w, http.StatusInternalServerError, "Failed to query delivery logs")
@@ -1024,13 +1034,18 @@ func (s *Server) handleAPIDeliveryLogs(w http.ResponseWriter, r *http.Request, p
 }
 
 func (s *Server) handleAPIAuditLogs(w http.ResponseWriter, r *http.Request, p PaginationParams) {
-	var totalCount int
-	s.db.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM audit_log").Scan(&totalCount)
+	fromParam := r.URL.Query().Get("from")
+	toParam := r.URL.Query().Get("to")
+	whereClause, dateArgs := buildDateFilter("timestamp", fromParam, toParam)
 
+	var totalCount int
+	s.db.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM audit_log"+whereClause, dateArgs...).Scan(&totalCount)
+
+	args := append(dateArgs, p.PageSize, p.Offset)
 	rows, err := s.db.QueryContext(r.Context(),
 		`SELECT actor, action, target, details, ip_address, timestamp
-		FROM audit_log ORDER BY timestamp DESC LIMIT ? OFFSET ?`,
-		p.PageSize, p.Offset,
+		FROM audit_log`+whereClause+` ORDER BY timestamp DESC LIMIT ? OFFSET ?`,
+		args...,
 	)
 	if err != nil {
 		s.jsonError(w, http.StatusInternalServerError, "Failed to query audit logs")
