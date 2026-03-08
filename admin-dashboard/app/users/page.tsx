@@ -14,7 +14,7 @@ import {
 } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
-import { Plus, Pencil, Trash2, Shield, Download } from "lucide-react";
+import { Plus, Pencil, Trash2, Shield, Download, FileDown } from "lucide-react";
 import { toast } from "sonner";
 import { formatDistanceToNow } from "date-fns";
 import type { ColumnDef } from "@tanstack/react-table";
@@ -352,12 +352,23 @@ function UsersContent() {
       title="Users"
       description="Manage email accounts across your domains"
       actions={
-        <Link href="/users/new/">
-          <Button size="sm" className="h-8 text-[12px] gap-1.5">
-            <Plus className="h-3.5 w-3.5" />
-            Add User
+        <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" className="h-8 text-[12px] gap-1.5" onClick={() => {
+            const csv = ["Email,Domain,Role,Quota,Used,Created"];
+            users.forEach(u => csv.push(`${u.email},${u.domain},${u.is_admin ? "admin" : "user"},${u.quota_bytes},${u.used_bytes || 0},${u.created_at}`));
+            const blob = new Blob([csv.join("\n")], { type: "text/csv" });
+            const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "users.csv"; a.click(); URL.revokeObjectURL(a.href);
+            toast.success("Users exported");
+          }}>
+            <FileDown className="h-3.5 w-3.5" />Export
           </Button>
-        </Link>
+          <Link href="/users/new/">
+            <Button size="sm" className="h-8 text-[12px] gap-1.5">
+              <Plus className="h-3.5 w-3.5" />
+              Add User
+            </Button>
+          </Link>
+        </div>
       }
     >
       <DataTable

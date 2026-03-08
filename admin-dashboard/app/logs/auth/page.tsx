@@ -7,6 +7,9 @@ import { DataTable } from "@/components/shared/data-table";
 import { api } from "@/lib/api";
 import type { AuthLog } from "@/lib/types";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { FileDown } from "lucide-react";
+import { toast } from "sonner";
 import { formatDistanceToNow } from "date-fns";
 import type { ColumnDef } from "@tanstack/react-table";
 
@@ -70,7 +73,19 @@ function PageContent() {
   useEffect(() => { fetchLogs(); }, [fetchLogs]);
 
   return (
-    <PageShell title="Auth Logs" description="Authentication attempts across all protocols">
+    <PageShell title="Auth Logs" description="Authentication attempts across all protocols"
+      actions={
+        <Button variant="outline" size="sm" className="h-8 text-[12px] gap-1.5" onClick={() => {
+          const csv = ["Username,IP,Protocol,Status,Time"];
+          logs.forEach(l => csv.push(`${l.username},${l.remote_ip},${l.protocol},${l.success ? "success" : "failed"},${l.created_at}`));
+          const blob = new Blob([csv.join("\n")], { type: "text/csv" });
+          const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "auth-logs.csv"; a.click(); URL.revokeObjectURL(a.href);
+          toast.success("Auth logs exported");
+        }}>
+          <FileDown className="h-3.5 w-3.5" />Export
+        </Button>
+      }
+    >
       <DataTable
         columns={columns}
         data={logs}
