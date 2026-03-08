@@ -8,7 +8,7 @@ import { api } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { formatDistanceToNow } from "date-fns";
-import { Inbox, RefreshCw, RotateCcw, Trash2 } from "lucide-react";
+import { Inbox, RefreshCw, RotateCcw, Trash2, FileDown } from "lucide-react";
 import { toast } from "sonner";
 import type { ColumnDef } from "@tanstack/react-table";
 
@@ -52,6 +52,24 @@ function PageContent() {
     const res = await api.delete(`/v1/queue/${id}`);
     if (res.success) { toast.success("Removed from queue"); fetchQueue(); }
     else toast.error(res.error || "Failed to delete");
+  };
+
+  const handleRetryAll = async () => {
+    let ok = 0;
+    for (const m of messages) {
+      const res = await api.post(`/v1/queue/${m.id}/retry`);
+      if (res.success) ok++;
+    }
+    toast.success(`Retried ${ok} of ${messages.length} messages`);
+    fetchQueue();
+  };
+
+  const exportQueue = () => {
+    const csv = ["ID,Sender,Recipients,Domain,Status,Attempts,Error,Created"];
+    messages.forEach(m => csv.push(`${m.id},"${m.sender}","${(m.recipients||[]).join(";")}",${m.domain},${m.status},${m.attempts}/${m.max_attempts},"${(m.last_error||"").replace(/"/g,'""')}",${m.created_at}`));
+    const blob = new Blob([csv.join("\n")], { type: "text/csv" });
+    const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "queue.csv"; a.click(); URL.revokeObjectURL(a.href);
+    toast.success("Queue exported");
   };
 
   const columns: ColumnDef<QueueMessage>[] = [
@@ -141,9 +159,11 @@ function PageContent() {
       <PageShell
         title="Message Queue"
         actions={
-          <Button variant="outline" size="sm" onClick={fetchQueue} className="h-8 text-[12px] gap-1.5">
-            <RefreshCw className="h-3.5 w-3.5" />Refresh
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" size="sm" onClick={fetchQueue} className="h-8 text-[12px] gap-1.5">
+              <RefreshCw className="h-3.5 w-3.5" />Refresh
+            </Button>
+          </div>
         }
       >
         <div className="flex flex-col items-center justify-center py-16 text-center">
@@ -158,9 +178,17 @@ function PageContent() {
     <PageShell
       title="Message Queue"
       actions={
-        <Button variant="outline" size="sm" onClick={fetchQueue} className="h-8 text-[12px] gap-1.5">
-          <RefreshCw className="h-3.5 w-3.5" />Refresh
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" className="h-8 text-[12px] gap-1.5" onClick={exportQueue}>
+            <FileDown className="h-3.5 w-3.5" />Export
+          </Button>
+          <Button variant="outline" size="sm" className="h-8 text-[12px] gap-1.5" onClick={handleRetryAll}>
+            <RotateCcw className="h-3.5 w-3.5" />Retry All
+          </Button>
+          <Button variant="outline" size="sm" onClick={fetchQueue} className="h-8 text-[12px] gap-1.5">
+            <RefreshCw className="h-3.5 w-3.5" />Refresh
+          </Button>
+        </div>
       }
     >
       <DataTable
