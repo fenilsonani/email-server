@@ -32,6 +32,8 @@ export interface DashboardStats {
   uptime_human: string;
   recent_activity: ActivityItem[];
   server_hostname: string;
+  failed_logins_24h: number;
+  bounced_24h: number;
 }
 
 export interface ActivityItem {
@@ -83,6 +85,93 @@ export interface FeaturesOverview {
   vip_count: number;
   scheduled_count: number;
   snoozed_count: number;
+}
+
+export interface Organization {
+  id: number;
+  name: string;
+  slug: string;
+  owner_user_id: number;
+  preset: string;
+  settings: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface OrgMember {
+  id: number;
+  org_id: number;
+  user_id: number;
+  role: string;
+  username: string;
+  email: string;
+  created_at: string;
+}
+
+export interface APIKey {
+  id: number;
+  domain_id: number;
+  key_prefix: string;
+  name: string;
+  scopes: string;
+  is_active: boolean;
+  rate_limit_per_hour: number;
+  last_used_at: string | null;
+  created_at: string;
+  expires_at: string | null;
+  domain_name: string;
+}
+
+export interface WebhookConfig {
+  id: number;
+  domain_id: number;
+  url: string;
+  events: string;
+  is_active: boolean;
+  failure_count: number;
+  last_triggered_at: string | null;
+  created_at: string;
+  domain_name: string;
+}
+
+export interface EmailTemplate {
+  id: number;
+  domain_id: number;
+  slug: string;
+  name: string;
+  subject: string;
+  html_body: string | null;
+  text_body: string | null;
+  variables: string | null;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+  domain_name: string;
+}
+
+export interface SentEmail {
+  id: number;
+  from_email: string;
+  to_email: string;
+  subject: string | null;
+  status: string;
+  opened_count: number;
+  clicked_count: number;
+  created_at: string;
+  delivered_at: string | null;
+  bounced_at: string | null;
+  template_slug: string | null;
+}
+
+export interface APIStats {
+  sent_today: number;
+  sent_week: number;
+  sent_month: number;
+  active_api_keys: number;
+  active_webhooks: number;
+  active_templates: number;
+  delivery_rate: number;
+  open_rate: number;
 }
 
 export interface SystemInfo {

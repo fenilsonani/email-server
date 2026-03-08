@@ -8,7 +8,7 @@ import { api } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { formatDistanceToNow } from "date-fns";
-import { Inbox, RefreshCw, RotateCcw, Trash2, FileDown } from "lucide-react";
+import { Inbox, RefreshCw, RotateCcw, Trash2, FileDown, Timer } from "lucide-react";
 import { toast } from "sonner";
 import type { ColumnDef } from "@tanstack/react-table";
 
@@ -32,6 +32,7 @@ interface QueueMessage {
 function PageContent() {
   const [messages, setMessages] = useState<QueueMessage[]>([]);
   const [loading, setLoading] = useState(true);
+  const [autoRefresh, setAutoRefresh] = useState(false);
 
   const fetchQueue = useCallback(async () => {
     setLoading(true);
@@ -41,6 +42,13 @@ function PageContent() {
   }, []);
 
   useEffect(() => { fetchQueue(); }, [fetchQueue]);
+
+  // Auto-refresh every 10 seconds
+  useEffect(() => {
+    if (!autoRefresh) return;
+    const interval = setInterval(fetchQueue, 10000);
+    return () => clearInterval(interval);
+  }, [autoRefresh, fetchQueue]);
 
   const handleRetry = async (id: string) => {
     const res = await api.post(`/v1/queue/${id}/retry`);
@@ -160,6 +168,15 @@ function PageContent() {
         title="Message Queue"
         actions={
           <div className="flex items-center gap-2">
+            <button
+              onClick={() => setAutoRefresh(!autoRefresh)}
+              className={`inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-[12px] transition-colors ${
+                autoRefresh ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-500" : "border-border text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              <Timer className="h-3.5 w-3.5" />
+              {autoRefresh ? "Auto: On" : "Auto: Off"}
+            </button>
             <Button variant="outline" size="sm" onClick={fetchQueue} className="h-8 text-[12px] gap-1.5">
               <RefreshCw className="h-3.5 w-3.5" />Refresh
             </Button>
@@ -179,6 +196,15 @@ function PageContent() {
       title="Message Queue"
       actions={
         <div className="flex items-center gap-2">
+          <button
+            onClick={() => setAutoRefresh(!autoRefresh)}
+            className={`inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-[12px] transition-colors ${
+              autoRefresh ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-500" : "border-border text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            <Timer className="h-3.5 w-3.5" />
+            {autoRefresh ? "Auto: On" : "Auto: Off"}
+          </button>
           <Button variant="outline" size="sm" className="h-8 text-[12px] gap-1.5" onClick={exportQueue}>
             <FileDown className="h-3.5 w-3.5" />Export
           </Button>
@@ -191,6 +217,13 @@ function PageContent() {
         </div>
       }
     >
+      {messages.filter(m => m.status === "failed").length > 0 && (
+        <div className="flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-[13px]">
+          <Trash2 className="h-4 w-4 text-destructive shrink-0" />
+          <span>{messages.filter(m => m.status === "failed").length} failed message{messages.filter(m => m.status === "failed").length !== 1 ? "s" : ""} in queue</span>
+        </div>
+      )}
+
       <DataTable
         columns={columns}
         data={messages}

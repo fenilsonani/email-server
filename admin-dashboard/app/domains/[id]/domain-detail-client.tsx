@@ -31,6 +31,8 @@ import {
   Users,
   RefreshCw,
   Loader2,
+  Copy,
+  Check,
 } from "lucide-react";
 import { toast } from "sonner";
 import { formatDistanceToNow } from "date-fns";
@@ -66,6 +68,14 @@ function DomainDetailContent() {
   const [dkimGenerating, setDkimGenerating] = useState(false);
   const [showDelete, setShowDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [copiedField, setCopiedField] = useState<string | null>(null);
+
+  const copyValue = (text: string, field: string) => {
+    navigator.clipboard.writeText(text);
+    setCopiedField(field);
+    toast.success("Copied to clipboard");
+    setTimeout(() => setCopiedField(null), 2000);
+  };
 
   useEffect(() => {
     Promise.all([
@@ -272,9 +282,21 @@ function DomainDetailContent() {
               {dkim.enabled && dkim.dns_record && (
                 <div>
                   <p className="text-muted-foreground">DNS TXT Record</p>
-                  <p className="font-mono text-[11px] mt-0.5 bg-muted/50 px-2 py-1.5 rounded break-all leading-relaxed">
-                    {dkim.selector}._domainkey.{domain.name} IN TXT &quot;{dkim.dns_record}&quot;
-                  </p>
+                  <div className="flex items-start gap-2 mt-0.5 bg-muted/50 px-2 py-1.5 rounded">
+                    <p className="font-mono text-[11px] break-all leading-relaxed flex-1">
+                      {dkim.selector}._domainkey.{domain.name} IN TXT &quot;{dkim.dns_record}&quot;
+                    </p>
+                    <button
+                      onClick={() => copyValue(`${dkim.selector}._domainkey.${domain.name} IN TXT "${dkim.dns_record}"`, "dkim-record")}
+                      className="shrink-0 p-0.5 text-muted-foreground hover:text-foreground transition-colors mt-0.5"
+                    >
+                      {copiedField === "dkim-record" ? (
+                        <Check className="h-3 w-3 text-green-500" />
+                      ) : (
+                        <Copy className="h-3 w-3" />
+                      )}
+                    </button>
+                  </div>
                 </div>
               )}
               {!dkim.enabled && (
@@ -360,18 +382,34 @@ function DomainDetailContent() {
                       </p>
                     )}
                     <div className="mt-1 space-y-0.5">
-                      <p className="text-[12px]">
-                        <span className="text-muted-foreground">Expected: </span>
-                        <span className="font-mono break-all">
+                      <div className="flex items-start gap-1 text-[12px]">
+                        <span className="text-muted-foreground shrink-0">Expected: </span>
+                        <span className="font-mono break-all flex-1">
                           {record.expected}
                         </span>
-                      </p>
+                        <button
+                          onClick={() => copyValue(record.expected, `expected-${i}`)}
+                          className="shrink-0 p-0.5 text-muted-foreground hover:text-foreground transition-colors"
+                          title="Copy expected value"
+                        >
+                          {copiedField === `expected-${i}` ? (
+                            <Check className="h-3 w-3 text-green-500" />
+                          ) : (
+                            <Copy className="h-3 w-3" />
+                          )}
+                        </button>
+                      </div>
                       {record.actual && (
                         <p className="text-[12px]">
                           <span className="text-muted-foreground">Found: </span>
                           <span className="font-mono break-all">
                             {record.actual}
                           </span>
+                        </p>
+                      )}
+                      {record.status === "fail" && (
+                        <p className="text-[11px] text-amber-500 mt-1">
+                          Add the expected record to your DNS provider to fix this.
                         </p>
                       )}
                     </div>

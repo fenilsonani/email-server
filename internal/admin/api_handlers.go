@@ -35,6 +35,15 @@ func (s *Server) handleAPIGetStats(w http.ResponseWriter, r *http.Request) {
 	// Calculate uptime
 	uptime := time.Since(s.startTime)
 
+	// Health alerts
+	var failedLogins24h int
+	s.db.QueryRowContext(r.Context(),
+		`SELECT COUNT(*) FROM auth_log WHERE success = 0 AND created_at >= datetime('now', '-1 day')`).Scan(&failedLogins24h)
+
+	var bouncedLast24h int
+	s.db.QueryRowContext(r.Context(),
+		`SELECT COUNT(*) FROM delivery_log WHERE (status='bounced' OR status='failed') AND created_at >= datetime('now', '-1 day')`).Scan(&bouncedLast24h)
+
 	s.jsonResponse(w, http.StatusOK, map[string]interface{}{
 		"total_users":        stats.TotalUsers,
 		"total_domains":      stats.TotalDomains,
@@ -48,6 +57,8 @@ func (s *Server) handleAPIGetStats(w http.ResponseWriter, r *http.Request) {
 		"uptime_human":       formatUptime(uptime),
 		"recent_activity":    stats.RecentActivity,
 		"server_hostname":    s.config.Server.Hostname,
+		"failed_logins_24h":  failedLogins24h,
+		"bounced_24h":        bouncedLast24h,
 	})
 }
 

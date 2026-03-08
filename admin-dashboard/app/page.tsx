@@ -6,7 +6,7 @@ import { api } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth-store";
 import type { DashboardStats } from "@/lib/types";
 import Link from "next/link";
-import { Users, Globe, Mail, Clock, CheckCircle2, XCircle, Server, UserPlus, BarChart3, Search, FileText } from "lucide-react";
+import { Users, Globe, Mail, Clock, CheckCircle2, XCircle, Server, UserPlus, BarChart3, Search, FileText, AlertTriangle, ShieldAlert, Inbox } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatDistanceToNow } from "date-fns";
 
@@ -87,6 +87,59 @@ function Dashboard() {
           <StatCard key={card.label} label={card.label} value={card.value} icon={card.icon} />
         ))}
       </div>
+
+      {/* Health Alerts */}
+      {(() => {
+        const alerts: { icon: typeof AlertTriangle; label: string; value: string; color: string; href: string }[] = [];
+        if (stats.failed_logins_24h > 0) {
+          alerts.push({
+            icon: ShieldAlert,
+            label: "Failed logins (24h)",
+            value: String(stats.failed_logins_24h),
+            color: stats.failed_logins_24h > 10 ? "border-destructive/40 bg-destructive/5" : "border-amber-500/40 bg-amber-500/5",
+            href: "/logs/auth/",
+          });
+        }
+        if (stats.queue_failed > 0) {
+          alerts.push({
+            icon: Inbox,
+            label: "Failed in queue",
+            value: String(stats.queue_failed),
+            color: "border-destructive/40 bg-destructive/5",
+            href: "/queue/",
+          });
+        }
+        if (stats.bounced_24h > 0) {
+          alerts.push({
+            icon: AlertTriangle,
+            label: "Bounced/failed emails (24h)",
+            value: String(stats.bounced_24h),
+            color: stats.bounced_24h > 20 ? "border-destructive/40 bg-destructive/5" : "border-amber-500/40 bg-amber-500/5",
+            href: "/logs/delivery/",
+          });
+        }
+        if (stats.queue_pending > 5) {
+          alerts.push({
+            icon: Clock,
+            label: "Pending in queue",
+            value: String(stats.queue_pending),
+            color: "border-amber-500/40 bg-amber-500/5",
+            href: "/queue/",
+          });
+        }
+        if (alerts.length === 0) return null;
+        return (
+          <div className="space-y-2">
+            {alerts.map((alert) => (
+              <Link key={alert.label} href={alert.href} className={`flex items-center gap-3 rounded-lg border p-3 transition-colors hover:bg-accent/30 ${alert.color}`}>
+                <alert.icon className="h-4 w-4 shrink-0 text-current opacity-70" strokeWidth={2} />
+                <span className="text-[13px] flex-1">{alert.label}</span>
+                <span className="text-[15px] font-semibold tabular-nums">{alert.value}</span>
+              </Link>
+            ))}
+          </div>
+        );
+      })()}
 
       {/* Quick actions */}
       <div>

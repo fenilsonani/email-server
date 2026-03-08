@@ -12,7 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from "@/components/ui/dialog";
-import { Plus, Trash2, ExternalLink, Shield, Users, CheckCircle2, XCircle, Loader2 } from "lucide-react";
+import { Plus, Trash2, ExternalLink, Shield, Users, CheckCircle2, XCircle, Loader2, ChevronDown, Copy, Check } from "lucide-react";
 import { toast } from "sonner";
 import { formatDistanceToNow } from "date-fns";
 import type { ColumnDef } from "@tanstack/react-table";
@@ -23,6 +23,15 @@ function DomainsContent() {
   const [deleteTarget, setDeleteTarget] = useState<Domain | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [dnsStatus, setDnsStatus] = useState<Record<number, { spf: string; dkim: string; dmarc: string; mx: string } | "loading">>({});
+  const [expandedDns, setExpandedDns] = useState<number | null>(null);
+  const [dnsRecords, setDnsRecords] = useState<Record<number, { type: string; expected: string; actual: string; status: string }[]>>({});
+  const [copiedField, setCopiedField] = useState<string | null>(null);
+
+  const copyValue = (text: string, field: string) => {
+    navigator.clipboard.writeText(text);
+    setCopiedField(field);
+    setTimeout(() => setCopiedField(null), 2000);
+  };
 
   const fetchDomains = useCallback(async () => {
     setLoading(true);
@@ -38,11 +47,12 @@ function DomainsContent() {
     domains.forEach((d) => {
       if (dnsStatus[d.id]) return;
       setDnsStatus(prev => ({ ...prev, [d.id]: "loading" }));
-      api.get<{ type: string; status: string }[]>(`/v1/domains/${d.id}/dns`).then((res) => {
+      api.get<{ type: string; status: string; expected?: string; actual?: string }[]>(`/v1/domains/${d.id}/dns`).then((res) => {
         if (res.success && res.data && Array.isArray(res.data)) {
           const records = res.data;
           const get = (type: string) => records.find(r => r.type.toLowerCase() === type.toLowerCase())?.status || "missing";
           setDnsStatus(prev => ({ ...prev, [d.id]: { spf: get("TXT (SPF)"), dkim: get("TXT (DKIM)"), dmarc: get("TXT (DMARC)"), mx: get("MX") } }));
+          setDnsRecords(prev => ({ ...prev, [d.id]: records.map(r => ({ type: r.type, expected: r.expected || "", actual: r.actual || "", status: r.status })) }));
         } else {
           setDnsStatus(prev => ({ ...prev, [d.id]: { spf: "missing", dkim: "missing", dmarc: "missing", mx: "missing" } }));
         }
@@ -116,12 +126,18 @@ function DomainsContent() {
             {label}
           </span>
         );
+        const hasIssues = status.spf !== "ok" || status.dkim !== "ok" || status.dmarc !== "ok";
         return (
-          <div className="flex items-center gap-2">
+          <button
+            onClick={() => setExpandedDns(expandedDns === row.original.id ? null : row.original.id)}
+            className="flex items-center gap-2 group"
+            title={hasIssues ? "Click to see required DNS records" : "Click to see DNS details"}
+          >
             <DnsBadge label="SPF" ok={status.spf === "ok"} />
             <DnsBadge label="DKIM" ok={status.dkim === "ok"} />
             <DnsBadge label="DMARC" ok={status.dmarc === "ok"} />
-          </div>
+            <ChevronDown className={`h-3 w-3 text-muted-foreground/40 transition-transform ${expandedDns === row.original.id ? "rotate-180" : ""}`} />
+          </button>
         );
       },
     },
@@ -177,6 +193,58 @@ function DomainsContent() {
         searchPlaceholder="Filter domains..."
         emptyMessage="No domains configured."
       />
+
+      {/* Expanded DNS Details */}
+      {expandedDns && dnsRecords[expandedDns] && (() => {
+        const domain = domains.find(d => d.id === expandedDns);
+        const records = dnsRecords[expandedDns];
+        return (
+          <div className="rounded-lg border border-border bg-card p-4 space-y-3 -mt-1">
+            <div className="flex items-center justify-between">
+              <h3 className="text-[13px] font-medium">DNS Records for {domain?.name}</h3>
+              <Link href={`/domains/${expandedDns}/`} className="text-[12px] text-muted-foreground hover:text-foreground transition-colors">
+                View full details
+              </Link>
+            </div>
+            <div className="space-y-2">
+              {records.map((record, i) => (
+                <div key={i} className={`rounded-md border p-2.5 text-[12px] ${record.status === "pass" || record.status === "ok" ? "border-emerald-500/20 bg-emerald-500/5" : "border-destructive/20 bg-destructive/5"}`}>
+                  <div className="flex items-center gap-2 mb-1">
+                    {record.status === "pass" || record.status === "ok" ? (
+                      <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
+                    ) : (
+                      <XCircle className="h-3.5 w-3.5 text-destructive" />
+                    )}
+                    <span className="font-medium">{record.type}</span>
+                  </div>
+                  {record.expected && (
+                    <div className="flex items-start gap-1 ml-5.5 mt-1">
+                      <span className="text-muted-foreground shrink-0">Expected: </span>
+                      <span className="font-mono break-all flex-1 text-[11px]">{record.expected}</span>
+                      <button
+                        onClick={() => copyValue(record.expected, `dns-${expandedDns}-${i}`)}
+                        className="shrink-0 p-0.5 text-muted-foreground hover:text-foreground transition-colors"
+                      >
+                        {copiedField === `dns-${expandedDns}-${i}` ? (
+                          <Check className="h-3 w-3 text-green-500" />
+                        ) : (
+                          <Copy className="h-3 w-3" />
+                        )}
+                      </button>
+                    </div>
+                  )}
+                  {record.actual && (
+                    <div className="ml-5.5 mt-0.5">
+                      <span className="text-muted-foreground">Found: </span>
+                      <span className="font-mono break-all text-[11px]">{record.actual}</span>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })()}
 
       <Dialog open={!!deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)}>
         <DialogContent>
