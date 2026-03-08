@@ -6,7 +6,7 @@ import Link from "next/link";
 import { AuthGuard } from "@/components/layout/auth-guard";
 import { api } from "@/lib/api";
 import { useRouteId } from "@/lib/use-route-id";
-import type { User } from "@/lib/types";
+import type { User, SystemInfo } from "@/lib/types";
 import { PageShell } from "@/components/shared/page-shell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -24,7 +24,7 @@ import {
   DialogDescription,
   DialogFooter,
 } from "@/components/ui/dialog";
-import { ArrowLeft, Loader2, Trash2, HardDrive } from "lucide-react";
+import { ArrowLeft, Loader2, Trash2, HardDrive, Download, Smartphone, Copy, Check, ChevronDown } from "lucide-react";
 import { toast } from "sonner";
 import { formatDistanceToNow } from "date-fns";
 
@@ -42,6 +42,9 @@ function EditUserContent() {
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [quotaBytes, setQuotaBytes] = useState<number>(1073741824);
   const [savingQuota, setSavingQuota] = useState(false);
+  const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null);
+  const [showManualSetup, setShowManualSetup] = useState(false);
+  const [copiedField, setCopiedField] = useState<string | null>(null);
 
   useEffect(() => {
     api.get<User>(`/v1/users/${userId}`).then((res) => {
@@ -55,7 +58,199 @@ function EditUserContent() {
       }
       setLoading(false);
     });
+    api.get<SystemInfo>("/v1/system").then((res) => {
+      if (res.success && res.data) setSystemInfo(res.data);
+    });
   }, [userId]);
+
+  const copyToClipboard = (text: string, field: string) => {
+    navigator.clipboard.writeText(text);
+    setCopiedField(field);
+    setTimeout(() => setCopiedField(null), 2000);
+  };
+
+  const triggerDownload = (content: string, filename: string, mimeType: string) => {
+    const blob = new Blob([content], { type: mimeType });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  const generateSimpleUUID = (seed: string) => {
+    let hash = 0;
+    for (let i = 0; i < seed.length; i++) {
+      hash = ((hash << 5) - hash + seed.charCodeAt(i)) | 0;
+    }
+    const hex = Math.abs(hash).toString(16).padStart(8, "0");
+    return `${hex.slice(0, 8)}-${hex.slice(0, 4)}-4${hex.slice(1, 4)}-a${hex.slice(1, 4)}-${hex.padEnd(12, "0").slice(0, 12)}`;
+  };
+
+  const downloadAppleProfile = () => {
+    if (!user || !systemInfo) return;
+    const domain = user.email.split("@")[1];
+    const hostname = systemInfo.hostname;
+    const imapsPort = systemInfo.config.imaps_port;
+    const smtpsPort = systemInfo.config.smtps_port;
+    const displayName = domain + " Mail";
+    const emailUUID = generateSimpleUUID(user.email + "-email");
+    const profileUUID = generateSimpleUUID(user.email + "-profile");
+
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>PayloadContent</key>
+    <array>
+        <dict>
+            <key>EmailAccountDescription</key>
+            <string>${displayName}</string>
+            <key>EmailAccountName</key>
+            <string>${user.email}</string>
+            <key>EmailAccountType</key>
+            <string>EmailTypeIMAP</string>
+            <key>EmailAddress</key>
+            <string>${user.email}</string>
+            <key>IncomingMailServerAuthentication</key>
+            <string>EmailAuthPassword</string>
+            <key>IncomingMailServerHostName</key>
+            <string>${hostname}</string>
+            <key>IncomingMailServerPortNumber</key>
+            <integer>${imapsPort}</integer>
+            <key>IncomingMailServerUseSSL</key>
+            <true/>
+            <key>IncomingMailServerUsername</key>
+            <string>${user.email}</string>
+            <key>OutgoingMailServerAuthentication</key>
+            <string>EmailAuthPassword</string>
+            <key>OutgoingMailServerHostName</key>
+            <string>${hostname}</string>
+            <key>OutgoingMailServerPortNumber</key>
+            <integer>${smtpsPort}</integer>
+            <key>OutgoingMailServerUseSSL</key>
+            <true/>
+            <key>OutgoingMailServerUsername</key>
+            <string>${user.email}</string>
+            <key>OutgoingPasswordSameAsIncomingPassword</key>
+            <true/>
+            <key>PayloadDescription</key>
+            <string>Email account</string>
+            <key>PayloadDisplayName</key>
+            <string>${displayName}</string>
+            <key>PayloadIdentifier</key>
+            <string>com.${domain}.email</string>
+            <key>PayloadType</key>
+            <string>com.apple.mail.managed</string>
+            <key>PayloadUUID</key>
+            <string>${emailUUID}</string>
+            <key>PayloadVersion</key>
+            <integer>1</integer>
+            <key>PreventAppSheet</key>
+            <false/>
+            <key>PreventMove</key>
+            <false/>
+            <key>SMIMEEnabled</key>
+            <false/>
+        </dict>
+    </array>
+    <key>PayloadDescription</key>
+    <string>Email configuration for ${domain}</string>
+    <key>PayloadDisplayName</key>
+    <string>${displayName}</string>
+    <key>PayloadIdentifier</key>
+    <string>com.${domain}.profile</string>
+    <key>PayloadOrganization</key>
+    <string>${domain}</string>
+    <key>PayloadRemovalDisallowed</key>
+    <false/>
+    <key>PayloadType</key>
+    <string>Configuration</string>
+    <key>PayloadUUID</key>
+    <string>${profileUUID}</string>
+    <key>PayloadVersion</key>
+    <integer>1</integer>
+</dict>
+</plist>`;
+    triggerDownload(xml, `${domain}-email.mobileconfig`, "application/x-apple-aspen-config");
+    toast.success("Apple Mail profile downloaded");
+  };
+
+  const downloadThunderbirdConfig = () => {
+    if (!user || !systemInfo) return;
+    const domain = user.email.split("@")[1];
+    const hostname = systemInfo.hostname;
+    const imapsPort = systemInfo.config.imaps_port;
+    const smtpPort = systemInfo.config.smtp_port;
+
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<clientConfig version="1.1">
+  <emailProvider id="${domain}">
+    <domain>${domain}</domain>
+    <displayName>${domain} Mail</displayName>
+    <incomingServer type="imap">
+      <hostname>${hostname}</hostname>
+      <port>${imapsPort}</port>
+      <socketType>SSL</socketType>
+      <username>${user.email}</username>
+      <authentication>password-cleartext</authentication>
+    </incomingServer>
+    <outgoingServer type="smtp">
+      <hostname>${hostname}</hostname>
+      <port>${smtpPort}</port>
+      <socketType>STARTTLS</socketType>
+      <username>${user.email}</username>
+      <authentication>password-cleartext</authentication>
+    </outgoingServer>
+  </emailProvider>
+</clientConfig>`;
+    triggerDownload(xml, `autoconfig-${user.email}.xml`, "application/xml");
+    toast.success("Thunderbird config downloaded");
+  };
+
+  const downloadOutlookConfig = () => {
+    if (!user || !systemInfo) return;
+    const hostname = systemInfo.hostname;
+    const imapsPort = systemInfo.config.imaps_port;
+    const smtpPort = systemInfo.config.smtp_port;
+
+    const xml = `<?xml version="1.0" encoding="utf-8"?>
+<Autodiscover xmlns="http://schemas.microsoft.com/exchange/autodiscover/responseschema/2006">
+  <Response xmlns="http://schemas.microsoft.com/exchange/autodiscover/outlook/responseschema/2006a">
+    <Account>
+      <AccountType>email</AccountType>
+      <Action>settings</Action>
+      <Protocol>
+        <Type>IMAP</Type>
+        <Server>${hostname}</Server>
+        <Port>${imapsPort}</Port>
+        <LoginName>${user.email}</LoginName>
+        <DomainRequired>off</DomainRequired>
+        <SPA>off</SPA>
+        <SSL>on</SSL>
+        <AuthRequired>on</AuthRequired>
+      </Protocol>
+      <Protocol>
+        <Type>SMTP</Type>
+        <Server>${hostname}</Server>
+        <Port>${smtpPort}</Port>
+        <LoginName>${user.email}</LoginName>
+        <DomainRequired>off</DomainRequired>
+        <SPA>off</SPA>
+        <Encryption>TLS</Encryption>
+        <AuthRequired>on</AuthRequired>
+        <UsePOPAuth>on</UsePOPAuth>
+        <SMTPLast>off</SMTPLast>
+      </Protocol>
+    </Account>
+  </Response>
+</Autodiscover>`;
+    triggerDownload(xml, `autodiscover-${user.email}.xml`, "application/xml");
+    toast.success("Outlook config downloaded");
+  };
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -280,6 +475,80 @@ function EditUserContent() {
           </Button>
         </CardContent>
       </Card>
+
+      {systemInfo && (
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-[13px] font-medium flex items-center gap-1.5">
+              <Smartphone className="h-3.5 w-3.5" />
+              Mail Client Setup
+            </CardTitle>
+            <p className="text-[12px] text-muted-foreground">
+              Download a profile to auto-configure this account in a mail client.
+            </p>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex flex-wrap gap-2">
+              <Button variant="outline" size="sm" className="text-[13px]" onClick={downloadAppleProfile}>
+                <Download className="h-3.5 w-3.5" />
+                Apple Mail
+              </Button>
+              <Button variant="outline" size="sm" className="text-[13px]" onClick={downloadThunderbirdConfig}>
+                <Download className="h-3.5 w-3.5" />
+                Thunderbird
+              </Button>
+              <Button variant="outline" size="sm" className="text-[13px]" onClick={downloadOutlookConfig}>
+                <Download className="h-3.5 w-3.5" />
+                Outlook
+              </Button>
+            </div>
+
+            <button
+              type="button"
+              className="flex items-center gap-1 text-[12px] text-muted-foreground hover:text-foreground transition-colors"
+              onClick={() => setShowManualSetup(!showManualSetup)}
+            >
+              <ChevronDown className={`h-3.5 w-3.5 transition-transform ${showManualSetup ? "rotate-0" : "-rotate-90"}`} />
+              Manual setup instructions
+            </button>
+
+            {showManualSetup && (() => {
+              const domain = user.email.split("@")[1];
+              const mailHost = `mail.${domain}`;
+              const fields = [
+                { label: "IMAP Server", value: mailHost },
+                { label: "IMAP Port", value: `${systemInfo.config.imaps_port} (SSL)` },
+                { label: "SMTP Server", value: mailHost },
+                { label: "SMTP Port", value: `${systemInfo.config.smtps_port} (SSL)` },
+                { label: "Username", value: user.email },
+              ];
+              return (
+                <div className="rounded-lg border bg-muted/30 p-3 space-y-2">
+                  {fields.map((f) => (
+                    <div key={f.label} className="flex items-center justify-between gap-4">
+                      <span className="text-[12px] text-muted-foreground whitespace-nowrap">{f.label}</span>
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[13px] font-mono">{f.value}</span>
+                        <button
+                          type="button"
+                          className="text-muted-foreground hover:text-foreground transition-colors p-0.5"
+                          onClick={() => copyToClipboard(f.value.replace(/ \(SSL\)/, ""), f.label)}
+                        >
+                          {copiedField === f.label ? (
+                            <Check className="h-3 w-3 text-green-500" />
+                          ) : (
+                            <Copy className="h-3 w-3" />
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
+          </CardContent>
+        </Card>
+      )}
 
       <Separator />
 
