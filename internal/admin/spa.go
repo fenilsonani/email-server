@@ -39,8 +39,9 @@ func (s *Server) serveSPA() http.Handler {
 			urlPath = "/index.html"
 		}
 
-		// Don't serve SPA for API routes
-		if strings.HasPrefix(urlPath, "/api/") {
+		// Don't serve SPA for backend API routes (auth + v1), but allow
+		// the /api/ dashboard page to be served as static content.
+		if strings.HasPrefix(urlPath, "/api/v1/") || strings.HasPrefix(urlPath, "/api/auth/") {
 			http.NotFound(w, r)
 			return
 		}
