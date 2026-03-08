@@ -96,7 +96,7 @@ function UsersContent() {
   const [deleteTarget, setDeleteTarget] = useState<User | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null);
-  const [downloadMenu, setDownloadMenu] = useState<number | null>(null);
+  const [downloadMenu, setDownloadMenu] = useState<{ id: number; x: number; y: number } | null>(null);
 
   const fetchUsers = useCallback(async () => {
     setLoading(true);
@@ -316,40 +316,20 @@ function UsersContent() {
       cell: ({ row }) => (
         <div className="flex items-center justify-end gap-0.5">
           {systemInfo && (
-            <div className="relative">
-              <button
-                onClick={() => setDownloadMenu(downloadMenu === row.original.id ? null : row.original.id)}
-                className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground/50 transition-colors hover:bg-accent hover:text-foreground"
-                title="Download mail profile"
-              >
-                <Download className="h-3.5 w-3.5" />
-              </button>
-              {downloadMenu === row.original.id && (
-                <>
-                  <div className="fixed inset-0 z-40" onClick={() => setDownloadMenu(null)} />
-                  <div className="absolute right-0 top-8 z-50 w-44 rounded-lg border bg-popover p-1 shadow-md animate-in fade-in-0 zoom-in-95">
-                    <button
-                      onClick={() => downloadProfile(row.original, "apple")}
-                      className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-[12px] hover:bg-accent transition-colors"
-                    >
-                      Apple Mail
-                    </button>
-                    <button
-                      onClick={() => downloadProfile(row.original, "thunderbird")}
-                      className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-[12px] hover:bg-accent transition-colors"
-                    >
-                      Thunderbird
-                    </button>
-                    <button
-                      onClick={() => downloadProfile(row.original, "outlook")}
-                      className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-[12px] hover:bg-accent transition-colors"
-                    >
-                      Outlook
-                    </button>
-                  </div>
-                </>
-              )}
-            </div>
+            <button
+              onClick={(e) => {
+                if (downloadMenu?.id === row.original.id) {
+                  setDownloadMenu(null);
+                } else {
+                  const rect = e.currentTarget.getBoundingClientRect();
+                  setDownloadMenu({ id: row.original.id, x: rect.right, y: rect.top });
+                }
+              }}
+              className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground/50 transition-colors hover:bg-accent hover:text-foreground"
+              title="Download mail profile"
+            >
+              <Download className="h-3.5 w-3.5" />
+            </button>
           )}
           <Link href={`/users/${row.original.id}/`}>
             <button className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground/50 transition-colors hover:bg-accent hover:text-foreground">
@@ -422,6 +402,39 @@ function UsersContent() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {downloadMenu && (() => {
+        const menuUser = users.find((u) => u.id === downloadMenu.id);
+        if (!menuUser) return null;
+        return (
+          <>
+            <div className="fixed inset-0 z-40" onClick={() => setDownloadMenu(null)} />
+            <div
+              className="fixed z-50 w-44 rounded-lg border bg-popover p-1 shadow-md animate-in fade-in-0 zoom-in-95"
+              style={{ top: downloadMenu.y - 108, left: downloadMenu.x - 176 }}
+            >
+              <button
+                onClick={() => downloadProfile(menuUser, "apple")}
+                className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-[12px] hover:bg-accent transition-colors"
+              >
+                Apple Mail
+              </button>
+              <button
+                onClick={() => downloadProfile(menuUser, "thunderbird")}
+                className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-[12px] hover:bg-accent transition-colors"
+              >
+                Thunderbird
+              </button>
+              <button
+                onClick={() => downloadProfile(menuUser, "outlook")}
+                className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-[12px] hover:bg-accent transition-colors"
+              >
+                Outlook
+              </button>
+            </div>
+          </>
+        );
+      })()}
     </PageShell>
   );
 }
