@@ -7,7 +7,8 @@ import { api } from "@/lib/api";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Search, Globe, CheckCircle, XCircle, AlertTriangle } from "lucide-react";
+import { Search, Globe, CheckCircle, XCircle, AlertTriangle, Copy, Check } from "lucide-react";
+import { toast } from "sonner";
 
 interface DNSResult {
   record_type: string;
@@ -21,6 +22,14 @@ function PageContent() {
   const [domain, setDomain] = useState("");
   const [checking, setChecking] = useState(false);
   const [results, setResults] = useState<DNSResult[] | null>(null);
+  const [copiedField, setCopiedField] = useState<string | null>(null);
+
+  const copyValue = (value: string, label: string) => {
+    navigator.clipboard.writeText(value);
+    setCopiedField(label);
+    toast.success("Copied to clipboard");
+    setTimeout(() => setCopiedField(null), 2000);
+  };
 
   const handleCheck = async () => {
     if (!domain.trim()) return;
@@ -74,10 +83,30 @@ function PageContent() {
                 </div>
                 <p className="text-[12px] text-muted-foreground">{result.message}</p>
                 {result.actual && (
-                  <p className="text-[12px] text-muted-foreground/70 font-mono break-all mt-0.5">{result.actual}</p>
+                  <div className="flex items-start gap-1.5 mt-0.5">
+                    <p className="text-[12px] text-muted-foreground/70 font-mono break-all flex-1">{result.actual}</p>
+                    <button
+                      onClick={() => copyValue(result.actual, `actual-${result.record_type}`)}
+                      className="shrink-0 mt-0.5 text-muted-foreground/40 hover:text-foreground transition-colors"
+                      title="Copy actual value"
+                    >
+                      {copiedField === `actual-${result.record_type}` ? <Check className="h-3 w-3 text-emerald-500" /> : <Copy className="h-3 w-3" />}
+                    </button>
+                  </div>
                 )}
                 {result.status !== "pass" && result.expected && (
-                  <p className="text-[11px] text-amber-500/70 mt-1">Expected: {result.expected}</p>
+                  <div className="flex items-start gap-1.5 mt-1 rounded-md bg-amber-500/5 border border-amber-500/20 px-2 py-1.5">
+                    <p className="text-[11px] text-amber-600 font-mono break-all flex-1">
+                      <span className="text-amber-500/70 font-sans">Expected: </span>{result.expected}
+                    </p>
+                    <button
+                      onClick={() => copyValue(result.expected, `expected-${result.record_type}`)}
+                      className="shrink-0 mt-0.5 text-amber-500/50 hover:text-amber-600 transition-colors"
+                      title="Copy expected value"
+                    >
+                      {copiedField === `expected-${result.record_type}` ? <Check className="h-3 w-3 text-emerald-500" /> : <Copy className="h-3 w-3" />}
+                    </button>
+                  </div>
                 )}
               </div>
             </div>

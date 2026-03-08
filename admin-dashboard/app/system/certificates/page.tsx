@@ -8,7 +8,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ArrowLeft, Shield, Clock, CheckCircle, XCircle, RefreshCw } from "lucide-react";
+import { ArrowLeft, Shield, Clock, CheckCircle, XCircle, RefreshCw, Download } from "lucide-react";
 import Link from "next/link";
 
 interface Certificate {
@@ -178,6 +178,23 @@ function PageContent() {
                   </div>
                 </div>
               </div>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 text-[11px] gap-1 shrink-0"
+                onClick={async () => {
+                  const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || "/admin/api"}/v1/system/certificates/${encodeURIComponent(cert.domain)}/download`, { credentials: "include" });
+                  if (res.ok) {
+                    const blob = await res.blob();
+                    const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = `${cert.domain}.pem`; a.click(); URL.revokeObjectURL(a.href);
+                    toast.success("Certificate downloaded");
+                  } else {
+                    toast.error("Failed to download certificate");
+                  }
+                }}
+              >
+                <Download className="h-3 w-3" />Download
+              </Button>
             </div>
           ))}
         </div>

@@ -249,6 +249,23 @@ function PageContent() {
                     >
                       {item.type}
                     </Badge>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-7 text-[11px] gap-1 shrink-0"
+                      onClick={async () => {
+                        const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || "/admin/api"}/v1/system/backup/${encodeURIComponent(item.id)}/download`, { credentials: "include" });
+                        if (res.ok) {
+                          const blob = await res.blob();
+                          const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = `backup-${item.id}.tar.gz`; a.click(); URL.revokeObjectURL(a.href);
+                          toast.success("Backup downloaded");
+                        } else {
+                          toast.error("Failed to download backup");
+                        }
+                      }}
+                    >
+                      <Download className="h-3 w-3" />Download
+                    </Button>
                   </div>
                 </div>
               ))}

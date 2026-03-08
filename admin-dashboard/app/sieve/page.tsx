@@ -8,7 +8,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { FileCode, Save, CheckCircle, XCircle } from "lucide-react";
+import { FileCode, Save, CheckCircle, XCircle, BookOpen } from "lucide-react";
 
 interface SieveData {
   script: string;
@@ -20,6 +20,85 @@ interface ValidationResult {
   errors?: string[];
 }
 
+const sieveTemplates = [
+  {
+    name: "Spam Filter",
+    description: "Move spam-flagged messages to Junk folder",
+    script: `require ["fileinto"];
+
+# Move spam to Junk folder
+if header :contains "X-Spam-Flag" "YES" {
+  fileinto "Junk";
+}
+
+keep;`,
+  },
+  {
+    name: "Subject Sorting",
+    description: "Sort emails into folders based on subject keywords",
+    script: `require ["fileinto"];
+
+# Sort newsletters
+if header :contains "Subject" "[newsletter]" {
+  fileinto "Newsletters";
+}
+
+# Sort invoices
+if header :contains "Subject" "invoice" {
+  fileinto "Finance";
+}
+
+keep;`,
+  },
+  {
+    name: "Vacation Auto-Reply",
+    description: "Send automatic out-of-office replies",
+    script: `require ["vacation"];
+
+vacation
+  :days 7
+  :subject "Out of Office"
+  "I am currently out of the office and will return on Monday.
+I will respond to your email when I return.
+
+Thank you.";`,
+  },
+  {
+    name: "Forward Mail",
+    description: "Redirect copies of incoming mail to another address",
+    script: `require ["copy"];
+
+# Forward a copy to another address
+redirect :copy "backup@example.com";
+
+keep;`,
+  },
+  {
+    name: "Reject by Sender",
+    description: "Reject emails from specific senders",
+    script: `require ["reject"];
+
+# Reject emails from specific senders
+if address :is "from" "spammer@example.com" {
+  reject "Your message has been rejected.";
+}
+
+keep;`,
+  },
+  {
+    name: "Large Attachment Filter",
+    description: "File large messages into a separate folder",
+    script: `require ["fileinto"];
+
+# Move large messages (over 10MB) to a separate folder
+if size :over 10M {
+  fileinto "Large Messages";
+}
+
+keep;`,
+  },
+];
+
 function PageContent() {
   const [script, setScript] = useState("");
   const [updatedAt, setUpdatedAt] = useState("");
@@ -27,6 +106,7 @@ function PageContent() {
   const [saving, setSaving] = useState(false);
   const [validating, setValidating] = useState(false);
   const [validation, setValidation] = useState<ValidationResult | null>(null);
+  const [showTemplates, setShowTemplates] = useState(false);
 
   useEffect(() => {
     const fetchScript = async () => {
@@ -96,6 +176,15 @@ function PageContent() {
       description="Edit email filtering rules using the Sieve scripting language"
       actions={
         <div className="flex items-center gap-2">
+          <Button
+            size="sm"
+            className="h-8 text-[12px] gap-1.5"
+            variant="outline"
+            onClick={() => setShowTemplates(!showTemplates)}
+          >
+            <BookOpen className="h-3.5 w-3.5" />
+            Templates
+          </Button>
           <Button
             size="sm"
             className="h-8 text-[12px] gap-1.5"
@@ -172,6 +261,39 @@ function PageContent() {
                 )}
               </div>
             )}
+          </CardContent>
+        </Card>
+      )}
+      {/* Template Library */}
+      {showTemplates && (
+        <Card className="rounded-lg border border-border bg-card">
+          <CardHeader className="pb-3">
+            <CardTitle className="flex items-center gap-2 text-[14px] font-medium">
+              <BookOpen className="h-4 w-4 text-muted-foreground/60" />
+              Template Library
+            </CardTitle>
+            <p className="text-[12px] text-muted-foreground/60 mt-1">
+              Click a template to insert it into the editor. This will replace the current script.
+            </p>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+              {sieveTemplates.map((tpl) => (
+                <button
+                  key={tpl.name}
+                  onClick={() => {
+                    setScript(tpl.script);
+                    setValidation(null);
+                    setShowTemplates(false);
+                    toast.success(`Loaded "${tpl.name}" template`);
+                  }}
+                  className="text-left rounded-lg border border-border p-3 hover:bg-accent/50 transition-colors"
+                >
+                  <span className="text-[13px] font-medium block">{tpl.name}</span>
+                  <span className="text-[11px] text-muted-foreground/60 block mt-0.5">{tpl.description}</span>
+                </button>
+              ))}
+            </div>
           </CardContent>
         </Card>
       )}
