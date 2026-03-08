@@ -12,7 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from "@/components/ui/dialog";
-import { Plus, Trash2, ExternalLink, Shield, KeyRound, Users } from "lucide-react";
+import { Plus, Trash2, ExternalLink, Shield, Users, CheckCircle2, XCircle, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { formatDistanceToNow } from "date-fns";
 import type { ColumnDef } from "@tanstack/react-table";
@@ -22,6 +22,7 @@ function DomainsContent() {
   const [loading, setLoading] = useState(true);
   const [deleteTarget, setDeleteTarget] = useState<Domain | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [dnsStatus, setDnsStatus] = useState<Record<number, { spf: string; dkim: string; dmarc: string; mx: string } | "loading">>({});
 
   const fetchDomains = useCallback(async () => {
     setLoading(true);
@@ -31,6 +32,21 @@ function DomainsContent() {
   }, []);
 
   useEffect(() => { fetchDomains(); }, [fetchDomains]);
+
+  // Fetch DNS status for each domain
+  useEffect(() => {
+    domains.forEach((d) => {
+      if (dnsStatus[d.id]) return;
+      setDnsStatus(prev => ({ ...prev, [d.id]: "loading" }));
+      api.get<{ type: string; status: string }[]>(`/v1/domains/${d.id}/dns`).then((res) => {
+        if (res.success && res.data) {
+          const records = res.data;
+          const get = (type: string) => records.find(r => r.type.toLowerCase() === type.toLowerCase())?.status || "missing";
+          setDnsStatus(prev => ({ ...prev, [d.id]: { spf: get("TXT (SPF)"), dkim: get("TXT (DKIM)"), dmarc: get("TXT (DMARC)"), mx: get("MX") } }));
+        }
+      });
+    });
+  }, [domains]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleDelete = async () => {
     if (!deleteTarget) return;
@@ -82,17 +98,28 @@ function DomainsContent() {
       ),
     },
     {
-      accessorKey: "dkim_enabled",
-      header: "DKIM",
+      id: "dns_status",
+      header: "DNS",
       enableSorting: false,
-      cell: ({ row }) =>
-        row.original.dkim_enabled ? (
-          <Badge variant="outline" className="text-[10px] text-emerald-500 border-emerald-500/30 gap-1">
-            <KeyRound className="h-3 w-3" />Enabled
-          </Badge>
-        ) : (
-          <Badge variant="outline" className="text-[10px] text-muted-foreground">Off</Badge>
-        ),
+      cell: ({ row }) => {
+        const status = dnsStatus[row.original.id];
+        if (!status || status === "loading") {
+          return <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground/30" />;
+        }
+        const DnsBadge = ({ label, ok }: { label: string; ok: boolean }) => (
+          <span className={`inline-flex items-center gap-0.5 text-[10px] font-medium ${ok ? "text-emerald-500" : "text-destructive/70"}`}>
+            {ok ? <CheckCircle2 className="h-3 w-3" /> : <XCircle className="h-3 w-3" />}
+            {label}
+          </span>
+        );
+        return (
+          <div className="flex items-center gap-2">
+            <DnsBadge label="SPF" ok={status.spf === "ok"} />
+            <DnsBadge label="DKIM" ok={status.dkim === "ok"} />
+            <DnsBadge label="DMARC" ok={status.dmarc === "ok"} />
+          </div>
+        );
+      },
     },
     {
       accessorKey: "created_at",
