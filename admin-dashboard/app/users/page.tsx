@@ -6,7 +6,7 @@ import { AuthGuard } from "@/components/layout/auth-guard";
 import { PageShell } from "@/components/shared/page-shell";
 import { DataTable } from "@/components/shared/data-table";
 import { api } from "@/lib/api";
-import type { User } from "@/lib/types";
+import type { User, SystemInfo } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -14,7 +14,7 @@ import {
 } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
-import { Plus, Pencil, Trash2, Shield } from "lucide-react";
+import { Plus, Pencil, Trash2, Shield, Download } from "lucide-react";
 import { toast } from "sonner";
 import { formatDistanceToNow } from "date-fns";
 import type { ColumnDef } from "@tanstack/react-table";
@@ -95,6 +95,8 @@ function UsersContent() {
   const [domains, setDomains] = useState<DomainOption[]>([]);
   const [deleteTarget, setDeleteTarget] = useState<User | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null);
+  const [downloadMenu, setDownloadMenu] = useState<number | null>(null);
 
   const fetchUsers = useCallback(async () => {
     setLoading(true);
@@ -118,7 +120,178 @@ function UsersContent() {
     api.get<DomainOption[]>("/v1/domains-list").then((res) => {
       if (res.success && res.data) setDomains(res.data);
     });
+    api.get<SystemInfo>("/v1/system").then((res) => {
+      if (res.success && res.data) setSystemInfo(res.data);
+    });
   }, []);
+
+  const triggerDownload = (content: string, filename: string, mimeType: string) => {
+    const blob = new Blob([content], { type: mimeType });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  const generateSimpleUUID = (seed: string) => {
+    let hash = 0;
+    for (let i = 0; i < seed.length; i++) {
+      hash = ((hash << 5) - hash + seed.charCodeAt(i)) | 0;
+    }
+    const hex = Math.abs(hash).toString(16).padStart(8, "0");
+    return `${hex.slice(0, 8)}-${hex.slice(0, 4)}-4${hex.slice(1, 4)}-a${hex.slice(1, 4)}-${hex.padEnd(12, "0").slice(0, 12)}`;
+  };
+
+  const downloadProfile = (user: User, type: "apple" | "thunderbird" | "outlook") => {
+    if (!systemInfo) return;
+    const domain = user.email.split("@")[1];
+    const hostname = systemInfo.hostname;
+    const imapsPort = systemInfo.config.imaps_port;
+    const smtpsPort = systemInfo.config.smtps_port;
+    const smtpPort = systemInfo.config.smtp_port;
+
+    if (type === "apple") {
+      const displayName = domain + " Mail";
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>PayloadContent</key>
+    <array>
+        <dict>
+            <key>EmailAccountDescription</key>
+            <string>${displayName}</string>
+            <key>EmailAccountName</key>
+            <string>${user.email}</string>
+            <key>EmailAccountType</key>
+            <string>EmailTypeIMAP</string>
+            <key>EmailAddress</key>
+            <string>${user.email}</string>
+            <key>IncomingMailServerAuthentication</key>
+            <string>EmailAuthPassword</string>
+            <key>IncomingMailServerHostName</key>
+            <string>${hostname}</string>
+            <key>IncomingMailServerPortNumber</key>
+            <integer>${imapsPort}</integer>
+            <key>IncomingMailServerUseSSL</key>
+            <true/>
+            <key>IncomingMailServerUsername</key>
+            <string>${user.email}</string>
+            <key>OutgoingMailServerAuthentication</key>
+            <string>EmailAuthPassword</string>
+            <key>OutgoingMailServerHostName</key>
+            <string>${hostname}</string>
+            <key>OutgoingMailServerPortNumber</key>
+            <integer>${smtpsPort}</integer>
+            <key>OutgoingMailServerUseSSL</key>
+            <true/>
+            <key>OutgoingMailServerUsername</key>
+            <string>${user.email}</string>
+            <key>OutgoingPasswordSameAsIncomingPassword</key>
+            <true/>
+            <key>PayloadDescription</key>
+            <string>Email account</string>
+            <key>PayloadDisplayName</key>
+            <string>${displayName}</string>
+            <key>PayloadIdentifier</key>
+            <string>com.${domain}.email</string>
+            <key>PayloadType</key>
+            <string>com.apple.mail.managed</string>
+            <key>PayloadUUID</key>
+            <string>${generateSimpleUUID(user.email + "-email")}</string>
+            <key>PayloadVersion</key>
+            <integer>1</integer>
+            <key>PreventAppSheet</key>
+            <false/>
+            <key>PreventMove</key>
+            <false/>
+            <key>SMIMEEnabled</key>
+            <false/>
+        </dict>
+    </array>
+    <key>PayloadDescription</key>
+    <string>Email configuration for ${domain}</string>
+    <key>PayloadDisplayName</key>
+    <string>${displayName}</string>
+    <key>PayloadIdentifier</key>
+    <string>com.${domain}.profile</string>
+    <key>PayloadOrganization</key>
+    <string>${domain}</string>
+    <key>PayloadRemovalDisallowed</key>
+    <false/>
+    <key>PayloadType</key>
+    <string>Configuration</string>
+    <key>PayloadUUID</key>
+    <string>${generateSimpleUUID(user.email + "-profile")}</string>
+    <key>PayloadVersion</key>
+    <integer>1</integer>
+</dict>
+</plist>`;
+      triggerDownload(xml, `${domain}-email.mobileconfig`, "application/x-apple-aspen-config");
+    } else if (type === "thunderbird") {
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<clientConfig version="1.1">
+  <emailProvider id="${domain}">
+    <domain>${domain}</domain>
+    <displayName>${domain} Mail</displayName>
+    <incomingServer type="imap">
+      <hostname>${hostname}</hostname>
+      <port>${imapsPort}</port>
+      <socketType>SSL</socketType>
+      <username>${user.email}</username>
+      <authentication>password-cleartext</authentication>
+    </incomingServer>
+    <outgoingServer type="smtp">
+      <hostname>${hostname}</hostname>
+      <port>${smtpPort}</port>
+      <socketType>STARTTLS</socketType>
+      <username>${user.email}</username>
+      <authentication>password-cleartext</authentication>
+    </outgoingServer>
+  </emailProvider>
+</clientConfig>`;
+      triggerDownload(xml, `autoconfig-${user.email}.xml`, "application/xml");
+    } else {
+      const xml = `<?xml version="1.0" encoding="utf-8"?>
+<Autodiscover xmlns="http://schemas.microsoft.com/exchange/autodiscover/responseschema/2006">
+  <Response xmlns="http://schemas.microsoft.com/exchange/autodiscover/outlook/responseschema/2006a">
+    <Account>
+      <AccountType>email</AccountType>
+      <Action>settings</Action>
+      <Protocol>
+        <Type>IMAP</Type>
+        <Server>${hostname}</Server>
+        <Port>${imapsPort}</Port>
+        <LoginName>${user.email}</LoginName>
+        <DomainRequired>off</DomainRequired>
+        <SPA>off</SPA>
+        <SSL>on</SSL>
+        <AuthRequired>on</AuthRequired>
+      </Protocol>
+      <Protocol>
+        <Type>SMTP</Type>
+        <Server>${hostname}</Server>
+        <Port>${smtpPort}</Port>
+        <LoginName>${user.email}</LoginName>
+        <DomainRequired>off</DomainRequired>
+        <SPA>off</SPA>
+        <Encryption>TLS</Encryption>
+        <AuthRequired>on</AuthRequired>
+        <UsePOPAuth>on</UsePOPAuth>
+        <SMTPLast>off</SMTPLast>
+      </Protocol>
+    </Account>
+  </Response>
+</Autodiscover>`;
+      triggerDownload(xml, `autodiscover-${user.email}.xml`, "application/xml");
+    }
+    toast.success(`Profile downloaded for ${user.email}`);
+    setDownloadMenu(null);
+  };
 
   const handleDelete = async () => {
     if (!deleteTarget) return;
@@ -142,6 +315,42 @@ function UsersContent() {
       enableSorting: false,
       cell: ({ row }) => (
         <div className="flex items-center justify-end gap-0.5">
+          {systemInfo && (
+            <div className="relative">
+              <button
+                onClick={() => setDownloadMenu(downloadMenu === row.original.id ? null : row.original.id)}
+                className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground/50 transition-colors hover:bg-accent hover:text-foreground"
+                title="Download mail profile"
+              >
+                <Download className="h-3.5 w-3.5" />
+              </button>
+              {downloadMenu === row.original.id && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setDownloadMenu(null)} />
+                  <div className="absolute right-0 top-8 z-50 w-44 rounded-lg border bg-popover p-1 shadow-md animate-in fade-in-0 zoom-in-95">
+                    <button
+                      onClick={() => downloadProfile(row.original, "apple")}
+                      className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-[12px] hover:bg-accent transition-colors"
+                    >
+                      Apple Mail
+                    </button>
+                    <button
+                      onClick={() => downloadProfile(row.original, "thunderbird")}
+                      className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-[12px] hover:bg-accent transition-colors"
+                    >
+                      Thunderbird
+                    </button>
+                    <button
+                      onClick={() => downloadProfile(row.original, "outlook")}
+                      className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-[12px] hover:bg-accent transition-colors"
+                    >
+                      Outlook
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
           <Link href={`/users/${row.original.id}/`}>
             <button className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground/50 transition-colors hover:bg-accent hover:text-foreground">
               <Pencil className="h-3.5 w-3.5" />
