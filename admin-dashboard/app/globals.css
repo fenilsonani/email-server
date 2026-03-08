@@ -210,6 +210,10 @@
   transition: background-color 150ms ease, border-color 150ms ease;
 }
 .stat-card:hover {
+  background-color: oklch(0.95 0.005 43.1);
+  border-color: oklch(0 0 0 / 10%);
+}
+.dark .stat-card:hover {
   background-color: oklch(0.24 0.01 43.1);
   border-color: oklch(1 0 0 / 14%);
 }
@@ -219,6 +223,9 @@
   transition: background-color 100ms ease;
 }
 .activity-row:hover {
+  background-color: oklch(0 0 0 / 3%);
+}
+.dark .activity-row:hover {
   background-color: oklch(1 0 0 / 3%);
 }
 
