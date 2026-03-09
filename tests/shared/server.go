@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	_ "github.com/mattn/go-sqlite3"
+
 	"github.com/fenilsonani/email-server/internal/auth"
 	"github.com/fenilsonani/email-server/internal/logging"
 	"github.com/fenilsonani/email-server/tests/shared/helpers"
@@ -83,9 +85,81 @@ func (ts *TestServer) setupDatabase(t *testing.T) error {
 	t.Helper()
 
 	if ts.Config.DatabaseType == "sqlite" {
-		// Use in-memory SQLite for testing
-		helpers.WithTestDBAndSchema(t, func(db *sql.DB) {
-			ts.DB = db
+		// Create in-memory SQLite directly (not via WithTestDB which closes via defer)
+		db, err := sql.Open("sqlite3", "file::memory:?mode=memory&cache=shared")
+		if err != nil {
+			return fmt.Errorf("failed to open sqlite: %w", err)
+		}
+
+		schema := `
+			CREATE TABLE IF NOT EXISTS domains (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				name TEXT UNIQUE NOT NULL,
+				is_active INTEGER DEFAULT 1,
+				is_verified INTEGER DEFAULT 0,
+				verified_at DATETIME,
+				created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+			);
+			CREATE TABLE IF NOT EXISTS users (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				username TEXT,
+				email TEXT UNIQUE,
+				domain_id INTEGER REFERENCES domains(id),
+				password_hash TEXT NOT NULL,
+				is_active INTEGER DEFAULT 1,
+				is_admin INTEGER DEFAULT 0,
+				quota_bytes INTEGER DEFAULT 0,
+				used_bytes INTEGER DEFAULT 0,
+				created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+				updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+			);
+			CREATE TABLE IF NOT EXISTS mailboxes (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				user_id INTEGER NOT NULL,
+				name TEXT NOT NULL,
+				path TEXT,
+				uidvalidity INTEGER DEFAULT 1,
+				FOREIGN KEY (user_id) REFERENCES users(id)
+			);
+			CREATE TABLE IF NOT EXISTS messages (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				mailbox_id INTEGER REFERENCES mailboxes(id),
+				from_addr TEXT,
+				to_addr TEXT,
+				subject TEXT,
+				body TEXT,
+				is_delivered INTEGER DEFAULT 0,
+				delivered_at DATETIME,
+				retry_count INTEGER DEFAULT 0,
+				is_bounce INTEGER DEFAULT 0,
+				created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+			);
+			CREATE TABLE IF NOT EXISTS user_forwarding (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				user_id INTEGER NOT NULL REFERENCES users(id),
+				forward_to TEXT NOT NULL,
+				created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+			);
+			CREATE TABLE IF NOT EXISTS vacation_responses (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				user_id INTEGER NOT NULL REFERENCES users(id),
+				subject TEXT,
+				body TEXT,
+				is_active INTEGER DEFAULT 0,
+				created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+			);
+			CREATE TABLE IF NOT EXISTS schema_migrations (
+				version INTEGER PRIMARY KEY
+			);
+		`
+		if _, err := db.Exec(schema); err != nil {
+			db.Close()
+			return fmt.Errorf("failed to create schema: %w", err)
+		}
+
+		ts.DB = db
+		ts.cleanup = append(ts.cleanup, func() error {
+			return db.Close()
 		})
 	} else if ts.Config.DatabaseType == "postgres" {
 		dsn := helpers.TestPostgresDSN()
