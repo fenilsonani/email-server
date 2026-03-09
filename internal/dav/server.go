@@ -609,7 +609,7 @@ func (s *Server) propfindCalendarHome(w http.ResponseWriter, ctx context.Context
 
 	w.Header().Set("Content-Type", "application/xml; charset=utf-8")
 	w.WriteHeader(http.StatusMultiStatus)
-	w.Write([]byte(responses.String()))
+	_, _ = w.Write([]byte(responses.String()))
 }
 
 // propfindCalendar returns PROPFIND response for a specific calendar
@@ -1052,7 +1052,7 @@ func (s *Server) propfindAddressBookHome(w http.ResponseWriter, ctx context.Cont
 
 	w.Header().Set("Content-Type", "application/xml; charset=utf-8")
 	w.WriteHeader(http.StatusMultiStatus)
-	w.Write([]byte(responses.String()))
+	_, _ = w.Write([]byte(responses.String()))
 }
 
 // propfindAddressBook returns PROPFIND response for a specific address book

@@ -248,7 +248,7 @@ func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 			placeholders[i] = "?"
 			args = append(args, id)
 		}
-		domainFilter := " AND u.domain_id IN (" + strings.Join(placeholders, ",") + ")"
+		domainFilter := " AND u.domain_id IN (" + strings.Join(placeholders, ",") + ")" // #nosec G202 -- parameterized placeholders only
 		query += domainFilter
 		countQuery += domainFilter
 	}
@@ -392,6 +392,7 @@ func (s *Server) handleUserAdd(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// POST - create user
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1MB limit
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "Bad request", http.StatusBadRequest)
 		return
@@ -450,14 +451,14 @@ func (s *Server) handleUserAdd(w http.ResponseWriter, r *http.Request) {
 		if currentAdmin != nil && currentAdmin.Role == "super_admin" {
 			_ = s.assignUserRole(r.Context(), user.ID, role, domainID)
 			if role == "super_admin" || role == "domain_admin" || role == "support" {
-				s.db.ExecContext(r.Context(), "UPDATE users SET is_admin = TRUE WHERE id = ?", user.ID)
+				_, _ = s.db.ExecContext(r.Context(), "UPDATE users SET is_admin = TRUE WHERE id = ?", user.ID)
 			}
 		}
 	}
 
 	// Audit log
 	auditUser := getSessionUser(r)
-	s.auditLogger.Log(r.Context(), auditUser, audit.EventUserCreate, user.Username, map[string]interface{}{
+	_ = s.auditLogger.Log(r.Context(), auditUser, audit.EventUserCreate, user.Username, map[string]interface{}{
 		"domain_id": domainID,
 		"role":      role,
 	}, getIP(r))
@@ -561,6 +562,7 @@ func (s *Server) handleUserEdit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// POST - update user
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1MB limit
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "Bad request", http.StatusBadRequest)
 		return
@@ -580,7 +582,7 @@ func (s *Server) handleUserEdit(w http.ResponseWriter, r *http.Request) {
 	// Update role (only super_admin can change roles)
 	if currentAdmin != nil && currentAdmin.Role == "super_admin" {
 		// Clear existing roles
-		s.db.ExecContext(r.Context(), "DELETE FROM user_roles WHERE user_id = ?", userID)
+		_, _ = s.db.ExecContext(r.Context(), "DELETE FROM user_roles WHERE user_id = ?", userID)
 
 		if role != "" && role != "none" {
 			_ = s.assignUserRole(r.Context(), userID, role, editDomainID)
@@ -595,9 +597,9 @@ func (s *Server) handleUserEdit(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			// Sync is_admin flag for backward compat
-			s.db.ExecContext(r.Context(), "UPDATE users SET is_admin = TRUE WHERE id = ?", userID)
+			_, _ = s.db.ExecContext(r.Context(), "UPDATE users SET is_admin = TRUE WHERE id = ?", userID)
 		} else {
-			s.db.ExecContext(r.Context(), "UPDATE users SET is_admin = FALSE WHERE id = ?", userID)
+			_, _ = s.db.ExecContext(r.Context(), "UPDATE users SET is_admin = FALSE WHERE id = ?", userID)
 		}
 	}
 
@@ -613,12 +615,12 @@ func (s *Server) handleUserEdit(w http.ResponseWriter, r *http.Request) {
 		}
 		s.invalidateUserSessions(userID)
 		auditUser := getSessionUser(r)
-		s.auditLogger.Log(r.Context(), auditUser, audit.EventPasswordChange, strconv.FormatInt(userID, 10), nil, getIP(r))
+		_ = s.auditLogger.Log(r.Context(), auditUser, audit.EventPasswordChange, strconv.FormatInt(userID, 10), nil, getIP(r))
 	}
 
 	// Audit log user update
 	auditUser := getSessionUser(r)
-	s.auditLogger.Log(r.Context(), auditUser, audit.EventUserUpdate, strconv.FormatInt(userID, 10), map[string]interface{}{
+	_ = s.auditLogger.Log(r.Context(), auditUser, audit.EventUserUpdate, strconv.FormatInt(userID, 10), map[string]interface{}{
 		"role": role,
 	}, getIP(r))
 
