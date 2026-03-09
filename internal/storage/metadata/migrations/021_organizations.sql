@@ -29,13 +29,14 @@ CREATE TABLE IF NOT EXISTS org_members (
 CREATE INDEX IF NOT EXISTS idx_org_members_org ON org_members(org_id);
 CREATE INDEX IF NOT EXISTS idx_org_members_user ON org_members(user_id);
 
--- Add org_id to existing tables
-ALTER TABLE domains ADD COLUMN org_id INTEGER REFERENCES organizations(id);
-ALTER TABLE users ADD COLUMN org_id INTEGER REFERENCES organizations(id);
-ALTER TABLE api_keys ADD COLUMN org_id INTEGER REFERENCES organizations(id);
-ALTER TABLE webhooks ADD COLUMN org_id INTEGER REFERENCES organizations(id);
-ALTER TABLE email_templates ADD COLUMN org_id INTEGER REFERENCES organizations(id);
-ALTER TABLE mailing_lists ADD COLUMN org_id INTEGER REFERENCES organizations(id);
+-- Add org_id to existing tables (no REFERENCES to avoid SQLite FK mismatch
+-- when ALTER TABLE triggers validation of other FK constraints on the table)
+ALTER TABLE domains ADD COLUMN org_id INTEGER;
+ALTER TABLE users ADD COLUMN org_id INTEGER;
+ALTER TABLE api_keys ADD COLUMN org_id INTEGER;
+ALTER TABLE webhooks ADD COLUMN org_id INTEGER;
+ALTER TABLE email_templates ADD COLUMN org_id INTEGER;
+ALTER TABLE mailing_lists ADD COLUMN org_id INTEGER;
 
 -- Create default organization from existing data
 -- This uses the first admin user as the owner
