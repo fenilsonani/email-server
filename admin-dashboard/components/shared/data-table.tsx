@@ -123,8 +123,8 @@ export function DataTable<TData, TValue>({
       )}
 
       {/* Table */}
-      <div className="rounded-lg border border-border overflow-hidden">
-        <table className="w-full text-[13px]">
+      <div className="rounded-lg border border-border overflow-x-auto">
+        <table className="w-full text-[13px] min-w-[600px]">
           <thead>
             {table.getHeaderGroups().map((headerGroup) => (
               <tr key={headerGroup.id} className="border-b border-border bg-muted/30">
