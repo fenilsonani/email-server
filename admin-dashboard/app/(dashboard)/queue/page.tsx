@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import { PageShell } from "@/components/shared/page-shell";
 import { DataTable } from "@/components/shared/data-table";
 import { api } from "@/lib/api";
@@ -28,10 +28,13 @@ interface QueueMessage {
   priority: string;
 }
 
+type Tab = "all" | "pending" | "failed";
+
 function PageContent() {
   const [messages, setMessages] = useState<QueueMessage[]>([]);
   const [loading, setLoading] = useState(true);
   const [autoRefresh, setAutoRefresh] = useState(false);
+  const [tab, setTab] = useState<Tab>("all");
 
   const fetchQueue = useCallback(async () => {
     setLoading(true);
@@ -42,12 +45,23 @@ function PageContent() {
 
   useEffect(() => { fetchQueue(); }, [fetchQueue]);
 
-  // Auto-refresh every 10 seconds
   useEffect(() => {
     if (!autoRefresh) return;
     const interval = setInterval(fetchQueue, 10000);
     return () => clearInterval(interval);
   }, [autoRefresh, fetchQueue]);
+
+  const counts = useMemo(() => {
+    const pending = messages.filter(m => m.status !== "failed").length;
+    const failed = messages.filter(m => m.status === "failed").length;
+    return { all: messages.length, pending, failed };
+  }, [messages]);
+
+  const filtered = useMemo(() => {
+    if (tab === "pending") return messages.filter(m => m.status !== "failed");
+    if (tab === "failed") return messages.filter(m => m.status === "failed");
+    return messages;
+  }, [messages, tab]);
 
   const handleRetry = async (id: string) => {
     const res = await api.post(`/v1/queue/${id}/retry`);
@@ -62,18 +76,19 @@ function PageContent() {
   };
 
   const handleRetryAll = async () => {
+    const targets = tab === "failed" ? filtered : messages;
     let ok = 0;
-    for (const m of messages) {
+    for (const m of targets) {
       const res = await api.post(`/v1/queue/${m.id}/retry`);
       if (res.success) ok++;
     }
-    toast.success(`Retried ${ok} of ${messages.length} messages`);
+    toast.success(`Retried ${ok} of ${targets.length} messages`);
     fetchQueue();
   };
 
   const exportQueue = () => {
     const csv = ["ID,Sender,Recipients,Domain,Status,Attempts,Error,Created"];
-    messages.forEach(m => csv.push(`${m.id},"${m.sender}","${(m.recipients||[]).join(";")}",${m.domain},${m.status},${m.attempts}/${m.max_attempts},"${(m.last_error||"").replace(/"/g,'""')}",${m.created_at}`));
+    filtered.forEach(m => csv.push(`${m.id},"${m.sender}","${(m.recipients||[]).join(";")}",${m.domain},${m.status},${m.attempts}/${m.max_attempts},"${(m.last_error||"").replace(/"/g,'""')}",${m.created_at}`));
     const blob = new Blob([csv.join("\n")], { type: "text/csv" });
     const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "queue.csv"; a.click(); URL.revokeObjectURL(a.href);
     toast.success("Queue exported");
@@ -161,34 +176,11 @@ function PageContent() {
     },
   ];
 
-  if (!loading && messages.length === 0) {
-    return (
-      <PageShell
-        title="Message Queue"
-        actions={
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => setAutoRefresh(!autoRefresh)}
-              className={`inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-[12px] transition-colors ${
-                autoRefresh ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-500" : "border-border text-muted-foreground hover:text-foreground"
-              }`}
-            >
-              <Timer className="h-3.5 w-3.5" />
-              {autoRefresh ? "Auto: On" : "Auto: Off"}
-            </button>
-            <Button variant="outline" size="sm" onClick={fetchQueue} className="h-8 text-[12px] gap-1.5">
-              <RefreshCw className="h-3.5 w-3.5" />Refresh
-            </Button>
-          </div>
-        }
-      >
-        <div className="flex flex-col items-center justify-center py-16 text-center">
-          <Inbox className="h-10 w-10 text-muted-foreground/20 mb-3" strokeWidth={1} />
-          <p className="text-[13px] text-muted-foreground/50">Queue is empty</p>
-        </div>
-      </PageShell>
-    );
-  }
+  const tabs: { key: Tab; label: string; count: number }[] = [
+    { key: "all", label: "All", count: counts.all },
+    { key: "pending", label: "Pending", count: counts.pending },
+    { key: "failed", label: "Failed", count: counts.failed },
+  ];
 
   return (
     <PageShell
@@ -207,28 +199,62 @@ function PageContent() {
           <Button variant="outline" size="sm" className="h-8 text-[12px] gap-1.5" onClick={exportQueue}>
             <FileDown className="h-3.5 w-3.5" />Export
           </Button>
-          <Button variant="outline" size="sm" className="h-8 text-[12px] gap-1.5" onClick={handleRetryAll}>
-            <RotateCcw className="h-3.5 w-3.5" />Retry All
-          </Button>
+          {(tab === "all" || tab === "failed") && filtered.length > 0 && (
+            <Button variant="outline" size="sm" className="h-8 text-[12px] gap-1.5" onClick={handleRetryAll}>
+              <RotateCcw className="h-3.5 w-3.5" />Retry {tab === "failed" ? "All Failed" : "All"}
+            </Button>
+          )}
           <Button variant="outline" size="sm" onClick={fetchQueue} className="h-8 text-[12px] gap-1.5">
             <RefreshCw className="h-3.5 w-3.5" />Refresh
           </Button>
         </div>
       }
     >
-      {messages.filter(m => m.status === "failed").length > 0 && (
-        <div className="flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-[13px]">
-          <Trash2 className="h-4 w-4 text-destructive shrink-0" />
-          <span>{messages.filter(m => m.status === "failed").length} failed message{messages.filter(m => m.status === "failed").length !== 1 ? "s" : ""} in queue</span>
-        </div>
-      )}
+      {/* Tabs */}
+      <div className="flex items-center gap-1 border-b border-border">
+        {tabs.map((t) => (
+          <button
+            key={t.key}
+            onClick={() => setTab(t.key)}
+            className={`relative px-3 py-2 text-[13px] font-medium transition-colors ${
+              tab === t.key
+                ? "text-foreground"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            {t.label}
+            {t.count > 0 && (
+              <span className={`ml-1.5 inline-flex items-center justify-center rounded-full px-1.5 py-0.5 text-[10px] font-medium tabular-nums ${
+                t.key === "failed" && t.count > 0
+                  ? "bg-destructive/10 text-destructive"
+                  : "bg-muted text-muted-foreground"
+              }`}>
+                {t.count}
+              </span>
+            )}
+            {tab === t.key && (
+              <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary rounded-full" />
+            )}
+          </button>
+        ))}
+      </div>
 
-      <DataTable
-        columns={columns}
-        data={messages}
-        loading={loading}
-        emptyMessage="Queue is empty."
-      />
+      {!loading && filtered.length === 0 ? (
+        <div className="flex flex-col items-center justify-center py-16 text-center">
+          <Inbox className="h-10 w-10 text-muted-foreground/20 mb-3" strokeWidth={1} />
+          <p className="text-[13px] text-muted-foreground/50">
+            {tab === "failed" ? "No failed messages" : tab === "pending" ? "No pending messages" : "Queue is empty"}
+          </p>
+        </div>
+      ) : (
+        <DataTable
+          columns={columns}
+          data={filtered}
+          loading={loading}
+          emptyMessage="Queue is empty."
+          tableMinWidth="950px"
+        />
+      )}
     </PageShell>
   );
 }

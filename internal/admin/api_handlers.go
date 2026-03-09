@@ -12,6 +12,7 @@ import (
 
 	"github.com/fenilsonani/email-server/internal/audit"
 	"github.com/fenilsonani/email-server/internal/auth"
+	"github.com/fenilsonani/email-server/internal/queue"
 	"github.com/fenilsonani/email-server/internal/security"
 	"github.com/fenilsonani/email-server/internal/validation"
 )
@@ -1107,13 +1108,25 @@ func (s *Server) handleAPIGetQueue(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
-	messages, err := s.queue.ListPending(ctx, 100)
+	pending, err := s.queue.ListPending(ctx, 100)
 	if err != nil {
 		s.jsonError(w, http.StatusInternalServerError, "Failed to list queue")
 		return
 	}
 
-	s.jsonResponse(w, http.StatusOK, messages)
+	failed, err := s.queue.ListFailed(ctx, 100)
+	if err != nil {
+		// Non-fatal: return pending only if failed list errors
+		s.jsonResponse(w, http.StatusOK, pending)
+		return
+	}
+
+	// Combine pending + failed
+	all := make([]*queue.Message, 0, len(pending)+len(failed))
+	all = append(all, pending...)
+	all = append(all, failed...)
+
+	s.jsonResponse(w, http.StatusOK, all)
 }
 
 // --- Features ---

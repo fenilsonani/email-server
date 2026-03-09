@@ -36,6 +36,8 @@ interface DataTableProps<TData, TValue> {
   pageSize?: number;
   emptyMessage?: string;
   toolbar?: React.ReactNode;
+  /** Minimum table width for horizontal scroll (e.g. "900px") */
+  tableMinWidth?: string;
   /** Server-side pagination */
   serverPagination?: {
     page: number;
@@ -54,6 +56,7 @@ export function DataTable<TData, TValue>({
   pageSize = 20,
   emptyMessage = "No results.",
   toolbar,
+  tableMinWidth,
   serverPagination,
 }: DataTableProps<TData, TValue>) {
   const [sorting, setSorting] = useState<SortingState>([]);
@@ -124,7 +127,7 @@ export function DataTable<TData, TValue>({
 
       {/* Table */}
       <div className="rounded-lg border border-border overflow-x-auto">
-        <table className="w-full text-[13px] min-w-[600px]">
+        <table className="w-full text-[13px]" style={{ minWidth: tableMinWidth || "600px" }}>
           <thead>
             {table.getHeaderGroups().map((headerGroup) => (
               <tr key={headerGroup.id} className="border-b border-border bg-muted/30">
