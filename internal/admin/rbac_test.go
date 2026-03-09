@@ -293,15 +293,15 @@ func TestAdminUser_HasDomainAccess(t *testing.T) {
 		}
 	})
 
-	t.Run("empty_domain_ids_means_global", func(t *testing.T) {
+	t.Run("empty_domain_ids_denies_access", func(t *testing.T) {
 		user := &AdminUser{
 			ID:        3,
 			Role:      "support",
 			DomainIDs: []int64{},
 		}
-		// Empty slice (not nil) means global
-		if !user.HasDomainAccess(1) {
-			t.Error("User with empty DomainIDs should have global access")
+		// Empty slice (not nil) means no domains assigned — deny access
+		if user.HasDomainAccess(1) {
+			t.Error("User with empty DomainIDs should NOT have access")
 		}
 	})
 }
@@ -650,7 +650,9 @@ func TestAssignUserRole_SuperAdmin(t *testing.T) {
 	ctx := context.Background()
 
 	// Assign super_admin role to regularuser (5)
-	server.assignUserRole(ctx, 5, "super_admin", 0)
+	if err := server.assignUserRole(ctx, 5, "super_admin", 0); err != nil {
+		t.Fatalf("assignUserRole failed: %v", err)
+	}
 
 	// Verify assignment
 	var count int
@@ -669,7 +671,9 @@ func TestAssignUserRole_DomainAdmin(t *testing.T) {
 	ctx := context.Background()
 
 	// Assign domain_admin role to regularuser (5) scoped to domain 2
-	server.assignUserRole(ctx, 5, "domain_admin", 2)
+	if err := server.assignUserRole(ctx, 5, "domain_admin", 2); err != nil {
+		t.Fatalf("assignUserRole failed: %v", err)
+	}
 
 	// Verify assignment with domain scope
 	var domainID sql.NullInt64
@@ -690,8 +694,11 @@ func TestAssignUserRole_InvalidRole(t *testing.T) {
 
 	ctx := context.Background()
 
-	// Assign invalid role - should silently fail
-	server.assignUserRole(ctx, 5, "nonexistent_role", 0)
+	// Assign invalid role - should return error
+	err := server.assignUserRole(ctx, 5, "nonexistent_role", 0)
+	if err == nil {
+		t.Error("assignUserRole with invalid role should return error")
+	}
 
 	var count int
 	server.db.QueryRowContext(ctx,

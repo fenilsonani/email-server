@@ -204,6 +204,12 @@ func escapeXML(s string) string {
 	return html.EscapeString(s)
 }
 
+// escapeCDATA escapes data for safe inclusion inside XML CDATA sections.
+// The sequence ]]> terminates CDATA, so it must be split across two CDATA sections.
+func escapeCDATA(s string) string {
+	return strings.ReplaceAll(s, "]]>", "]]]]><![CDATA[>")
+}
+
 // validatePath validates and sanitizes URL paths
 func validatePath(path string) error {
 	if path == "" {
@@ -569,7 +575,8 @@ func (s *Server) propfindCalendarHome(w http.ResponseWriter, ctx context.Context
 	if depth == "1" || depth == "infinity" {
 		calendars, err := s.caldavBackend.ListCalendars(ctx, user.ID)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			s.logger.Error("DAV internal error", "error", err.Error())
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
 			return
 		}
 		for _, cal := range calendars {
@@ -612,6 +619,10 @@ func (s *Server) propfindCalendar(w http.ResponseWriter, ctx context.Context, us
 		http.Error(w, "Calendar not found", http.StatusNotFound)
 		return
 	}
+	if cal.UserID != user.ID {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
 
 	calURL := fmt.Sprintf("/calendars/%s/%s/", user.Email, cal.UID)
 
@@ -645,7 +656,8 @@ func (s *Server) propfindCalendar(w http.ResponseWriter, ctx context.Context, us
 	if depth == "1" || depth == "infinity" {
 		events, err := s.caldavBackend.ListEvents(ctx, calendarUID)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			s.logger.Error("DAV internal error", "error", err.Error())
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
 			return
 		}
 		for _, event := range events {
@@ -683,8 +695,24 @@ func (s *Server) handleCalDAVReport(w http.ResponseWriter, r *http.Request, user
 		return
 	}
 
+	// Verify the calendar belongs to the authenticated user
+	cal, err := s.caldavBackend.GetCalendar(r.Context(), calendarUID)
+	if err != nil {
+		http.Error(w, "Calendar not found", http.StatusNotFound)
+		return
+	}
+	if cal.UserID != user.ID {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
 	// Read request body for multiget hrefs
-	body, _ := safeReadBody(r, maxRequestBodySize)
+	body, err := safeReadBody(r, maxRequestBodySize)
+	if err != nil {
+		s.logger.Warn("Failed to read REPORT body", "error", err.Error())
+		http.Error(w, "Request body too large", http.StatusRequestEntityTooLarge)
+		return
+	}
 	requestedHrefs := parseReportHrefs(body)
 
 	ctx := r.Context()
@@ -712,7 +740,8 @@ func (s *Server) handleCalDAVReport(w http.ResponseWriter, r *http.Request, user
 		var err error
 		events, err = s.caldavBackend.ListEvents(ctx, calendarUID)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			s.logger.Error("DAV internal error", "error", err.Error())
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
 			return
 		}
 	}
@@ -733,7 +762,7 @@ func (s *Server) handleCalDAVReport(w http.ResponseWriter, r *http.Request, user
       </D:prop>
       <D:status>HTTP/1.1 200 OK</D:status>
     </D:propstat>
-  </D:response>`, eventURL, escapeXML(event.ETag), event.ICalendarData))
+  </D:response>`, eventURL, escapeXML(event.ETag), escapeCDATA(event.ICalendarData)))
 	}
 
 	responses.WriteString(`
@@ -758,7 +787,7 @@ func (s *Server) handleCalDAVGet(w http.ResponseWriter, r *http.Request, user *a
 	ctx := r.Context()
 	event, err := s.caldavBackend.GetEvent(ctx, calendarUID, eventUID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+		http.Error(w, "Not found", http.StatusNotFound)
 		return
 	}
 
@@ -832,7 +861,8 @@ func (s *Server) handleCalDAVPut(w http.ResponseWriter, r *http.Request, user *a
 	}
 
 	if updateErr != nil {
-		http.Error(w, updateErr.Error(), http.StatusInternalServerError)
+		s.logger.Error("DAV update failed", "error", updateErr.Error())
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
 
@@ -863,7 +893,7 @@ func (s *Server) handleCalDAVDelete(w http.ResponseWriter, r *http.Request, user
 	ctx := r.Context()
 	err := s.caldavBackend.DeleteEvent(ctx, calendarUID, eventUID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+		http.Error(w, "Not found", http.StatusNotFound)
 		return
 	}
 
@@ -881,7 +911,8 @@ func (s *Server) handleMkCalendar(w http.ResponseWriter, r *http.Request, user *
 	ctx := r.Context()
 	_, err := s.caldavBackend.CreateCalendar(ctx, user.ID, calName, "")
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.logger.Error("DAV internal error", "error", err.Error())
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
 
@@ -991,7 +1022,8 @@ func (s *Server) propfindAddressBookHome(w http.ResponseWriter, ctx context.Cont
 	if depth == "1" || depth == "infinity" {
 		addressBooks, err := s.carddavBackend.ListAddressBooks(ctx, user.ID)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			s.logger.Error("DAV internal error", "error", err.Error())
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
 			return
 		}
 		for _, ab := range addressBooks {
@@ -1030,6 +1062,10 @@ func (s *Server) propfindAddressBook(w http.ResponseWriter, ctx context.Context,
 		http.Error(w, "Address book not found", http.StatusNotFound)
 		return
 	}
+	if ab.UserID != user.ID {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
 
 	abURL := fmt.Sprintf("/addressbooks/%s/%s/", user.Email, ab.UID)
 
@@ -1059,7 +1095,8 @@ func (s *Server) propfindAddressBook(w http.ResponseWriter, ctx context.Context,
 	if depth == "1" || depth == "infinity" {
 		contacts, err := s.carddavBackend.ListContacts(ctx, addressBookUID)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			s.logger.Error("DAV internal error", "error", err.Error())
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
 			return
 		}
 		for _, contact := range contacts {
@@ -1097,8 +1134,24 @@ func (s *Server) handleCardDAVReport(w http.ResponseWriter, r *http.Request, use
 		return
 	}
 
+	// Verify the address book belongs to the authenticated user
+	ab, err := s.carddavBackend.GetAddressBook(r.Context(), addressBookUID)
+	if err != nil {
+		http.Error(w, "Address book not found", http.StatusNotFound)
+		return
+	}
+	if ab.UserID != user.ID {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
 	// Read request body for multiget hrefs
-	body, _ := safeReadBody(r, maxRequestBodySize)
+	body, err := safeReadBody(r, maxRequestBodySize)
+	if err != nil {
+		s.logger.Warn("Failed to read REPORT body", "error", err.Error())
+		http.Error(w, "Request body too large", http.StatusRequestEntityTooLarge)
+		return
+	}
 	requestedHrefs := parseReportHrefs(body)
 
 	ctx := r.Context()
@@ -1126,7 +1179,8 @@ func (s *Server) handleCardDAVReport(w http.ResponseWriter, r *http.Request, use
 		var err error
 		contacts, err = s.carddavBackend.ListContacts(ctx, addressBookUID)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			s.logger.Error("DAV internal error", "error", err.Error())
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
 			return
 		}
 	}
@@ -1147,7 +1201,7 @@ func (s *Server) handleCardDAVReport(w http.ResponseWriter, r *http.Request, use
       </D:prop>
       <D:status>HTTP/1.1 200 OK</D:status>
     </D:propstat>
-  </D:response>`, contactURL, escapeXML(contact.ETag), contact.VCardData))
+  </D:response>`, contactURL, escapeXML(contact.ETag), escapeCDATA(contact.VCardData)))
 	}
 
 	responses.WriteString(`
@@ -1172,7 +1226,7 @@ func (s *Server) handleCardDAVGet(w http.ResponseWriter, r *http.Request, user *
 	ctx := r.Context()
 	contact, err := s.carddavBackend.GetContact(ctx, addressBookUID, contactUID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+		http.Error(w, "Not found", http.StatusNotFound)
 		return
 	}
 
@@ -1246,7 +1300,8 @@ func (s *Server) handleCardDAVPut(w http.ResponseWriter, r *http.Request, user *
 	}
 
 	if updateErr != nil {
-		http.Error(w, updateErr.Error(), http.StatusInternalServerError)
+		s.logger.Error("DAV update failed", "error", updateErr.Error())
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
 
@@ -1277,7 +1332,7 @@ func (s *Server) handleCardDAVDelete(w http.ResponseWriter, r *http.Request, use
 	ctx := r.Context()
 	err := s.carddavBackend.DeleteContact(ctx, addressBookUID, contactUID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+		http.Error(w, "Not found", http.StatusNotFound)
 		return
 	}
 
@@ -1295,7 +1350,8 @@ func (s *Server) handleMkAddressBook(w http.ResponseWriter, r *http.Request, use
 	ctx := r.Context()
 	_, err := s.carddavBackend.CreateAddressBook(ctx, user.ID, abName, "")
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.logger.Error("DAV internal error", "error", err.Error())
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
 

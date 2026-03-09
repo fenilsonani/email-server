@@ -131,10 +131,12 @@ func (u *AdminUser) HasPermission(perm string) bool {
 	return false
 }
 
-// HasDomainAccess checks if the admin user has access to a specific domain
+// HasDomainAccess checks if the admin user has access to a specific domain.
+// Only super_admin and support (non-domain-scoped roles) get global access.
+// domain_admin must have explicit domain assignments.
 func (u *AdminUser) HasDomainAccess(domainID int64) bool {
-	// Global access (super_admin or support with no domain scoping)
-	if len(u.DomainIDs) == 0 {
+	// Only non-domain-scoped roles get global access
+	if u.DomainIDs == nil {
 		return true
 	}
 	for _, id := range u.DomainIDs {
@@ -423,8 +425,10 @@ func (s *Server) loadAdminUser(ctx context.Context, userID int64) (*AdminUser, e
 		}
 	}
 
-	// Load scoped domain IDs for domain_admin
+	// Load scoped domain IDs for domain_admin.
+	// Initialize to empty slice (not nil) so HasDomainAccess denies by default.
 	if user.Role == "domain_admin" {
+		user.DomainIDs = []int64{}
 		domainRows, err := s.db.QueryContext(ctx,
 			`SELECT domain_id FROM user_roles WHERE user_id = ? AND domain_id IS NOT NULL`, userID,
 		)

@@ -75,6 +75,7 @@ CREATE TABLE IF NOT EXISTS user_roles (
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_user_roles_unique ON user_roles(user_id, role_id, COALESCE(domain_id, 0));
+CREATE INDEX IF NOT EXISTS idx_user_roles_user_id ON user_roles(user_id);
 
 -- Migrate existing is_admin users to super_admin role
 INSERT OR IGNORE INTO user_roles (user_id, role_id)

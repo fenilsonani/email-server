@@ -448,7 +448,7 @@ func (s *Server) handleUserAdd(w http.ResponseWriter, r *http.Request) {
 	// Assign role if specified (only super_admin can assign roles)
 	if role != "" && role != "none" {
 		if currentAdmin != nil && currentAdmin.Role == "super_admin" {
-			s.assignUserRole(r.Context(), user.ID, role, domainID)
+			_ = s.assignUserRole(r.Context(), user.ID, role, domainID)
 			if role == "super_admin" || role == "domain_admin" || role == "support" {
 				s.db.ExecContext(r.Context(), "UPDATE users SET is_admin = TRUE WHERE id = ?", user.ID)
 			}
@@ -583,13 +583,13 @@ func (s *Server) handleUserEdit(w http.ResponseWriter, r *http.Request) {
 		s.db.ExecContext(r.Context(), "DELETE FROM user_roles WHERE user_id = ?", userID)
 
 		if role != "" && role != "none" {
-			s.assignUserRole(r.Context(), userID, role, editDomainID)
+			_ = s.assignUserRole(r.Context(), userID, role, editDomainID)
 			// Assign scoped domains for domain_admin
 			if role == "domain_admin" {
 				if domainIDs, ok := r.Form["role_domains"]; ok {
 					for _, idStr := range domainIDs {
 						if dID, err := strconv.ParseInt(idStr, 10, 64); err == nil {
-							s.assignUserRole(r.Context(), userID, role, dID)
+							_ = s.assignUserRole(r.Context(), userID, role, dID)
 						}
 					}
 				}
@@ -662,22 +662,28 @@ func (s *Server) handleUserDelete(w http.ResponseWriter, r *http.Request) {
 }
 
 // assignUserRole assigns a role to a user in the user_roles table
-func (s *Server) assignUserRole(ctx context.Context, userID int64, roleName string, domainID int64) {
+func (s *Server) assignUserRole(ctx context.Context, userID int64, roleName string, domainID int64) error {
 	var roleID int64
 	err := s.db.QueryRowContext(ctx, "SELECT id FROM roles WHERE name = ?", roleName).Scan(&roleID)
 	if err != nil {
-		return
+		s.logger.Warn("Failed to find role for assignment", "role", roleName, "error", err.Error())
+		return fmt.Errorf("role %q not found: %w", roleName, err)
 	}
 
 	if roleName == "domain_admin" && domainID > 0 {
-		s.db.ExecContext(ctx,
+		_, err = s.db.ExecContext(ctx,
 			"INSERT OR IGNORE INTO user_roles (user_id, role_id, domain_id) VALUES (?, ?, ?)",
 			userID, roleID, domainID)
 	} else {
-		s.db.ExecContext(ctx,
+		_, err = s.db.ExecContext(ctx,
 			"INSERT OR IGNORE INTO user_roles (user_id, role_id) VALUES (?, ?)",
 			userID, roleID)
 	}
+	if err != nil {
+		s.logger.Error("Failed to assign user role", "user_id", userID, "role", roleName, "error", err.Error())
+		return fmt.Errorf("failed to assign role: %w", err)
+	}
+	return nil
 }
 
 // handleDomains shows domain list
