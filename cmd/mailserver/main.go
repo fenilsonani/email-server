@@ -1050,22 +1050,33 @@ var userAddCmd = &cobra.Command{
 		}
 
 		// Create default calendar and addressbook for CalDAV/CardDAV
+		davCreated := true
 		caldavBackend, caldavErr := dav.NewCalDAVBackend(db.RawDB())
-		if caldavErr == nil {
+		if caldavErr != nil {
+			fmt.Printf("Warning: failed to init CalDAV backend: %v\n", caldavErr)
+			davCreated = false
+		} else {
 			if _, err := caldavBackend.CreateCalendar(context.Background(), userID, "Calendar", "Default calendar"); err != nil {
 				fmt.Printf("Warning: failed to create default calendar: %v\n", err)
+				davCreated = false
 			}
 		}
 		carddavBackend, carddavErr := dav.NewCardDAVBackend(db.RawDB())
-		if carddavErr == nil {
+		if carddavErr != nil {
+			fmt.Printf("Warning: failed to init CardDAV backend: %v\n", carddavErr)
+			davCreated = false
+		} else {
 			if _, err := carddavBackend.CreateAddressBook(context.Background(), userID, "Contacts", "Default address book"); err != nil {
 				fmt.Printf("Warning: failed to create default address book: %v\n", err)
+				davCreated = false
 			}
 		}
 
 		fmt.Printf("User '%s' added with ID %d\n", email, userID)
 		fmt.Println("Default mailboxes created: INBOX, Drafts, Sent, Trash, Junk, Archive")
-		fmt.Println("Default calendar and address book created")
+		if davCreated {
+			fmt.Println("Default calendar and address book created")
+		}
 		return nil
 	},
 }
@@ -1363,45 +1374,83 @@ var userSetRoleCmd = &cobra.Command{
 			return fmt.Errorf("user not found: %s", email)
 		}
 
+		// Validate inputs before making changes
+		if roleName != "none" {
+			// Verify role exists before touching anything
+			var roleID int64
+			err = db.QueryRowContext(context.Background(), "SELECT id FROM roles WHERE name = ?", roleName).Scan(&roleID)
+			if err != nil {
+				return fmt.Errorf("role '%s' not found in database (run migrations first)", roleName)
+			}
+
+			if roleName == "domain_admin" {
+				var domainID int64
+				err = db.QueryRowContext(context.Background(), "SELECT id FROM domains WHERE name = ?", setRoleDomain).Scan(&domainID)
+				if err != nil {
+					return fmt.Errorf("domain not found: %s", setRoleDomain)
+				}
+			}
+		}
+
+		// All validation passed — apply changes in a transaction
+		tx, txErr := db.BeginTx(context.Background(), nil)
+		if txErr != nil {
+			return fmt.Errorf("failed to begin transaction: %w", txErr)
+		}
+		defer func() {
+			if txErr != nil {
+				_ = tx.Rollback()
+			}
+		}()
+
 		// Clear existing roles
-		db.ExecContext(context.Background(), "DELETE FROM user_roles WHERE user_id = ?", userID)
+		if _, txErr = tx.ExecContext(context.Background(), "DELETE FROM user_roles WHERE user_id = ?", userID); txErr != nil {
+			return fmt.Errorf("failed to clear roles: %w", txErr)
+		}
 
 		if roleName == "none" {
 			// Remove admin flag
-			db.ExecContext(context.Background(), "UPDATE users SET is_admin = FALSE WHERE id = ?", userID)
+			if _, txErr = tx.ExecContext(context.Background(), "UPDATE users SET is_admin = FALSE WHERE id = ?", userID); txErr != nil {
+				return fmt.Errorf("failed to update admin flag: %w", txErr)
+			}
+			if txErr = tx.Commit(); txErr != nil {
+				return fmt.Errorf("failed to commit: %w", txErr)
+			}
 			fmt.Printf("Role removed from '%s'\n", email)
 			return nil
 		}
 
 		// Get role ID
 		var roleID int64
-		err = db.QueryRowContext(context.Background(), "SELECT id FROM roles WHERE name = ?", roleName).Scan(&roleID)
-		if err != nil {
-			return fmt.Errorf("role '%s' not found in database (run migrations first)", roleName)
+		txErr = tx.QueryRowContext(context.Background(), "SELECT id FROM roles WHERE name = ?", roleName).Scan(&roleID)
+		if txErr != nil {
+			return fmt.Errorf("role lookup failed: %w", txErr)
 		}
 
 		if roleName == "domain_admin" {
-			// Get domain ID for scoping
 			var domainID int64
-			err = db.QueryRowContext(context.Background(), "SELECT id FROM domains WHERE name = ?", setRoleDomain).Scan(&domainID)
-			if err != nil {
-				return fmt.Errorf("domain not found: %s", setRoleDomain)
+			txErr = tx.QueryRowContext(context.Background(), "SELECT id FROM domains WHERE name = ?", setRoleDomain).Scan(&domainID)
+			if txErr != nil {
+				return fmt.Errorf("domain lookup failed: %w", txErr)
 			}
-
-			_, err = db.ExecContext(context.Background(),
+			_, txErr = tx.ExecContext(context.Background(),
 				"INSERT INTO user_roles (user_id, role_id, domain_id) VALUES (?, ?, ?)",
 				userID, roleID, domainID)
 		} else {
-			_, err = db.ExecContext(context.Background(),
+			_, txErr = tx.ExecContext(context.Background(),
 				"INSERT INTO user_roles (user_id, role_id) VALUES (?, ?)",
 				userID, roleID)
 		}
-		if err != nil {
-			return fmt.Errorf("failed to assign role: %w", err)
+		if txErr != nil {
+			return fmt.Errorf("failed to assign role: %w", txErr)
 		}
 
 		// Sync is_admin flag for backward compat
-		db.ExecContext(context.Background(), "UPDATE users SET is_admin = TRUE WHERE id = ?", userID)
+		_, _ = tx.ExecContext(context.Background(), "UPDATE users SET is_admin = TRUE WHERE id = ?", userID)
+
+		if txErr = tx.Commit(); txErr != nil {
+			return fmt.Errorf("failed to commit: %w", txErr)
+		}
 
 		fmt.Printf("Role '%s' assigned to '%s'\n", roleName, email)
 		if roleName == "domain_admin" {

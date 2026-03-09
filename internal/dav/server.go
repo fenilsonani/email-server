@@ -576,7 +576,7 @@ func (s *Server) propfindCalendarHome(w http.ResponseWriter, ctx context.Context
 		calendars, err := s.caldavBackend.ListCalendars(ctx, user.ID)
 		if err != nil {
 			s.logger.Error("DAV internal error", "error", err.Error())
-			http.Error(w, "Internal server error", http.StatusInternalServerError)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
 			return
 		}
 		for _, cal := range calendars {
@@ -657,7 +657,7 @@ func (s *Server) propfindCalendar(w http.ResponseWriter, ctx context.Context, us
 		events, err := s.caldavBackend.ListEvents(ctx, calendarUID)
 		if err != nil {
 			s.logger.Error("DAV internal error", "error", err.Error())
-			http.Error(w, "Internal server error", http.StatusInternalServerError)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
 			return
 		}
 		for _, event := range events {
@@ -741,7 +741,7 @@ func (s *Server) handleCalDAVReport(w http.ResponseWriter, r *http.Request, user
 		events, err = s.caldavBackend.ListEvents(ctx, calendarUID)
 		if err != nil {
 			s.logger.Error("DAV internal error", "error", err.Error())
-			http.Error(w, "Internal server error", http.StatusInternalServerError)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
 			return
 		}
 	}
@@ -912,7 +912,7 @@ func (s *Server) handleMkCalendar(w http.ResponseWriter, r *http.Request, user *
 	_, err := s.caldavBackend.CreateCalendar(ctx, user.ID, calName, "")
 	if err != nil {
 		s.logger.Error("DAV internal error", "error", err.Error())
-			http.Error(w, "Internal server error", http.StatusInternalServerError)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
 
@@ -1023,7 +1023,7 @@ func (s *Server) propfindAddressBookHome(w http.ResponseWriter, ctx context.Cont
 		addressBooks, err := s.carddavBackend.ListAddressBooks(ctx, user.ID)
 		if err != nil {
 			s.logger.Error("DAV internal error", "error", err.Error())
-			http.Error(w, "Internal server error", http.StatusInternalServerError)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
 			return
 		}
 		for _, ab := range addressBooks {
@@ -1096,7 +1096,7 @@ func (s *Server) propfindAddressBook(w http.ResponseWriter, ctx context.Context,
 		contacts, err := s.carddavBackend.ListContacts(ctx, addressBookUID)
 		if err != nil {
 			s.logger.Error("DAV internal error", "error", err.Error())
-			http.Error(w, "Internal server error", http.StatusInternalServerError)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
 			return
 		}
 		for _, contact := range contacts {
@@ -1180,7 +1180,7 @@ func (s *Server) handleCardDAVReport(w http.ResponseWriter, r *http.Request, use
 		contacts, err = s.carddavBackend.ListContacts(ctx, addressBookUID)
 		if err != nil {
 			s.logger.Error("DAV internal error", "error", err.Error())
-			http.Error(w, "Internal server error", http.StatusInternalServerError)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
 			return
 		}
 	}
@@ -1351,7 +1351,7 @@ func (s *Server) handleMkAddressBook(w http.ResponseWriter, r *http.Request, use
 	_, err := s.carddavBackend.CreateAddressBook(ctx, user.ID, abName, "")
 	if err != nil {
 		s.logger.Error("DAV internal error", "error", err.Error())
-			http.Error(w, "Internal server error", http.StatusInternalServerError)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
 

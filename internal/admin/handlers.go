@@ -242,15 +242,21 @@ func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 	args := []interface{}{}
 
 	// Domain scoping for domain_admin
-	if adminUser != nil && adminUser.Role == "domain_admin" && len(adminUser.DomainIDs) > 0 {
-		placeholders := make([]string, len(adminUser.DomainIDs))
-		for i, id := range adminUser.DomainIDs {
-			placeholders[i] = "?"
-			args = append(args, id)
+	if adminUser != nil && adminUser.Role == "domain_admin" {
+		if len(adminUser.DomainIDs) > 0 {
+			placeholders := make([]string, len(adminUser.DomainIDs))
+			for i, id := range adminUser.DomainIDs {
+				placeholders[i] = "?"
+				args = append(args, id)
+			}
+			domainFilter := " AND u.domain_id IN (" + strings.Join(placeholders, ",") + ")" // #nosec G202 -- parameterized placeholders only
+			query += domainFilter
+			countQuery += domainFilter
+		} else {
+			// Empty DomainIDs means no domains assigned — return no results
+			query += " AND 1=0"
+			countQuery += " AND 1=0"
 		}
-		domainFilter := " AND u.domain_id IN (" + strings.Join(placeholders, ",") + ")" // #nosec G202 -- parameterized placeholders only
-		query += domainFilter
-		countQuery += domainFilter
 	}
 
 	// Add filters to query
@@ -584,25 +590,70 @@ func (s *Server) handleUserEdit(w http.ResponseWriter, r *http.Request) {
 
 	// Update role (only super_admin can change roles)
 	if currentAdmin != nil && currentAdmin.Role == "super_admin" {
+		tx, txErr := s.db.BeginTx(r.Context(), nil)
+		if txErr != nil {
+			s.logger.Error("Failed to begin transaction", "error", txErr.Error())
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
+		defer func() {
+			if txErr != nil {
+				_ = tx.Rollback()
+			}
+		}()
+
 		// Clear existing roles
-		_, _ = s.db.ExecContext(r.Context(), "DELETE FROM user_roles WHERE user_id = ?", userID)
+		if _, txErr = tx.ExecContext(r.Context(), "DELETE FROM user_roles WHERE user_id = ?", userID); txErr != nil {
+			s.logger.Error("Failed to clear roles", "error", txErr.Error())
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
 
 		if role != "" && role != "none" {
-			_ = s.assignUserRole(r.Context(), userID, role, editDomainID)
+			// Get role ID
+			var roleID int64
+			if txErr = tx.QueryRowContext(r.Context(), "SELECT id FROM roles WHERE name = ?", role).Scan(&roleID); txErr != nil {
+				s.logger.Warn("Role not found", "role", role, "error", txErr.Error())
+				http.Error(w, "Invalid role", http.StatusBadRequest)
+				return
+			}
+
 			// Assign scoped domains for domain_admin
 			if role == "domain_admin" {
 				if domainIDs, ok := r.Form["role_domains"]; ok {
 					for _, idStr := range domainIDs {
-						if dID, err := strconv.ParseInt(idStr, 10, 64); err == nil {
-							_ = s.assignUserRole(r.Context(), userID, role, dID)
+						if dID, parseErr := strconv.ParseInt(idStr, 10, 64); parseErr == nil {
+							_, txErr = tx.ExecContext(r.Context(),
+								"INSERT OR IGNORE INTO user_roles (user_id, role_id, domain_id) VALUES (?, ?, ?)",
+								userID, roleID, dID)
+							if txErr != nil {
+								s.logger.Error("Failed to assign domain role", "error", txErr.Error())
+								http.Error(w, "Internal server error", http.StatusInternalServerError)
+								return
+							}
 						}
 					}
 				}
+			} else {
+				if _, txErr = tx.ExecContext(r.Context(),
+					"INSERT OR IGNORE INTO user_roles (user_id, role_id) VALUES (?, ?)",
+					userID, roleID); txErr != nil {
+					s.logger.Error("Failed to assign role", "error", txErr.Error())
+					http.Error(w, "Internal server error", http.StatusInternalServerError)
+					return
+				}
 			}
+
 			// Sync is_admin flag for backward compat
-			_, _ = s.db.ExecContext(r.Context(), "UPDATE users SET is_admin = TRUE WHERE id = ?", userID)
+			_, _ = tx.ExecContext(r.Context(), "UPDATE users SET is_admin = TRUE WHERE id = ?", userID)
 		} else {
-			_, _ = s.db.ExecContext(r.Context(), "UPDATE users SET is_admin = FALSE WHERE id = ?", userID)
+			_, _ = tx.ExecContext(r.Context(), "UPDATE users SET is_admin = FALSE WHERE id = ?", userID)
+		}
+
+		if txErr = tx.Commit(); txErr != nil {
+			s.logger.Error("Failed to commit role update", "error", txErr.Error())
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
 		}
 	}
 
