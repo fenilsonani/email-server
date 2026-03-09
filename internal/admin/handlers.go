@@ -59,6 +59,27 @@ func getPaginationParams(r *http.Request) PaginationParams {
 	}
 }
 
+// buildDateFilter creates a WHERE clause for date range filtering.
+// Returns the clause string (including leading " WHERE") and the args.
+func buildDateFilter(column, from, to string) (string, []interface{}) {
+	var conditions []string
+	var args []interface{}
+
+	if from != "" {
+		conditions = append(conditions, column+" >= ?")
+		args = append(args, from)
+	}
+	if to != "" {
+		conditions = append(conditions, column+" <= ?")
+		args = append(args, to)
+	}
+
+	if len(conditions) == 0 {
+		return "", nil
+	}
+	return " WHERE " + strings.Join(conditions, " AND "), args
+}
+
 // handleDashboard shows the main dashboard
 func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/admin/" {

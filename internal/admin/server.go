@@ -21,6 +21,7 @@ import (
 	"github.com/fenilsonani/email-server/internal/features"
 	"github.com/fenilsonani/email-server/internal/lists"
 	"github.com/fenilsonani/email-server/internal/logging"
+	"github.com/fenilsonani/email-server/internal/org"
 	"github.com/fenilsonani/email-server/internal/queue"
 	"github.com/fenilsonani/email-server/internal/sieve"
 	"github.com/fenilsonani/email-server/internal/storage/maildir"
@@ -43,6 +44,7 @@ type Server struct {
 	sieveStore    *sieve.Store
 	featuresStore *features.Store
 	listsStore    *lists.Store
+	orgStore      *org.Store
 	queue         *queue.RedisQueue
 	logger        *logging.Logger
 	auditLogger   *audit.Logger
@@ -202,6 +204,11 @@ func (s *Server) SetListsStore(store *lists.Store) {
 	s.listsStore = store
 }
 
+// SetOrgStore sets the org store for multi-organization management
+func (s *Server) SetOrgStore(store *org.Store) {
+	s.orgStore = store
+}
+
 // Start starts the admin server
 func (s *Server) Start(listen string) error {
 	mux := http.NewServeMux()
@@ -218,97 +225,121 @@ func (s *Server) Start(listen string) error {
 	staticHTTP := http.FileServer(http.FS(staticFS))
 	mux.Handle("/static/", http.StripPrefix("/", staticHTTP))
 
-	// Admin routes
-	mux.HandleFunc("/admin/", s.withAuth(s.handleDashboard))
-	mux.HandleFunc("/admin/login", s.handleLogin)
-	mux.HandleFunc("/admin/logout", s.handleLogout)
-	mux.HandleFunc("/admin/users", s.withAuth(s.handleUsers))
-	mux.HandleFunc("/admin/users/add", s.withAuth(s.handleUserAdd))
-	mux.HandleFunc("/admin/users/edit/", s.withAuth(s.handleUserEdit))
-	mux.HandleFunc("/admin/users/delete/", s.withAuth(s.handleUserDelete))
-	mux.HandleFunc("/admin/domains", s.withAuth(s.handleDomains))
-	mux.HandleFunc("/admin/domains/add", s.withAuth(s.handleDomainAdd))
-	mux.HandleFunc("/admin/domains/wizard/validate", s.withAuth(s.handleDomainWizardValidate))
-	mux.HandleFunc("/admin/domains/wizard/dns-records", s.withAuth(s.handleDomainWizardDNSRecords))
-	mux.HandleFunc("/admin/domains/wizard/verify", s.withAuth(s.handleDomainWizardVerify))
-	mux.HandleFunc("/admin/domains/wizard/complete", s.withAuth(s.handleDomainWizardComplete))
-	mux.HandleFunc("/admin/domains/delete/", s.withAuth(s.handleDomainDelete))
-	mux.HandleFunc("/admin/domains/dkim/generate/", s.withAuth(s.handleDKIMGenerate))
-	mux.HandleFunc("/admin/domains/dkim/show/", s.withAuth(s.handleDKIMShow))
-	mux.HandleFunc("/admin/domains/dkim/rotate/", s.withAuth(s.handleDKIMRotate))
-	mux.HandleFunc("/admin/domains/dns/verify/", s.withAuth(s.handleDNSVerify))
-	mux.HandleFunc("/admin/domains/dns/", s.withAuth(s.handleDomainDNS))
-	mux.HandleFunc("/admin/domains/verify-ownership/", s.withAuth(s.handleDomainVerifyOwnership))
-	mux.HandleFunc("/admin/sieve/", s.withAuth(s.handleSieve))
-	mux.HandleFunc("/admin/logs", s.withAuth(s.handleLogs))
-	mux.HandleFunc("/admin/logs/auth", s.withAuth(s.handleAuthLogs))
-	mux.HandleFunc("/admin/logs/delivery", s.withAuth(s.handleDeliveryLogs))
-	mux.HandleFunc("/admin/logs/audit", s.withAuth(s.handleAuditLogs))
-	mux.HandleFunc("/admin/queue", s.withAuth(s.handleQueue))
-	mux.HandleFunc("/admin/queue/retry/", s.withAuth(s.handleQueueRetry))
-	mux.HandleFunc("/admin/queue/delete/", s.withAuth(s.handleQueueDelete))
-	mux.HandleFunc("/admin/email/preview/", s.withAuth(s.handleEmailPreview))
-	mux.HandleFunc("/admin/api/stats", s.withAuth(s.handleAPIStats))
-	mux.HandleFunc("/admin/tools/dns", s.withAuth(s.handleDNSCheck))
-	mux.HandleFunc("/admin/tools/test-email", s.withAuth(s.handleTestEmail))
-	mux.HandleFunc("/admin/tools/doctor", s.withAuth(s.handleDoctor))
-	mux.HandleFunc("/admin/tools/doctor/api/check", s.withAuth(s.handleDoctorAPI))
-	mux.HandleFunc("/admin/tools/doctor/api/compare", s.withAuth(s.handleDoctorCompareAPI))
-	mux.HandleFunc("/admin/tools/doctor/api/fix", s.withAuth(s.handleDoctorFixAPI))
-	mux.HandleFunc("/admin/tools/doctor/api/fix-all", s.withAuth(s.handleDoctorFixAllAPI))
-	mux.HandleFunc("/admin/tools/doctor/api/category", s.withAuth(s.handleDoctorCategoryAPI))
-	mux.HandleFunc("/admin/system", s.withAuth(s.handleSystem))
-	mux.HandleFunc("/admin/system/backup", s.withAuth(s.handleBackup))
-	mux.HandleFunc("/admin/system/restore", s.withAuth(s.handleRestore))
-	mux.HandleFunc("/admin/system/dkim-autorotate", s.withAuth(s.handleDKIMAutoRotate))
+	// === JSON API routes (for Next.js SPA) ===
+	// Auth (no withAPIAuth — handles own auth)
+	mux.HandleFunc("/admin/api/auth/login", s.handleAPILogin)
+	mux.HandleFunc("/admin/api/auth/logout", s.handleAPILogout)
+	mux.HandleFunc("/admin/api/auth/session", s.handleAPISession)
+	mux.HandleFunc("/admin/api/auth/csrf", s.handleAPICSRF)
+	mux.HandleFunc("/admin/api/auth/2fa", s.handleAPI2FAVerify)
+	// Dashboard
+	mux.HandleFunc("/admin/api/v1/stats", s.withAPIAuth(s.handleAPIGetStats))
+	// Users
+	mux.HandleFunc("/admin/api/v1/users", s.withAPIAuth(s.handleAPIUsers))
+	mux.HandleFunc("/admin/api/v1/users/", s.withAPIAuth(s.handleAPIUserByID))
+	// Domains
+	mux.HandleFunc("/admin/api/v1/domains", s.withAPIAuth(s.handleAPIDomains))
+	mux.HandleFunc("/admin/api/v1/domains/", s.withAPIAuth(s.handleAPIDomainByID))
+	mux.HandleFunc("/admin/api/v1/domains-list", s.withAPIAuth(s.handleAPIGetAvailableDomains))
+	// Logs
+	mux.HandleFunc("/admin/api/v1/logs/auth", s.withAPIAuth(s.handleAPIGetLogs))
+	mux.HandleFunc("/admin/api/v1/logs/delivery", s.withAPIAuth(s.handleAPIGetLogs))
+	mux.HandleFunc("/admin/api/v1/logs/audit", s.withAPIAuth(s.handleAPIGetLogs))
+	// Queue
+	mux.HandleFunc("/admin/api/v1/queue", s.withAPIAuth(s.handleAPIGetQueue))
+	// Features
+	mux.HandleFunc("/admin/api/v1/features", s.withAPIAuth(s.handleAPIGetFeatures))
+	// Lists
+	mux.HandleFunc("/admin/api/v1/lists", s.withAPIAuth(s.handleAPIListsCollection))
+	// System
+	mux.HandleFunc("/admin/api/v1/system", s.withAPIAuth(s.handleAPIGetSystem))
 
-	// Update system routes
-	mux.HandleFunc("/admin/system/update", s.withAuth(s.handleUpdate))
-	mux.HandleFunc("/admin/system/update/status", s.withAuth(s.HandleGetUpdateStatus))
-	mux.HandleFunc("/admin/system/update/available", s.withAuth(s.HandleGetAvailableUpdates))
-	mux.HandleFunc("/admin/system/update/start", s.withAuth(s.HandleStartUpdate))
-	mux.HandleFunc("/admin/system/update/progress", s.withAuth(s.HandleGetUpdateProgress))
-	mux.HandleFunc("/admin/system/update/history", s.withAuth(s.HandleGetUpdateHistory))
-	mux.HandleFunc("/admin/system/update/rollback/", s.withAuth(s.HandleRollbackUpdate))
-	mux.HandleFunc("/admin/system/update/settings", s.withAuth(s.HandleGetUpdateSettings))
-	mux.HandleFunc("/admin/system/update/settings/update", s.withAuth(s.HandleUpdateSettings))
+	// --- v2 API routes ---
+	// Features: Screener
+	mux.HandleFunc("/admin/api/v1/features/screener", s.withAPIAuth(s.handleAPIScreener))
+	mux.HandleFunc("/admin/api/v1/features/screener/", s.withAPIAuth(s.handleAPIScreenerByID))
+	// Features: Aliases
+	mux.HandleFunc("/admin/api/v1/features/aliases", s.withAPIAuth(s.handleAPIAliases))
+	mux.HandleFunc("/admin/api/v1/features/aliases/", s.withAPIAuth(s.handleAPIAliasByID))
+	// Features: VIP
+	mux.HandleFunc("/admin/api/v1/features/vip", s.withAPIAuth(s.handleAPIVIP))
+	mux.HandleFunc("/admin/api/v1/features/vip/", s.withAPIAuth(s.handleAPIVIPByID))
+	// Features: Preferences
+	mux.HandleFunc("/admin/api/v1/features/preferences", s.withAPIAuth(s.handleAPIPreferences))
+	// Features: Scheduled & Snoozed
+	mux.HandleFunc("/admin/api/v1/features/scheduled", s.withAPIAuth(s.handleAPIScheduled))
+	mux.HandleFunc("/admin/api/v1/features/snoozed", s.withAPIAuth(s.handleAPISnoozed))
+	// Lists: CRUD + sub-resources (members, moderation, archives)
+	mux.HandleFunc("/admin/api/v1/lists/", s.withAPIAuth(s.handleAPIListByID))
+	// Note: POST /admin/api/v1/lists is handled by handleAPIListsCollection above
+	// Queue: retry/delete by ID
+	mux.HandleFunc("/admin/api/v1/queue/", s.withAPIAuth(s.handleAPIQueueByID))
+	// Sieve
+	mux.HandleFunc("/admin/api/v1/sieve", s.withAPIAuth(s.handleAPISieve))
+	mux.HandleFunc("/admin/api/v1/sieve/validate", s.withAPIAuth(s.handleAPISieveValidate))
+	// System: Backup
+	mux.HandleFunc("/admin/api/v1/system/backup/status", s.withAPIAuth(s.handleAPIBackupStatus))
+	mux.HandleFunc("/admin/api/v1/system/backup", s.withAPIAuth(s.handleAPIBackupTrigger))
+	mux.HandleFunc("/admin/api/v1/system/backup/history", s.withAPIAuth(s.handleAPIBackupHistory))
+	mux.HandleFunc("/admin/api/v1/system/restore", s.withAPIAuth(s.handleAPIRestore))
+	// System: Certificates
+	mux.HandleFunc("/admin/api/v1/system/certificates", s.withAPIAuth(s.handleAPICertificates))
+	mux.HandleFunc("/admin/api/v1/system/certificates/renew", s.withAPIAuth(s.handleAPICertificatesRenew))
+	// System: 2FA
+	mux.HandleFunc("/admin/api/v1/system/2fa/status", s.withAPIAuth(s.handleAPI2FAStatus))
+	mux.HandleFunc("/admin/api/v1/system/2fa/setup", s.withAPIAuth(s.handleAPI2FASetup))
+	mux.HandleFunc("/admin/api/v1/system/2fa/verify", s.withAPIAuth(s.handleAPI2FAVerifyCode))
+	mux.HandleFunc("/admin/api/v1/system/2fa/disable", s.withAPIAuth(s.handleAPI2FADisable))
+	// System: Updates
+	mux.HandleFunc("/admin/api/v1/system/check-update", s.withAPIAuth(s.handleAPICheckUpdate))
+	// System: DKIM Auto-Rotate
+	mux.HandleFunc("/admin/api/v1/system/dkim-autorotate", s.withAPIAuth(s.handleAPIDKIMAutoRotate))
+	mux.HandleFunc("/admin/api/v1/system/dkim-autorotate/rotate-now", s.withAPIAuth(s.handleAPIDKIMAutoRotate))
+	// Analytics
+	mux.HandleFunc("/admin/api/v1/analytics", s.withAPIAuth(s.handleAPIAnalytics))
+	// Security
+	mux.HandleFunc("/admin/api/v1/security/overview", s.withAPIAuth(s.handleAPISecurityOverview))
+	mux.HandleFunc("/admin/api/v1/security/suppression", s.withAPIAuth(s.handleAPISecuritySuppression))
+	mux.HandleFunc("/admin/api/v1/security/suppression/", s.withAPIAuth(s.handleAPISecuritySuppressionByID))
+	mux.HandleFunc("/admin/api/v1/security/greylist", s.withAPIAuth(s.handleAPISecurityGreylist))
+	mux.HandleFunc("/admin/api/v1/security/greylist/", s.withAPIAuth(s.handleAPISecurityGreylistWhitelist))
+	mux.HandleFunc("/admin/api/v1/security/failed-logins", s.withAPIAuth(s.handleAPISecurityFailedLogins))
+	// Tools
+	mux.HandleFunc("/admin/api/v1/tools/doctor", s.withAPIAuth(s.handleAPIToolsDoctor))
+	mux.HandleFunc("/admin/api/v1/tools/test-email", s.withAPIAuth(s.handleAPIToolsTestEmail))
+	mux.HandleFunc("/admin/api/v1/tools/dns-check", s.withAPIAuth(s.handleAPIToolsDNSCheck))
 
-	// Two-Factor Authentication routes
-	mux.HandleFunc("/admin/2fa/setup", s.withAuth(s.handle2FASetup))
-	mux.HandleFunc("/admin/2fa/verify", s.handle2FAVerify) // No auth - used during login
+	// Organizations
+	mux.HandleFunc("/admin/api/v1/orgs", s.withAPIAuth(s.handleAPIOrgs))
+	mux.HandleFunc("/admin/api/v1/orgs/", s.withAPIAuth(s.handleAPIOrgByID))
 
-	// Features management routes (Screener, Aliases, etc.)
-	mux.HandleFunc("/admin/features", s.withAuth(s.handleFeatures))
-	mux.HandleFunc("/admin/features/screener", s.withAuth(s.handleScreener))
-	mux.HandleFunc("/admin/features/screener/approve/", s.withAuth(s.handleScreenerAction))
-	mux.HandleFunc("/admin/features/screener/block/", s.withAuth(s.handleScreenerAction))
-	mux.HandleFunc("/admin/features/screener/delete/", s.withAuth(s.handleScreenerAction))
-	mux.HandleFunc("/admin/features/aliases", s.withAuth(s.handleAliases))
-	mux.HandleFunc("/admin/features/aliases/add", s.withAuth(s.handleAliasAdd))
-	mux.HandleFunc("/admin/features/aliases/toggle/", s.withAuth(s.handleAliasToggle))
-	mux.HandleFunc("/admin/features/aliases/delete/", s.withAuth(s.handleAliasDelete))
-	mux.HandleFunc("/admin/features/vip", s.withAuth(s.handleVIP))
-	mux.HandleFunc("/admin/features/vip/add", s.withAuth(s.handleVIPAdd))
-	mux.HandleFunc("/admin/features/vip/delete/", s.withAuth(s.handleVIPRemove))
-	mux.HandleFunc("/admin/features/preferences", s.withAuth(s.handlePreferences))
-	mux.HandleFunc("/admin/features/scheduled", s.withAuth(s.handleScheduled))
-	mux.HandleFunc("/admin/features/scheduled/add", s.withAuth(s.handleScheduledAdd))
-	mux.HandleFunc("/admin/features/scheduled/cancel/", s.withAuth(s.handleScheduledCancel))
-	mux.HandleFunc("/admin/features/snoozed", s.withAuth(s.handleSnoozed))
-	mux.HandleFunc("/admin/features/snoozed/cancel/", s.withAuth(s.handleSnoozeCancel))
+	// API Keys management (admin dashboard)
+	mux.HandleFunc("/admin/api/v1/api-keys", s.withAPIAuth(s.handleAPIKeysCollection))
+	mux.HandleFunc("/admin/api/v1/api-keys/", s.withAPIAuth(s.handleAPIKeyByID))
+	// Webhooks management (admin dashboard)
+	mux.HandleFunc("/admin/api/v1/webhooks", s.withAPIAuth(s.handleAPIWebhooksCollection))
+	mux.HandleFunc("/admin/api/v1/webhooks/", s.withAPIAuth(s.handleAPIWebhookByID))
+	// Templates management (admin dashboard)
+	mux.HandleFunc("/admin/api/v1/templates", s.withAPIAuth(s.handleAPITemplatesCollection))
+	mux.HandleFunc("/admin/api/v1/templates/", s.withAPIAuth(s.handleAPITemplateByID))
+	// Sent emails / send logs (admin dashboard)
+	mux.HandleFunc("/admin/api/v1/emails", s.withAPIAuth(s.handleAPISentEmails))
+	mux.HandleFunc("/admin/api/v1/emails/", s.withAPIAuth(s.handleAPISentEmailByID))
+	// API stats
+	mux.HandleFunc("/admin/api/v1/api-stats", s.withAPIAuth(s.handleAPIEmailStats))
+	// Presets
+	mux.HandleFunc("/admin/api/v1/presets", s.withAPIAuth(s.handleAPIPresets))
+	// Setup wizard
+	mux.HandleFunc("/admin/api/v1/setup/status", s.handleAPISetupStatus)
+	mux.HandleFunc("/admin/api/v1/setup/check-dns", s.handleAPISetupCheckDNS)
+	mux.HandleFunc("/admin/api/v1/setup/preflight", s.handleAPISetupPreflight)
+	mux.HandleFunc("/admin/api/v1/setup/install", s.handleAPISetupInstall)
 
-	// Mailing lists management routes
-	mux.HandleFunc("/admin/lists", s.withAuth(s.handleLists))
-	mux.HandleFunc("/admin/lists/add", s.withAuth(s.handleListAdd))
-	mux.HandleFunc("/admin/lists/edit/", s.withAuth(s.handleListEdit))
-	mux.HandleFunc("/admin/lists/delete/", s.withAuth(s.handleListDelete))
-	mux.HandleFunc("/admin/lists/members/", s.withAuth(s.handleListMembers))
-	mux.HandleFunc("/admin/lists/members/add/", s.withAuth(s.handleListMemberAdd))
-	mux.HandleFunc("/admin/lists/members/remove/", s.withAuth(s.handleListMemberRemove))
-	mux.HandleFunc("/admin/lists/moderation/", s.withAuth(s.handleListModeration))
-	mux.HandleFunc("/admin/lists/moderation/approve/", s.withAuth(s.handleListModerationAction))
-	mux.HandleFunc("/admin/lists/moderation/reject/", s.withAuth(s.handleListModerationAction))
-	mux.HandleFunc("/admin/lists/archives/", s.withAuth(s.handleListArchives))
+	// SPA catch-all: serve Next.js static export for all /admin/ paths
+	// (API routes above are more specific and match first)
+	// No withAuth — the SPA handles auth client-side via /admin/api/auth/session
+	// StripPrefix removes /admin so the SPA handler sees paths relative to root
+	mux.Handle("/admin/", http.StripPrefix("/admin", s.serveSPA()))
 
 	// User portal (separate auth from admin)
 	userPortal, err := userportal.NewServer(s.db, s.authenticator, s.auditLogger, s.logger)
@@ -323,6 +354,7 @@ func (s *Server) Start(listen string) error {
 	// The execution order will be: logging -> security headers -> panic recovery -> domain detection -> CSRF -> routes
 	handler := s.withCSRF(mux)
 	handler = s.withDomainDetection(handler)
+	handler = s.withBodySizeLimit(handler)
 	handler = s.withPanicRecovery(handler)
 	handler = s.withSecurityHeaders(handler)
 	handler = s.withRequestLogging(handler)
@@ -433,10 +465,10 @@ type Stats struct {
 
 // ActivityItem represents a recent activity entry
 type ActivityItem struct {
-	Time        time.Time
-	Type        string
-	Description string
-	Status      string
+	Time        time.Time `json:"time"`
+	Type        string    `json:"type"`
+	Description string    `json:"description"`
+	Status      string    `json:"status"`
 }
 
 // getStats retrieves dashboard statistics

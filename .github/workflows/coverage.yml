@@ -44,7 +44,7 @@ jobs:
           echo "## Coverage: ${coverage}%" >> $GITHUB_STEP_SUMMARY
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v3
+        uses: codecov/codecov-action@v4
         with:
           files: ./coverage.out
           flags: unittests
@@ -52,7 +52,7 @@ jobs:
           verbose: true
 
       - name: Upload coverage artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: coverage-report
           path: |
@@ -228,7 +228,7 @@ jobs:
           fi
 
       - name: Upload coverage trend
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: coverage-trend
           path: coverage.txt

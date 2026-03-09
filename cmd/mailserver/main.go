@@ -27,6 +27,7 @@ import (
 	"github.com/fenilsonani/email-server/internal/lists"
 	"github.com/fenilsonani/email-server/internal/logging"
 	"github.com/fenilsonani/email-server/internal/metrics"
+	"github.com/fenilsonani/email-server/internal/org"
 	"github.com/fenilsonani/email-server/internal/migration"
 	"github.com/fenilsonani/email-server/internal/queue"
 	"github.com/fenilsonani/email-server/internal/doctor"
@@ -699,6 +700,9 @@ var serveCmd = &cobra.Command{
 				adminSrv.SetFeaturesStore(featuresStore)
 				// Set lists store for mailing list management
 				adminSrv.SetListsStore(listsStore)
+				// Set org store for multi-organization management
+				orgStore := org.NewStore(db.RawDB())
+				adminSrv.SetOrgStore(orgStore)
 
 				// Start feature scheduler for scheduled sends, snooze wake-ups, undo send
 				featureScheduler := features.NewScheduler(featuresStore, logger)

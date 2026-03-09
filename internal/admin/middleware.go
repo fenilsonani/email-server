@@ -307,6 +307,33 @@ func (s *Server) withAuth(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// withAPIAuth wraps a handler with JSON API authentication check
+func (s *Server) withAPIAuth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		cookie, err := r.Cookie("admin_session")
+		if err != nil {
+			s.jsonError(w, http.StatusUnauthorized, "Authentication required")
+			return
+		}
+
+		userID, valid := s.validateSession(cookie.Value)
+		if !valid {
+			s.jsonError(w, http.StatusUnauthorized, "Session expired")
+			return
+		}
+
+		// Check user is still admin
+		var isAdmin bool
+		err = s.db.QueryRowContext(r.Context(), "SELECT is_admin FROM users WHERE id = ?", userID).Scan(&isAdmin)
+		if err != nil || !isAdmin {
+			s.jsonError(w, http.StatusForbidden, "Admin access required")
+			return
+		}
+
+		next(w, r)
+	}
+}
+
 // CSRF token handling with bounded cache
 const (
 	maxCSRFTokens   = 10000 // Maximum CSRF tokens in cache
@@ -573,6 +600,23 @@ func (s *Server) withRequestLogging(next http.Handler) http.Handler {
 // withSecurityHeaders adds security headers to all responses
 func (s *Server) withSecurityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Dev mode: allow CORS from Next.js dev server
+		if s.config.Admin.DevMode {
+			origin := r.Header.Get("Origin")
+			if origin == "http://localhost:3000" || origin == "http://localhost:3001" {
+				w.Header().Set("Access-Control-Allow-Origin", origin)
+				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-CSRF-Token")
+				w.Header().Set("Access-Control-Allow-Credentials", "true")
+				if r.Method == http.MethodOptions {
+					w.WriteHeader(http.StatusOK)
+					return
+				}
+				next.ServeHTTP(w, r)
+				return
+			}
+		}
+
 		// CRITICAL: Block all cross-origin requests - admin panel should NEVER be accessed from external sites
 		w.Header().Set("Access-Control-Allow-Origin", "") // Explicitly NO CORS
 		w.Header().Set("Access-Control-Allow-Methods", "")
@@ -591,18 +635,18 @@ func (s *Server) withSecurityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("Referrer-Policy", "no-referrer")
 
 		// Content Security Policy - restrict resource loading
-		// Note: 'unsafe-inline' needed for admin panel inline scripts
+		// Note: 'unsafe-inline' + 'unsafe-eval' needed for Next.js SPA
 		w.Header().Set("Content-Security-Policy",
 			"default-src 'self'; "+
-				"script-src 'self' 'unsafe-inline'; "+ // Allow inline scripts for admin UI
+				"script-src 'self' 'unsafe-inline' 'unsafe-eval'; "+
 				"style-src 'self' 'unsafe-inline'; "+
-				"img-src 'self' data:; "+
-				"font-src 'self'; "+
+				"img-src 'self' data: blob:; "+
+				"font-src 'self' data:; "+
 				"connect-src 'self'; "+
 				"form-action 'self'; "+
 				"frame-ancestors 'none'; "+
 				"base-uri 'self'; "+
-				"object-src 'none'; "+ // Block plugins
+				"object-src 'none'; "+
 				"upgrade-insecure-requests")
 
 		// Permissions Policy - disable unnecessary browser features
@@ -612,12 +656,25 @@ func (s *Server) withSecurityHeaders(next http.Handler) http.Handler {
 				"interest-cohort=()") // Block FLoC tracking
 
 		// Cache control for admin pages - don't cache sensitive data
-		if r.URL.Path != "/admin/login" {
+		// Skip for static assets (SPA handler sets its own cache headers)
+		if r.URL.Path != "/admin/login" && !strings.HasPrefix(r.URL.Path, "/admin/_next/") {
 			w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, private")
 			w.Header().Set("Pragma", "no-cache")
 			w.Header().Set("Expires", "0")
 		}
 
+		next.ServeHTTP(w, r)
+	})
+}
+
+// withBodySizeLimit limits request body size to prevent DoS via large payloads.
+// Backup restore has its own limit via multipart form parsing.
+func (s *Server) withBodySizeLimit(next http.Handler) http.Handler {
+	const maxBodySize = 10 << 20 // 10 MB
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Body != nil && r.ContentLength != 0 {
+			r.Body = http.MaxBytesReader(w, r.Body, maxBodySize)
+		}
 		next.ServeHTTP(w, r)
 	})
 }
