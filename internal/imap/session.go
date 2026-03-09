@@ -15,6 +15,7 @@ import (
 	"github.com/fenilsonani/email-server/internal/auth"
 	"github.com/fenilsonani/email-server/internal/metrics"
 	"github.com/fenilsonani/email-server/internal/search"
+	"github.com/fenilsonani/email-server/internal/search/query"
 	"github.com/fenilsonani/email-server/internal/storage"
 )
 
@@ -1124,28 +1125,11 @@ func (s *Session) searchWithEngine(ctx context.Context, mailboxID, userID int64,
 	return uids, nil
 }
 
-// needsFullTextSearch checks if the criteria requires full-text search
+// needsFullTextSearch checks if the criteria requires full-text search.
+// Delegates to query.IsFullTextSearch which handles Body, Text, Header,
+// and recursive NOT/OR checks.
 func needsFullTextSearch(criteria *imap.SearchCriteria) bool {
-	if criteria == nil {
-		return false
-	}
-	// Body and Text searches require full-text
-	if len(criteria.Body) > 0 || len(criteria.Text) > 0 {
-		return true
-	}
-	// Check Not criteria
-	for i := range criteria.Not {
-		if needsFullTextSearch(&criteria.Not[i]) {
-			return true
-		}
-	}
-	// Check Or criteria
-	for _, orPair := range criteria.Or {
-		if needsFullTextSearch(&orPair[0]) || needsFullTextSearch(&orPair[1]) {
-			return true
-		}
-	}
-	return false
+	return query.IsFullTextSearch(criteria)
 }
 
 // buildSearchQuery converts IMAP criteria to a search query

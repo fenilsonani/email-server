@@ -167,8 +167,8 @@ func IsFullTextSearch(criteria *imap.SearchCriteria) bool {
 		return false
 	}
 
-	// Body and Text searches require full-text
-	if len(criteria.Body) > 0 || len(criteria.Text) > 0 {
+	// Body, Text, and Header searches require full-text
+	if len(criteria.Body) > 0 || len(criteria.Text) > 0 || len(criteria.Header) > 0 {
 		return true
 	}
 

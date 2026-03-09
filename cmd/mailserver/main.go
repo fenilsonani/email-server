@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"context"
+	"database/sql"
 	"fmt"
 	"io"
 	"os"
@@ -35,6 +36,8 @@ import (
 	"github.com/fenilsonani/email-server/internal/search"
 	searchbleve "github.com/fenilsonani/email-server/internal/search/bleve"
 	"github.com/fenilsonani/email-server/internal/search/indexer"
+	searchpg "github.com/fenilsonani/email-server/internal/search/postgres"
+	searchsqlite "github.com/fenilsonani/email-server/internal/search/sqlite"
 	"github.com/fenilsonani/email-server/internal/security"
 	"github.com/fenilsonani/email-server/internal/setup"
 	"github.com/fenilsonani/email-server/internal/sieve"
@@ -52,6 +55,26 @@ var (
 	cfg     *config.Config
 	db      metadata.Store
 )
+
+// dbUserStore implements indexer.UserStore using a raw SQL database connection.
+type dbUserStore struct{ db *sql.DB }
+
+func (s *dbUserStore) ListAllUsers(ctx context.Context) ([]int64, error) {
+	rows, err := s.db.QueryContext(ctx, "SELECT id FROM users WHERE active = 1")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
 
 func main() {
 	if err := rootCmd.Execute(); err != nil {
@@ -550,15 +573,24 @@ var serveCmd = &cobra.Command{
 				searchCfg.MaxResults = 1000
 			}
 
-			// Create Bleve search engine
-			searchEngine, err := searchbleve.NewEngine(searchCfg)
+			// Create search engine based on configured engine type
+			var searchEngine search.SearchEngine
+			switch searchCfg.Engine {
+			case search.EngineSQLite:
+				searchEngine, err = searchsqlite.NewEngine(db.RawDB(), searchCfg)
+			case search.EnginePostgres:
+				searchEngine, err = searchpg.NewEngine(db.RawDB(), searchCfg)
+			default: // "bleve", "auto", or empty
+				searchEngine, err = searchbleve.NewEngine(searchCfg)
+			}
 			if err != nil {
 				cleanup()
 				return fmt.Errorf("failed to initialize search engine: %w", err)
 			}
 
-			// Create indexer
-			searchIndexer := indexer.NewIndexer(searchEngine, store, nil, searchCfg)
+			// Create indexer with user store for ReindexAll support
+			userStore := &dbUserStore{db: db.RawDB()}
+			searchIndexer := indexer.NewIndexer(searchEngine, store, userStore, searchCfg)
 
 			// Wire up storage hooks for real-time indexing
 			if searchCfg.Realtime {
@@ -3499,6 +3531,100 @@ func init() {
 	migrateDBCmd.AddCommand(migrateDBVerifyCmd)
 	migrateDBCmd.AddCommand(migrateDBBackupCmd)
 	rootCmd.AddCommand(migrateDBCmd)
+
+	// Search commands
+	searchCmd.AddCommand(searchReindexCmd)
+	rootCmd.AddCommand(searchCmd)
+}
+
+// Search management commands
+var searchCmd = &cobra.Command{
+	Use:   "search",
+	Short: "Manage full-text search index",
+}
+
+var searchReindexCmd = &cobra.Command{
+	Use:   "reindex",
+	Short: "Rebuild the full-text search index from scratch",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := cfg.EnsureDirectories(); err != nil {
+			return err
+		}
+
+		var err error
+		db, err = metadata.Open(cfg.Storage.DatabasePath)
+		if err != nil {
+			return fmt.Errorf("failed to open database: %w", err)
+		}
+		defer db.Close()
+
+		store, err := maildir.NewStore(db.RawDB(), cfg.Storage.MaildirPath)
+		if err != nil {
+			return fmt.Errorf("failed to open store: %w", err)
+		}
+
+		searchCfg := &search.Config{
+			Enabled:       cfg.Search.Enabled,
+			Engine:        search.EngineType(cfg.Search.Engine),
+			IndexPath:     cfg.Search.IndexPath,
+			BatchSize:     cfg.Search.BatchSize,
+			FlushInterval: cfg.Search.FlushInterval,
+			Timeout:       cfg.Search.Timeout,
+			MaxResults:    cfg.Search.MaxResults,
+			Workers:       cfg.Search.Workers,
+		}
+		if searchCfg.BatchSize == 0 {
+			searchCfg.BatchSize = 100
+		}
+		if searchCfg.Workers == 0 {
+			searchCfg.Workers = 2
+		}
+		if searchCfg.FlushInterval == "" {
+			searchCfg.FlushInterval = "100ms"
+		}
+		if searchCfg.Timeout == "" {
+			searchCfg.Timeout = "5s"
+		}
+		if searchCfg.MaxResults == 0 {
+			searchCfg.MaxResults = 1000
+		}
+
+		// Create search engine based on configured type
+		var searchEngine search.SearchEngine
+		switch searchCfg.Engine {
+		case search.EngineSQLite:
+			searchEngine, err = searchsqlite.NewEngine(db.RawDB(), searchCfg)
+		case search.EnginePostgres:
+			searchEngine, err = searchpg.NewEngine(db.RawDB(), searchCfg)
+		default:
+			searchEngine, err = searchbleve.NewEngine(searchCfg)
+		}
+		if err != nil {
+			return fmt.Errorf("failed to initialize search engine: %w", err)
+		}
+		defer searchEngine.Close()
+
+		userStore := &dbUserStore{db: db.RawDB()}
+		searchIndexer := indexer.NewIndexer(searchEngine, store, userStore, searchCfg)
+
+		if err := searchIndexer.Start(context.Background()); err != nil {
+			return fmt.Errorf("failed to start indexer: %w", err)
+		}
+		defer searchIndexer.Stop()
+
+		fmt.Printf("Reindexing all messages using %s engine...\n", searchEngine.Name())
+		if err := searchIndexer.ReindexAll(context.Background()); err != nil {
+			return fmt.Errorf("reindex failed: %w", err)
+		}
+
+		stats, err := searchEngine.Stats(context.Background())
+		if err != nil {
+			fmt.Println("Reindex completed (could not retrieve stats)")
+			return nil
+		}
+		fmt.Printf("Reindex completed: %d documents indexed\n", stats.DocumentCount)
+		return nil
+	},
 }
 
 func splitEmail(email string) []string {
