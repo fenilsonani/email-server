@@ -969,12 +969,12 @@ func (s *Server) handleAPIAuthLogs(w http.ResponseWriter, r *http.Request, p Pag
 	whereClause, dateArgs := buildDateFilter("created_at", fromParam, toParam)
 
 	var totalCount int
-	s.db.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM auth_log"+whereClause, dateArgs...).Scan(&totalCount)
+	s.db.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM auth_log"+whereClause, dateArgs...).Scan(&totalCount) // #nosec G202 -- whereClause uses parameterized values
 
 	args := append(dateArgs, p.PageSize, p.Offset)
 	rows, err := s.db.QueryContext(r.Context(),
 		`SELECT username, remote_addr, protocol, success, created_at
-		FROM auth_log`+whereClause+` ORDER BY created_at DESC LIMIT ? OFFSET ?`,
+		FROM auth_log`+whereClause+` ORDER BY created_at DESC LIMIT ? OFFSET ?`, // #nosec G202 -- whereClause uses parameterized values
 		args...,
 	)
 	if err != nil {
@@ -1011,12 +1011,12 @@ func (s *Server) handleAPIDeliveryLogs(w http.ResponseWriter, r *http.Request, p
 	whereClause, dateArgs := buildDateFilter("created_at", fromParam, toParam)
 
 	var totalCount int
-	s.db.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM delivery_log"+whereClause, dateArgs...).Scan(&totalCount)
+	s.db.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM delivery_log"+whereClause, dateArgs...).Scan(&totalCount) // #nosec G202 -- whereClause uses parameterized values
 
 	args := append(dateArgs, p.PageSize, p.Offset)
 	rows, err := s.db.QueryContext(r.Context(),
 		`SELECT sender, recipient, status, COALESCE(error_message, ''), created_at
-		FROM delivery_log`+whereClause+` ORDER BY created_at DESC LIMIT ? OFFSET ?`,
+		FROM delivery_log`+whereClause+` ORDER BY created_at DESC LIMIT ? OFFSET ?`, // #nosec G202 -- whereClause uses parameterized values
 		args...,
 	)
 	if err != nil {
@@ -1053,12 +1053,12 @@ func (s *Server) handleAPIAuditLogs(w http.ResponseWriter, r *http.Request, p Pa
 	whereClause, dateArgs := buildDateFilter("timestamp", fromParam, toParam)
 
 	var totalCount int
-	s.db.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM audit_log"+whereClause, dateArgs...).Scan(&totalCount)
+	s.db.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM audit_log"+whereClause, dateArgs...).Scan(&totalCount) // #nosec G202 -- whereClause uses parameterized values
 
 	args := append(dateArgs, p.PageSize, p.Offset)
 	rows, err := s.db.QueryContext(r.Context(),
 		`SELECT actor, action, target, details, ip_address, timestamp
-		FROM audit_log`+whereClause+` ORDER BY timestamp DESC LIMIT ? OFFSET ?`,
+		FROM audit_log`+whereClause+` ORDER BY timestamp DESC LIMIT ? OFFSET ?`, // #nosec G202 -- whereClause uses parameterized values
 		args...,
 	)
 	if err != nil {

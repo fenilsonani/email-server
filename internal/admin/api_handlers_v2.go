@@ -1325,7 +1325,7 @@ func (s *Server) handleAPIBackupTrigger(w http.ResponseWriter, r *http.Request) 
 	filename := fmt.Sprintf("mailserver-backup-%s.tar.gz", time.Now().Format("2006-01-02-150405"))
 	backupPath := filepath.Join(backupDir, filename)
 
-	outFile, err := os.Create(backupPath)
+	outFile, err := os.Create(backupPath) // #nosec G304 -- path constructed from server config dir + timestamp
 	if err != nil {
 		s.logger.ErrorContext(r.Context(), "Failed to create backup file", err)
 		s.jsonError(w, http.StatusInternalServerError, "Failed to create backup file")
@@ -1508,7 +1508,7 @@ func (s *Server) handleAPIRestore(w http.ResponseWriter, r *http.Request) {
 			s.logger.Error("Failed to restore file", "path", targetPath, "error", err.Error())
 			continue
 		}
-		io.Copy(outFile, tarReader)
+		io.Copy(outFile, io.LimitReader(tarReader, 100<<20)) // #nosec G110 -- limit to 100MB per file
 		outFile.Close()
 		restored++
 	}
@@ -1547,7 +1547,7 @@ func (s *Server) handleAPICertificates(w http.ResponseWriter, r *http.Request) {
 	// Try to read the actual TLS certificate
 	certFile := s.config.TLS.CertFile
 	if certFile != "" {
-		certPEM, err := os.ReadFile(certFile)
+		certPEM, err := os.ReadFile(certFile) // #nosec G304 -- path from server config, not user input
 		if err != nil {
 			s.logger.Debug("Failed to read cert file", "path", certFile, "error", err.Error())
 		} else {
