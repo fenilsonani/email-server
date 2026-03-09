@@ -24,6 +24,7 @@ import {
   ArrowUp,
   ArrowDown,
   Search,
+  Inbox,
 } from "lucide-react";
 
 interface DataTableProps<TData, TValue> {
@@ -162,9 +163,12 @@ export function DataTable<TData, TValue>({
               <tr>
                 <td
                   colSpan={columns.length}
-                  className="h-24 text-center text-[13px] text-muted-foreground/50"
+                  className="h-32 text-center"
                 >
-                  {emptyMessage}
+                  <div className="flex flex-col items-center gap-1.5 py-4">
+                    <Inbox className="h-5 w-5 text-muted-foreground/30" strokeWidth={1.5} />
+                    <span className="text-[13px] text-muted-foreground/50">{emptyMessage}</span>
+                  </div>
                 </td>
               </tr>
             ) : (
@@ -189,7 +193,9 @@ export function DataTable<TData, TValue>({
       {(totalPages > 1 || totalRows > 0) && (
         <div className="flex items-center justify-between">
           <span className="text-[11px] text-muted-foreground/50 tabular-nums">
-            {totalRows} result{totalRows !== 1 ? "s" : ""}
+            {totalRows > 0
+              ? `${(currentPage - 1) * pageSize + 1}\u2013${Math.min(currentPage * pageSize, totalRows)} of ${totalRows}`
+              : "0 results"}
           </span>
           {totalPages > 1 && (
             <div className="flex items-center gap-1">
@@ -215,8 +221,8 @@ export function DataTable<TData, TValue>({
               >
                 <ChevronLeft className="h-3.5 w-3.5" />
               </button>
-              <span className="px-2 text-[11px] text-muted-foreground/60 tabular-nums">
-                {currentPage} / {totalPages}
+              <span className="px-2 text-[11px] text-muted-foreground/60 tabular-nums min-w-[3rem] text-center">
+                {currentPage} of {totalPages}
               </span>
               <button
                 onClick={() => {

@@ -101,9 +101,13 @@ function TemplatesContent() {
 
   const deleteTemplate = async (id: number) => {
     if (!confirm("Delete this template?")) return;
-    await api.delete(`/v1/templates/${id}`);
-    toast.success("Template deleted");
-    load();
+    const res = await api.delete(`/v1/templates/${id}`);
+    if (res.success) {
+      toast.success("Template deleted");
+      load();
+    } else {
+      toast.error(res.error || "Failed to delete template");
+    }
   };
 
   const extractVars = (body: string): string[] => {

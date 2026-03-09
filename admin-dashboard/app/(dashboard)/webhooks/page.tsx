@@ -77,20 +77,30 @@ function WebhooksContent() {
   };
 
   const toggle = async (id: number, active: boolean) => {
-    await api.put(`/v1/webhooks/${id}`, { is_active: !active });
+    const res = await api.put(`/v1/webhooks/${id}`, { is_active: !active });
+    if (res.success) {
+      toast.success(active ? "Webhook disabled" : "Webhook enabled");
+    } else {
+      toast.error(res.error || "Failed to update webhook");
+    }
     load();
   };
 
   const deleteWebhook = async (id: number) => {
     if (!confirm("Delete this webhook?")) return;
-    await api.delete(`/v1/webhooks/${id}`);
-    toast.success("Webhook deleted");
-    load();
+    const res = await api.delete(`/v1/webhooks/${id}`);
+    if (res.success) {
+      toast.success("Webhook deleted");
+      load();
+    } else {
+      toast.error(res.error || "Failed to delete webhook");
+    }
   };
 
   const test = async (id: number) => {
     const res = await api.post(`/v1/webhooks/${id}/test`);
     if (res.success) toast.success("Test event sent");
+    else toast.error(res.error || "Failed to send test event");
   };
 
   return (

@@ -136,7 +136,7 @@ const allPages = [
   { label: "System Settings", href: "/system/", group: "Settings" },
 ];
 
-export function AdminSidebar() {
+export function AdminSidebar({ mobile }: { mobile?: boolean } = {}) {
   const pathname = usePathname();
   const router = useRouter();
   const { enabled: advancedEnabled, hydrate } = useAdvancedMode();
@@ -178,7 +178,10 @@ export function AdminSidebar() {
     .filter((g) => g.items.length > 0);
 
   return (
-    <aside className="hidden md:flex w-52 shrink-0 flex-col border-r border-border bg-sidebar">
+    <aside className={cn(
+      "w-52 shrink-0 flex-col border-r border-border bg-sidebar h-full",
+      mobile ? "flex" : "hidden md:flex"
+    )}>
       {/* Org switcher */}
       {loaded && currentOrg && orgs.length > 0 && (
         <div className="px-2 pt-2">

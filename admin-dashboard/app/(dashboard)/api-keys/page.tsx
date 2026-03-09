@@ -80,6 +80,8 @@ function APIKeysContent() {
     if (res.success) {
       toast.success("API key revoked");
       loadKeys();
+    } else {
+      toast.error(res.error || "Failed to revoke key");
     }
   };
 
