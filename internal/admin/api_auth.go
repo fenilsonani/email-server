@@ -187,6 +187,13 @@ func (s *Server) handleAPI2FAVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check if IP is blocked from too many failed attempts
+	clientIP := s.rateLimiter.GetClientIP(r)
+	if s.rateLimiter.IsBlocked(clientIP) {
+		s.jsonError(w, http.StatusTooManyRequests, "Too many failed attempts. Please try again later.")
+		return
+	}
+
 	var req struct {
 		Code string `json:"code"`
 	}
@@ -238,7 +245,7 @@ func (s *Server) handleAPI2FAVerify(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !s.validateTOTPCode(status.Secret, req.Code) {
-		clientIP := s.rateLimiter.GetClientIP(r)
+		clientIP = s.rateLimiter.GetClientIP(r)
 		s.rateLimiter.RecordFailure(clientIP)
 		s.auditLogger.Log(r.Context(), pending.Username, audit.EventLoginFailure, "2FA verification failed", map[string]interface{}{"via": "api"}, clientIP)
 		s.jsonError(w, http.StatusUnauthorized, "Invalid 2FA code")
@@ -255,7 +262,7 @@ func (s *Server) handleAPI2FAVerify(w http.ResponseWriter, r *http.Request) {
 	})
 
 	// Create full session
-	clientIP := s.rateLimiter.GetClientIP(r)
+	clientIP = s.rateLimiter.GetClientIP(r)
 	s.rateLimiter.RecordSuccess(clientIP)
 	token := s.createSession(pending.UserID)
 	http.SetCookie(w, &http.Cookie{
