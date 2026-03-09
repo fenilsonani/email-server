@@ -60,7 +60,7 @@ var (
 type dbUserStore struct{ db *sql.DB }
 
 func (s *dbUserStore) ListAllUsers(ctx context.Context) ([]int64, error) {
-	rows, err := s.db.QueryContext(ctx, "SELECT id FROM users WHERE active = 1")
+	rows, err := s.db.QueryContext(ctx, "SELECT id FROM users WHERE is_active = TRUE")
 	if err != nil {
 		return nil, err
 	}
@@ -3552,7 +3552,7 @@ var searchReindexCmd = &cobra.Command{
 		}
 
 		var err error
-		db, err = metadata.Open(cfg.Storage.DatabasePath)
+		db, err = metadata.OpenFromConfig(cfg.Database)
 		if err != nil {
 			return fmt.Errorf("failed to open database: %w", err)
 		}
