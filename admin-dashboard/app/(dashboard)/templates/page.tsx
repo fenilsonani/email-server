@@ -3,8 +3,9 @@
 import { useEffect, useState } from "react";
 import { PageShell } from "@/components/shared/page-shell";
 import { api } from "@/lib/api";
-import { FileCode2, Plus, Trash2, Edit, Eye, Loader2, Send } from "lucide-react";
+import { FileCode2, Plus, Trash2, Edit, Eye, Loader2, Send, Copy } from "lucide-react";
 import { toast } from "sonner";
+import DOMPurify from "dompurify";
 
 interface Template {
   id: number;
@@ -198,7 +199,7 @@ function TemplatesContent() {
               </div>
               {preview ? (
                 <div className="mt-1 rounded-md border border-border bg-white p-3 h-[240px] overflow-auto"
-                  dangerouslySetInnerHTML={{ __html: preview }} />
+                  dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(preview) }} />
               ) : (
                 <>
                   <label className="text-[11px] font-medium text-muted-foreground uppercase">Text Body</label>

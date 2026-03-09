@@ -667,6 +667,18 @@ func (s *Server) withSecurityHeaders(next http.Handler) http.Handler {
 	})
 }
 
+// withBodySizeLimit limits request body size to prevent DoS via large payloads.
+// Backup restore has its own limit via multipart form parsing.
+func (s *Server) withBodySizeLimit(next http.Handler) http.Handler {
+	const maxBodySize = 10 << 20 // 10 MB
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Body != nil && r.ContentLength != 0 {
+			r.Body = http.MaxBytesReader(w, r.Body, maxBodySize)
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // responseWriterWrapper wraps http.ResponseWriter to capture status code
 type responseWriterWrapper struct {
 	http.ResponseWriter

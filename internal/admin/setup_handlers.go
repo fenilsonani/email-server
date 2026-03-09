@@ -39,6 +39,10 @@ func (s *Server) handleAPISetupCheckDNS(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	if s.setupAlreadyDone(w, r) {
+		return
+	}
+
 	var req struct {
 		Domain       string `json:"domain"`
 		MailHostname string `json:"mail_hostname"`
@@ -154,6 +158,10 @@ func (s *Server) handleAPISetupPreflight(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	if s.setupAlreadyDone(w, r) {
+		return
+	}
+
 	checks := map[string]interface{}{}
 
 	// Check port 25 (SMTP)
@@ -197,10 +205,27 @@ func (s *Server) handleAPISetupPreflight(w http.ResponseWriter, r *http.Request)
 	s.jsonResponse(w, http.StatusOK, checks)
 }
 
+// setupAlreadyDone returns true and sends an error if setup is already complete.
+func (s *Server) setupAlreadyDone(w http.ResponseWriter, r *http.Request) bool {
+	var domainCount, userCount int
+	s.db.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM domains").Scan(&domainCount)
+	s.db.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM users").Scan(&userCount)
+	if domainCount > 0 || userCount > 0 {
+		s.jsonError(w, http.StatusForbidden, "Setup already complete")
+		return true
+	}
+	return false
+}
+
 // handleAPISetupInstall executes the initial setup.
 func (s *Server) handleAPISetupInstall(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		s.jsonError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+
+	// Block if setup already done
+	if s.setupAlreadyDone(w, r) {
 		return
 	}
 
@@ -234,7 +259,8 @@ func (s *Server) handleAPISetupInstall(w http.ResponseWriter, r *http.Request) {
 		INSERT INTO domains (name, dkim_selector, is_active) VALUES (?, 'mail', 1)
 	`, req.Domain)
 	if err != nil {
-		s.jsonError(w, http.StatusInternalServerError, "Failed to create domain: "+err.Error())
+		s.logger.ErrorContext(r.Context(), "Failed to create domain", err)
+		s.jsonError(w, http.StatusInternalServerError, "Failed to create domain")
 		return
 	}
 	domainID, _ := res.LastInsertId()
@@ -254,7 +280,8 @@ func (s *Server) handleAPISetupInstall(w http.ResponseWriter, r *http.Request) {
 		VALUES (?, ?, ?, 1, 1)
 	`, domainID, username, passwordHash)
 	if err != nil {
-		s.jsonError(w, http.StatusInternalServerError, "Failed to create admin user: "+err.Error())
+		s.logger.ErrorContext(r.Context(), "Failed to create admin user", err)
+		s.jsonError(w, http.StatusInternalServerError, "Failed to create admin user")
 		return
 	}
 	userID, _ := userRes.LastInsertId()

@@ -7,13 +7,52 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/fenilsonani/email-server/internal/org"
 )
+
+// validateWebhookURL checks that a webhook URL is safe (HTTPS, no private IPs).
+func validateWebhookURL(rawURL string) error {
+	if !strings.HasPrefix(rawURL, "https://") {
+		return fmt.Errorf("webhook URL must use HTTPS")
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid URL")
+	}
+	host := parsed.Hostname()
+	if host == "" {
+		return fmt.Errorf("invalid URL: missing host")
+	}
+
+	// Block localhost
+	lower := strings.ToLower(host)
+	if lower == "localhost" || lower == "127.0.0.1" || lower == "::1" || lower == "0.0.0.0" {
+		return fmt.Errorf("webhook URL must not point to localhost")
+	}
+
+	// Resolve and block private/reserved IPs
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		return fmt.Errorf("cannot resolve host")
+	}
+	for _, ip := range ips {
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
+			return fmt.Errorf("webhook URL must not resolve to a private or reserved IP address")
+		}
+		// Block metadata endpoints (169.254.169.254)
+		if ip.Equal(net.ParseIP("169.254.169.254")) {
+			return fmt.Errorf("webhook URL must not point to cloud metadata endpoint")
+		}
+	}
+	return nil
+}
 
 // =============================================================================
 // API Keys Management
@@ -240,8 +279,8 @@ func (s *Server) handleAPICreateWebhook(w http.ResponseWriter, r *http.Request) 
 		s.jsonError(w, http.StatusBadRequest, "URL is required")
 		return
 	}
-	if !strings.HasPrefix(req.URL, "https://") {
-		s.jsonError(w, http.StatusBadRequest, "Webhook URL must use HTTPS")
+	if err := validateWebhookURL(req.URL); err != nil {
+		s.jsonError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	if req.DomainID == 0 {
@@ -254,7 +293,10 @@ func (s *Server) handleAPICreateWebhook(w http.ResponseWriter, r *http.Request) 
 
 	// Generate webhook secret
 	secretBytes := make([]byte, 32)
-	rand.Read(secretBytes)
+	if _, err := rand.Read(secretBytes); err != nil {
+		s.jsonError(w, http.StatusInternalServerError, "Failed to generate webhook secret")
+		return
+	}
 	secret := "whsec_" + hex.EncodeToString(secretBytes)
 
 	eventsJSON, _ := json.Marshal(req.Events)
@@ -304,6 +346,10 @@ func (s *Server) handleAPIWebhookByID(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if req.URL != "" {
+			if err := validateWebhookURL(req.URL); err != nil {
+				s.jsonError(w, http.StatusBadRequest, err.Error())
+				return
+			}
 			s.db.ExecContext(r.Context(), "UPDATE webhooks SET url = ? WHERE id = ?", req.URL, id)
 		}
 		if len(req.Events) > 0 {

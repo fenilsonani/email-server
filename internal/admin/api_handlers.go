@@ -871,7 +871,8 @@ func (s *Server) handleAPIDKIMGenerate(w http.ResponseWriter, r *http.Request, d
 
 	_, err = security.GenerateAndSaveKey(r.Context(), store, domainName, req.Selector, req.Bits)
 	if err != nil {
-		s.jsonError(w, http.StatusInternalServerError, "Failed to generate DKIM key: "+err.Error())
+		s.logger.ErrorContext(r.Context(), "Failed to generate DKIM key", err)
+		s.jsonError(w, http.StatusInternalServerError, "Failed to generate DKIM key")
 		return
 	}
 
@@ -911,7 +912,8 @@ func (s *Server) handleAPIDKIMRotate(w http.ResponseWriter, r *http.Request, dom
 
 	newSelector, _, err := security.RotateKey(r.Context(), store, domainName, 2048)
 	if err != nil {
-		s.jsonError(w, http.StatusInternalServerError, "Failed to rotate DKIM key: "+err.Error())
+		s.logger.ErrorContext(r.Context(), "Failed to rotate DKIM key", err)
+		s.jsonError(w, http.StatusInternalServerError, "Failed to rotate DKIM key")
 		return
 	}
 

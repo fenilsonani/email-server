@@ -254,7 +254,8 @@ func (s *Server) handleAPICreateAlias(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.featuresStore.CreateAlias(r.Context(), alias); err != nil {
-		s.jsonError(w, http.StatusInternalServerError, "Failed to create alias: "+err.Error())
+		s.logger.ErrorContext(r.Context(), "Failed to create alias", err)
+		s.jsonError(w, http.StatusInternalServerError, "Failed to create alias")
 		return
 	}
 
@@ -367,7 +368,8 @@ func (s *Server) handleAPICreateVIP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.featuresStore.AddVIP(r.Context(), vip); err != nil {
-		s.jsonError(w, http.StatusInternalServerError, "Failed to add VIP contact: "+err.Error())
+		s.logger.ErrorContext(r.Context(), "Failed to add VIP contact", err)
+		s.jsonError(w, http.StatusInternalServerError, "Failed to add VIP contact")
 		return
 	}
 
@@ -1325,7 +1327,8 @@ func (s *Server) handleAPIBackupTrigger(w http.ResponseWriter, r *http.Request) 
 
 	outFile, err := os.Create(backupPath)
 	if err != nil {
-		s.jsonError(w, http.StatusInternalServerError, "Failed to create backup file: "+err.Error())
+		s.logger.ErrorContext(r.Context(), "Failed to create backup file", err)
+		s.jsonError(w, http.StatusInternalServerError, "Failed to create backup file")
 		return
 	}
 	defer outFile.Close()
@@ -1422,7 +1425,7 @@ func (s *Server) handleAPIRestore(w http.ResponseWriter, r *http.Request) {
 
 	// Parse multipart form (max 500MB)
 	if err := r.ParseMultipartForm(500 << 20); err != nil {
-		s.jsonError(w, http.StatusBadRequest, "Failed to parse form: "+err.Error())
+		s.jsonError(w, http.StatusBadRequest, "Failed to parse form")
 		return
 	}
 
@@ -1478,6 +1481,19 @@ func (s *Server) handleAPIRestore(w http.ResponseWriter, r *http.Request) {
 		}
 
 		targetPath := filepath.Join(dataDir, cleanName)
+
+		// Verify resolved path is within dataDir
+		absTarget, err := filepath.Abs(targetPath)
+		if err != nil {
+			continue
+		}
+		absBase, err := filepath.Abs(dataDir)
+		if err != nil {
+			continue
+		}
+		if !strings.HasPrefix(absTarget, absBase+string(filepath.Separator)) && absTarget != absBase {
+			continue
+		}
 
 		if hdr.Typeflag == tar.TypeDir {
 			os.MkdirAll(targetPath, 0755)
@@ -2071,7 +2087,8 @@ func (s *Server) handleAPIToolsTestEmail(w http.ResponseWriter, r *http.Request)
 
 	if err := s.queue.Enqueue(ctx, queueMsg); err != nil {
 		os.Remove(tmpFile.Name())
-		s.jsonError(w, http.StatusInternalServerError, "Failed to queue message: "+err.Error())
+		s.logger.ErrorContext(r.Context(), "Failed to queue message", err)
+		s.jsonError(w, http.StatusInternalServerError, "Failed to queue message")
 		return
 	}
 

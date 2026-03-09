@@ -354,6 +354,7 @@ func (s *Server) Start(listen string) error {
 	// The execution order will be: logging -> security headers -> panic recovery -> domain detection -> CSRF -> routes
 	handler := s.withCSRF(mux)
 	handler = s.withDomainDetection(handler)
+	handler = s.withBodySizeLimit(handler)
 	handler = s.withPanicRecovery(handler)
 	handler = s.withSecurityHeaders(handler)
 	handler = s.withRequestLogging(handler)

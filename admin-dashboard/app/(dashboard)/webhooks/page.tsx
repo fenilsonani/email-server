@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { PageShell } from "@/components/shared/page-shell";
 import { api } from "@/lib/api";
-import { Webhook, Plus, Trash2, Play, Loader2, CheckCircle2, XCircle } from "lucide-react";
+import { Plus, Trash2, Play, Loader2, CheckCircle2, XCircle, Copy } from "lucide-react";
 import { toast } from "sonner";
 import { formatDistanceToNow } from "date-fns";
 
@@ -38,6 +38,7 @@ function WebhooksContent() {
   const [loading, setLoading] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [newSecret, setNewSecret] = useState<string | null>(null);
 
   const [url, setUrl] = useState("");
   const [domainId, setDomainId] = useState(0);
@@ -66,7 +67,8 @@ function WebhooksContent() {
       url, domain_id: domainId, events,
     });
     if (res.success && res.data) {
-      toast.success(`Webhook created. Secret: ${res.data.secret}`);
+      setNewSecret(res.data.secret);
+      toast.success("Webhook created");
       load();
       setShowCreate(false);
       setUrl("");
@@ -74,6 +76,13 @@ function WebhooksContent() {
       toast.error(res.error || "Failed to create webhook");
     }
     setCreating(false);
+  };
+
+  const copySecret = () => {
+    if (newSecret) {
+      navigator.clipboard.writeText(newSecret);
+      toast.success("Copied to clipboard");
+    }
   };
 
   const toggle = async (id: number, active: boolean) => {
@@ -109,13 +118,29 @@ function WebhooksContent() {
       description="Get notified when emails are sent, delivered, opened, or bounced"
       actions={
         <button
-          onClick={() => setShowCreate(!showCreate)}
+          onClick={() => { setShowCreate(!showCreate); setNewSecret(null); }}
           className="flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-[13px] font-medium text-primary-foreground hover:bg-primary/90"
         >
           <Plus className="h-3.5 w-3.5" /> Add Webhook
         </button>
       }
     >
+      {/* Secret reveal modal */}
+      {newSecret && (
+        <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-4 space-y-2">
+          <p className="text-[12px] font-medium text-emerald-400">Webhook signing secret (copy now, it won&apos;t be shown again):</p>
+          <div className="flex items-center gap-2">
+            <code className="flex-1 rounded bg-background px-3 py-2 text-[12px] font-mono text-foreground break-all">{newSecret}</code>
+            <button onClick={copySecret} className="rounded-md p-2 hover:bg-accent" title="Copy secret">
+              <Copy className="h-4 w-4" />
+            </button>
+          </div>
+          <button onClick={() => setNewSecret(null)} className="text-[11px] text-muted-foreground hover:text-foreground">
+            Dismiss
+          </button>
+        </div>
+      )}
+
       {showCreate && (
         <div className="rounded-lg border border-border bg-card p-4 space-y-3">
           <div className="grid gap-3 sm:grid-cols-2">
