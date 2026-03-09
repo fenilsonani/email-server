@@ -43,10 +43,16 @@
         </div>
 
         <div class="form-group">
-            <label class="form-check">
-                <input type="checkbox" name="is_admin">
-                <span>Grant admin privileges</span>
-            </label>
+            <label for="role">Role</label>
+            <select id="role" name="role" class="form-control">
+                <option value="none">None (regular user)</option>
+                <option value="super_admin">Super Admin</option>
+                <option value="domain_admin">Domain Admin</option>
+                <option value="support">Support</option>
+            </select>
+            <small style="color: var(--text-muted);">
+                Super Admin: full access | Domain Admin: scoped to domains | Support: read-only + password reset
+            </small>
         </div>
 
         <div style="display: flex; gap: 1rem; margin-top: 1.5rem;">

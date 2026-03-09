@@ -1049,8 +1049,34 @@ var userAddCmd = &cobra.Command{
 			}
 		}
 
+		// Create default calendar and addressbook for CalDAV/CardDAV
+		davCreated := true
+		caldavBackend, caldavErr := dav.NewCalDAVBackend(db.RawDB())
+		if caldavErr != nil {
+			fmt.Printf("Warning: failed to init CalDAV backend: %v\n", caldavErr)
+			davCreated = false
+		} else {
+			if _, err := caldavBackend.CreateCalendar(context.Background(), userID, "Calendar", "Default calendar"); err != nil {
+				fmt.Printf("Warning: failed to create default calendar: %v\n", err)
+				davCreated = false
+			}
+		}
+		carddavBackend, carddavErr := dav.NewCardDAVBackend(db.RawDB())
+		if carddavErr != nil {
+			fmt.Printf("Warning: failed to init CardDAV backend: %v\n", carddavErr)
+			davCreated = false
+		} else {
+			if _, err := carddavBackend.CreateAddressBook(context.Background(), userID, "Contacts", "Default address book"); err != nil {
+				fmt.Printf("Warning: failed to create default address book: %v\n", err)
+				davCreated = false
+			}
+		}
+
 		fmt.Printf("User '%s' added with ID %d\n", email, userID)
 		fmt.Println("Default mailboxes created: INBOX, Drafts, Sent, Trash, Junk, Archive")
+		if davCreated {
+			fmt.Println("Default calendar and address book created")
+		}
 		return nil
 	},
 }
@@ -1154,6 +1180,595 @@ var userPasswdCmd = &cobra.Command{
 		}
 
 		fmt.Printf("Password updated for '%s'\n", email)
+		return nil
+	},
+}
+
+var userDeleteForce bool
+
+var userDeleteCmd = &cobra.Command{
+	Use:   "delete <email>",
+	Short: "Delete a user",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		email := args[0]
+
+		if err := cfg.EnsureDirectories(); err != nil {
+			return err
+		}
+
+		var err error
+		db, err = metadata.Open(cfg.Storage.DatabasePath)
+		if err != nil {
+			return fmt.Errorf("failed to open database: %w", err)
+		}
+		defer db.Close()
+
+		parts := splitEmail(email)
+		if len(parts) != 2 {
+			return fmt.Errorf("invalid email format: %s", email)
+		}
+		username, domain := parts[0], parts[1]
+
+		if !userDeleteForce {
+			fmt.Printf("Are you sure you want to delete user '%s'? This cannot be undone. [y/N] ", email)
+			var confirm string
+			_, _ = fmt.Scanln(&confirm)
+			if confirm != "y" && confirm != "Y" {
+				fmt.Println("Cancelled.")
+				return nil
+			}
+		}
+
+		result, err := db.ExecContext(context.Background(), `
+			DELETE FROM users WHERE username = ? AND domain_id = (SELECT id FROM domains WHERE name = ?)
+		`, username, domain)
+		if err != nil {
+			return fmt.Errorf("failed to delete user: %w", err)
+		}
+
+		affected, _ := result.RowsAffected()
+		if affected == 0 {
+			return fmt.Errorf("user not found: %s", email)
+		}
+
+		fmt.Printf("User '%s' deleted\n", email)
+		return nil
+	},
+}
+
+var userEnableCmd = &cobra.Command{
+	Use:   "enable <email>",
+	Short: "Enable a user account",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		email := args[0]
+
+		if err := cfg.EnsureDirectories(); err != nil {
+			return err
+		}
+
+		var err error
+		db, err = metadata.Open(cfg.Storage.DatabasePath)
+		if err != nil {
+			return fmt.Errorf("failed to open database: %w", err)
+		}
+		defer db.Close()
+
+		parts := splitEmail(email)
+		if len(parts) != 2 {
+			return fmt.Errorf("invalid email format: %s", email)
+		}
+		username, domain := parts[0], parts[1]
+
+		result, err := db.ExecContext(context.Background(), `
+			UPDATE users SET is_active = TRUE WHERE username = ? AND domain_id = (SELECT id FROM domains WHERE name = ?)
+		`, username, domain)
+		if err != nil {
+			return fmt.Errorf("failed to enable user: %w", err)
+		}
+
+		affected, _ := result.RowsAffected()
+		if affected == 0 {
+			return fmt.Errorf("user not found: %s", email)
+		}
+
+		fmt.Printf("User '%s' enabled\n", email)
+		return nil
+	},
+}
+
+var userDisableCmd = &cobra.Command{
+	Use:   "disable <email>",
+	Short: "Disable a user account",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		email := args[0]
+
+		if err := cfg.EnsureDirectories(); err != nil {
+			return err
+		}
+
+		var err error
+		db, err = metadata.Open(cfg.Storage.DatabasePath)
+		if err != nil {
+			return fmt.Errorf("failed to open database: %w", err)
+		}
+		defer db.Close()
+
+		parts := splitEmail(email)
+		if len(parts) != 2 {
+			return fmt.Errorf("invalid email format: %s", email)
+		}
+		username, domain := parts[0], parts[1]
+
+		result, err := db.ExecContext(context.Background(), `
+			UPDATE users SET is_active = FALSE WHERE username = ? AND domain_id = (SELECT id FROM domains WHERE name = ?)
+		`, username, domain)
+		if err != nil {
+			return fmt.Errorf("failed to disable user: %w", err)
+		}
+
+		affected, _ := result.RowsAffected()
+		if affected == 0 {
+			return fmt.Errorf("user not found: %s", email)
+		}
+
+		fmt.Printf("User '%s' disabled\n", email)
+		return nil
+	},
+}
+
+var setRoleDomain string
+
+var userSetRoleCmd = &cobra.Command{
+	Use:   "set-role <email> <role>",
+	Short: "Assign a role to a user (super_admin, domain_admin, support, none)",
+	Args:  cobra.ExactArgs(2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		email := args[0]
+		roleName := args[1]
+
+		validRoles := map[string]bool{
+			"super_admin":  true,
+			"domain_admin": true,
+			"support":      true,
+			"none":         true,
+		}
+		if !validRoles[roleName] {
+			return fmt.Errorf("invalid role: %s (valid: super_admin, domain_admin, support, none)", roleName)
+		}
+
+		if roleName == "domain_admin" && setRoleDomain == "" {
+			return fmt.Errorf("--domain flag is required for domain_admin role")
+		}
+
+		if err := cfg.EnsureDirectories(); err != nil {
+			return err
+		}
+
+		var err error
+		db, err = metadata.Open(cfg.Storage.DatabasePath)
+		if err != nil {
+			return fmt.Errorf("failed to open database: %w", err)
+		}
+		defer db.Close()
+
+		if err := db.Migrate(context.Background()); err != nil {
+			return fmt.Errorf("failed to run migrations: %w", err)
+		}
+
+		parts := splitEmail(email)
+		if len(parts) != 2 {
+			return fmt.Errorf("invalid email format: %s", email)
+		}
+		username, domain := parts[0], parts[1]
+
+		// Get user ID
+		var userID int64
+		err = db.QueryRowContext(context.Background(), `
+			SELECT u.id FROM users u JOIN domains d ON u.domain_id = d.id
+			WHERE u.username = ? AND d.name = ?
+		`, username, domain).Scan(&userID)
+		if err != nil {
+			return fmt.Errorf("user not found: %s", email)
+		}
+
+		// Validate inputs before making changes
+		if roleName != "none" {
+			// Verify role exists before touching anything
+			var roleID int64
+			err = db.QueryRowContext(context.Background(), "SELECT id FROM roles WHERE name = ?", roleName).Scan(&roleID)
+			if err != nil {
+				return fmt.Errorf("role '%s' not found in database (run migrations first)", roleName)
+			}
+
+			if roleName == "domain_admin" {
+				var domainID int64
+				err = db.QueryRowContext(context.Background(), "SELECT id FROM domains WHERE name = ?", setRoleDomain).Scan(&domainID)
+				if err != nil {
+					return fmt.Errorf("domain not found: %s", setRoleDomain)
+				}
+			}
+		}
+
+		// All validation passed — apply changes in a transaction
+		tx, txErr := db.BeginTx(context.Background(), nil)
+		if txErr != nil {
+			return fmt.Errorf("failed to begin transaction: %w", txErr)
+		}
+		defer func() {
+			if txErr != nil {
+				_ = tx.Rollback()
+			}
+		}()
+
+		// Clear existing roles
+		if _, txErr = tx.ExecContext(context.Background(), "DELETE FROM user_roles WHERE user_id = ?", userID); txErr != nil {
+			return fmt.Errorf("failed to clear roles: %w", txErr)
+		}
+
+		if roleName == "none" {
+			// Remove admin flag
+			if _, txErr = tx.ExecContext(context.Background(), "UPDATE users SET is_admin = FALSE WHERE id = ?", userID); txErr != nil {
+				return fmt.Errorf("failed to update admin flag: %w", txErr)
+			}
+			if txErr = tx.Commit(); txErr != nil {
+				return fmt.Errorf("failed to commit: %w", txErr)
+			}
+			fmt.Printf("Role removed from '%s'\n", email)
+			return nil
+		}
+
+		// Get role ID
+		var roleID int64
+		txErr = tx.QueryRowContext(context.Background(), "SELECT id FROM roles WHERE name = ?", roleName).Scan(&roleID)
+		if txErr != nil {
+			return fmt.Errorf("role lookup failed: %w", txErr)
+		}
+
+		if roleName == "domain_admin" {
+			var domainID int64
+			txErr = tx.QueryRowContext(context.Background(), "SELECT id FROM domains WHERE name = ?", setRoleDomain).Scan(&domainID)
+			if txErr != nil {
+				return fmt.Errorf("domain lookup failed: %w", txErr)
+			}
+			_, txErr = tx.ExecContext(context.Background(),
+				"INSERT INTO user_roles (user_id, role_id, domain_id) VALUES (?, ?, ?)",
+				userID, roleID, domainID)
+		} else {
+			_, txErr = tx.ExecContext(context.Background(),
+				"INSERT INTO user_roles (user_id, role_id) VALUES (?, ?)",
+				userID, roleID)
+		}
+		if txErr != nil {
+			return fmt.Errorf("failed to assign role: %w", txErr)
+		}
+
+		// Sync is_admin flag for backward compat
+		_, _ = tx.ExecContext(context.Background(), "UPDATE users SET is_admin = TRUE WHERE id = ?", userID)
+
+		if txErr = tx.Commit(); txErr != nil {
+			return fmt.Errorf("failed to commit: %w", txErr)
+		}
+
+		fmt.Printf("Role '%s' assigned to '%s'\n", roleName, email)
+		if roleName == "domain_admin" {
+			fmt.Printf("  Scoped to domain: %s\n", setRoleDomain)
+		}
+		return nil
+	},
+}
+
+// Domain management: delete, enable, disable
+
+var domainDeleteForce bool
+
+var domainDeleteCmd = &cobra.Command{
+	Use:   "delete <domain>",
+	Short: "Delete a domain and all its users",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		domainName := args[0]
+
+		if err := cfg.EnsureDirectories(); err != nil {
+			return err
+		}
+
+		var err error
+		db, err = metadata.Open(cfg.Storage.DatabasePath)
+		if err != nil {
+			return fmt.Errorf("failed to open database: %w", err)
+		}
+		defer db.Close()
+
+		// Count users in this domain
+		var userCount int
+		_ = db.QueryRowContext(context.Background(),
+			"SELECT COUNT(*) FROM users WHERE domain_id = (SELECT id FROM domains WHERE name = ?)",
+			domainName).Scan(&userCount)
+
+		if !domainDeleteForce {
+			fmt.Printf("Are you sure you want to delete domain '%s'? (%d users will be deleted) [y/N] ", domainName, userCount)
+			var confirm string
+			_, _ = fmt.Scanln(&confirm)
+			if confirm != "y" && confirm != "Y" {
+				fmt.Println("Cancelled.")
+				return nil
+			}
+		}
+
+		// Delete users first (cascade may not be enabled)
+		_, _ = db.ExecContext(context.Background(),
+			"DELETE FROM users WHERE domain_id = (SELECT id FROM domains WHERE name = ?)", domainName)
+
+		result, err := db.ExecContext(context.Background(), "DELETE FROM domains WHERE name = ?", domainName)
+		if err != nil {
+			return fmt.Errorf("failed to delete domain: %w", err)
+		}
+
+		affected, _ := result.RowsAffected()
+		if affected == 0 {
+			return fmt.Errorf("domain not found: %s", domainName)
+		}
+
+		fmt.Printf("Domain '%s' deleted (%d users removed)\n", domainName, userCount)
+		return nil
+	},
+}
+
+var domainEnableCmd = &cobra.Command{
+	Use:   "enable <domain>",
+	Short: "Enable a domain",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		domainName := args[0]
+
+		if err := cfg.EnsureDirectories(); err != nil {
+			return err
+		}
+
+		var err error
+		db, err = metadata.Open(cfg.Storage.DatabasePath)
+		if err != nil {
+			return fmt.Errorf("failed to open database: %w", err)
+		}
+		defer db.Close()
+
+		result, err := db.ExecContext(context.Background(),
+			"UPDATE domains SET is_active = TRUE WHERE name = ?", domainName)
+		if err != nil {
+			return fmt.Errorf("failed to enable domain: %w", err)
+		}
+
+		affected, _ := result.RowsAffected()
+		if affected == 0 {
+			return fmt.Errorf("domain not found: %s", domainName)
+		}
+
+		fmt.Printf("Domain '%s' enabled\n", domainName)
+		return nil
+	},
+}
+
+var domainDisableCmd = &cobra.Command{
+	Use:   "disable <domain>",
+	Short: "Disable a domain",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		domainName := args[0]
+
+		if err := cfg.EnsureDirectories(); err != nil {
+			return err
+		}
+
+		var err error
+		db, err = metadata.Open(cfg.Storage.DatabasePath)
+		if err != nil {
+			return fmt.Errorf("failed to open database: %w", err)
+		}
+		defer db.Close()
+
+		result, err := db.ExecContext(context.Background(),
+			"UPDATE domains SET is_active = FALSE WHERE name = ?", domainName)
+		if err != nil {
+			return fmt.Errorf("failed to disable domain: %w", err)
+		}
+
+		affected, _ := result.RowsAffected()
+		if affected == 0 {
+			return fmt.Errorf("domain not found: %s", domainName)
+		}
+
+		fmt.Printf("Domain '%s' disabled\n", domainName)
+		return nil
+	},
+}
+
+// Database management commands
+
+var dbCmd = &cobra.Command{
+	Use:   "db",
+	Short: "Database management commands",
+}
+
+var dbBackupCmd = &cobra.Command{
+	Use:   "backup [path]",
+	Short: "Create a consistent database backup using VACUUM INTO",
+	Args:  cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := cfg.EnsureDirectories(); err != nil {
+			return err
+		}
+
+		outputPath := "mail-backup.db"
+		if len(args) > 0 {
+			outputPath = args[0]
+		}
+
+		var err error
+		db, err = metadata.Open(cfg.Storage.DatabasePath)
+		if err != nil {
+			return fmt.Errorf("failed to open database: %w", err)
+		}
+		defer db.Close()
+
+		fmt.Printf("Creating backup: %s\n", outputPath)
+		_, err = db.ExecContext(context.Background(), "VACUUM INTO ?", outputPath)
+		if err != nil {
+			return fmt.Errorf("backup failed: %w", err)
+		}
+
+		// Get file size
+		info, _ := os.Stat(outputPath)
+		if info != nil {
+			fmt.Printf("Backup complete: %s (%.2f MB)\n", outputPath, float64(info.Size())/1024/1024)
+		} else {
+			fmt.Println("Backup complete")
+		}
+		return nil
+	},
+}
+
+var dbRestoreForce bool
+
+var dbRestoreCmd = &cobra.Command{
+	Use:   "restore <path>",
+	Short: "Restore database from backup (requires service stopped)",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		backupPath := args[0]
+
+		// Check backup exists
+		if _, err := os.Stat(backupPath); os.IsNotExist(err) {
+			return fmt.Errorf("backup file not found: %s", backupPath)
+		}
+
+		dbPath := cfg.Storage.DatabasePath
+		if dbPath == "" {
+			return fmt.Errorf("database path not configured")
+		}
+
+		if !dbRestoreForce {
+			fmt.Printf("This will REPLACE the current database with '%s'. Are you sure? [y/N] ", backupPath)
+			var confirm string
+			_, _ = fmt.Scanln(&confirm)
+			if confirm != "y" && confirm != "Y" {
+				fmt.Println("Cancelled.")
+				return nil
+			}
+		}
+
+		// Copy backup file to database path
+		src, err := os.Open(backupPath) // #nosec G304 -- path from validated CLI flag
+		if err != nil {
+			return fmt.Errorf("failed to open backup: %w", err)
+		}
+		defer src.Close()
+
+		dst, err := os.Create(dbPath) // #nosec G304 -- path from server config
+		if err != nil {
+			return fmt.Errorf("failed to create database file: %w", err)
+		}
+		defer dst.Close()
+
+		if _, err := io.Copy(dst, src); err != nil {
+			return fmt.Errorf("failed to copy backup: %w", err)
+		}
+
+		// Remove WAL/SHM files if they exist
+		_ = os.Remove(dbPath + "-wal")
+		_ = os.Remove(dbPath + "-shm")
+
+		fmt.Printf("Database restored from '%s'\n", backupPath)
+		fmt.Println("Restart the mail server to use the restored database.")
+		return nil
+	},
+}
+
+var dbShellCmd = &cobra.Command{
+	Use:   "shell",
+	Short: "Open a read-only SQLite shell",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		dbPath := cfg.Storage.DatabasePath
+		if dbPath == "" {
+			return fmt.Errorf("database path not configured")
+		}
+
+		// Check if sqlite3 is available
+		sqlite3Path, err := exec.LookPath("sqlite3")
+		if err != nil {
+			return fmt.Errorf("sqlite3 not found in PATH - install it with: apt install sqlite3")
+		}
+
+		fmt.Printf("Opening read-only shell for: %s\n", dbPath)
+		fmt.Println("Type .quit to exit")
+
+		// Open in read-only mode
+		shellCmd := exec.Command(sqlite3Path, "file:"+dbPath+"?mode=ro") // #nosec G204 -- sqlite3Path from exec.LookPath
+		shellCmd.Stdin = os.Stdin
+		shellCmd.Stdout = os.Stdout
+		shellCmd.Stderr = os.Stderr
+		return shellCmd.Run()
+	},
+}
+
+var dbStatsCmd = &cobra.Command{
+	Use:   "stats",
+	Short: "Show database file size and row counts per table",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := cfg.EnsureDirectories(); err != nil {
+			return err
+		}
+
+		dbPath := cfg.Storage.DatabasePath
+		if dbPath == "" {
+			return fmt.Errorf("database path not configured")
+		}
+
+		// Show file sizes
+		fmt.Println("=== Database Files ===")
+		for _, suffix := range []string{"", "-wal", "-shm"} {
+			path := dbPath + suffix
+			info, err := os.Stat(path)
+			if err == nil {
+				fmt.Printf("  %-30s  %.2f MB\n", filepath.Base(path), float64(info.Size())/1024/1024)
+			}
+		}
+		fmt.Println()
+
+		// Open database
+		var err error
+		db, err = metadata.Open(cfg.Storage.DatabasePath)
+		if err != nil {
+			return fmt.Errorf("failed to open database: %w", err)
+		}
+		defer db.Close()
+
+		// Get table row counts
+		fmt.Println("=== Table Row Counts ===")
+		rows, err := db.QueryContext(context.Background(),
+			"SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
+		if err != nil {
+			return fmt.Errorf("failed to query tables: %w", err)
+		}
+		defer rows.Close()
+
+		var tables []string
+		for rows.Next() {
+			var name string
+			if rows.Scan(&name) == nil {
+				tables = append(tables, name)
+			}
+		}
+
+		for _, table := range tables {
+			var count int64
+			_ = db.QueryRowContext(context.Background(),
+				fmt.Sprintf("SELECT COUNT(*) FROM \"%s\"", table)).Scan(&count)
+			fmt.Printf("  %-30s  %d rows\n", table, count)
+		}
+
 		return nil
 	},
 }
@@ -2792,15 +3407,33 @@ func init() {
 	domainAddCmd.Flags().IntVar(&domainDKIMBits, "dkim-bits", 2048, "DKIM key size in bits")
 	domainAddCmd.Flags().StringVar(&domainDKIMSelector, "dkim-selector", "mail", "DKIM selector")
 	domainAddCmd.Flags().StringVar(&domainDKIMStorage, "dkim-storage", "file", "DKIM key storage (file, database, hybrid)")
+	domainDeleteCmd.Flags().BoolVar(&domainDeleteForce, "force", false, "Skip confirmation prompt")
 	domainCmd.AddCommand(domainAddCmd)
 	domainCmd.AddCommand(domainListCmd)
+	domainCmd.AddCommand(domainDeleteCmd)
+	domainCmd.AddCommand(domainEnableCmd)
+	domainCmd.AddCommand(domainDisableCmd)
 	rootCmd.AddCommand(domainCmd)
 
 	// User commands
+	userDeleteCmd.Flags().BoolVar(&userDeleteForce, "force", false, "Skip confirmation prompt")
+	userSetRoleCmd.Flags().StringVar(&setRoleDomain, "domain", "", "Domain scope for domain_admin role")
 	userCmd.AddCommand(userAddCmd)
 	userCmd.AddCommand(userListCmd)
 	userCmd.AddCommand(userPasswdCmd)
+	userCmd.AddCommand(userDeleteCmd)
+	userCmd.AddCommand(userEnableCmd)
+	userCmd.AddCommand(userDisableCmd)
+	userCmd.AddCommand(userSetRoleCmd)
 	rootCmd.AddCommand(userCmd)
+
+	// Database management commands
+	dbRestoreCmd.Flags().BoolVar(&dbRestoreForce, "force", false, "Skip confirmation prompt")
+	dbCmd.AddCommand(dbBackupCmd)
+	dbCmd.AddCommand(dbRestoreCmd)
+	dbCmd.AddCommand(dbShellCmd)
+	dbCmd.AddCommand(dbStatsCmd)
+	rootCmd.AddCommand(dbCmd)
 
 	// DNS commands
 	dnsCmd.AddCommand(dnsCheckCmd)

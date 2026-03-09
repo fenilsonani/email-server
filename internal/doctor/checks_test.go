@@ -476,6 +476,137 @@ func TestCheckAllDomainsDNS(t *testing.T) {
 	}
 }
 
+func TestCheckDatabasePermissions(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "dbperm_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	tests := []struct {
+		name       string
+		setup      func() string
+		wantStatus Status
+	}{
+		{
+			name: "no database path configured",
+			setup: func() string {
+				return ""
+			},
+			wantStatus: StatusWarn,
+		},
+		{
+			name: "correct permissions (0640)",
+			setup: func() string {
+				dbPath := filepath.Join(tmpDir, "good.db")
+				os.WriteFile(dbPath, []byte("test"), 0640)
+				return dbPath
+			},
+			wantStatus: StatusPass,
+		},
+		{
+			name: "world-readable (0644)",
+			setup: func() string {
+				dbPath := filepath.Join(tmpDir, "worldread.db")
+				os.WriteFile(dbPath, []byte("test"), 0600)
+				os.Chmod(dbPath, 0644) // Force past umask
+				return dbPath
+			},
+			wantStatus: StatusFail,
+		},
+		{
+			name: "world-writable (0666)",
+			setup: func() string {
+				dbPath := filepath.Join(tmpDir, "worldwrite.db")
+				os.WriteFile(dbPath, []byte("test"), 0600)
+				os.Chmod(dbPath, 0666) // Force past umask
+				return dbPath
+			},
+			wantStatus: StatusFail,
+		},
+		{
+			name: "group-writable (0660)",
+			setup: func() string {
+				dbPath := filepath.Join(tmpDir, "groupwrite.db")
+				os.WriteFile(dbPath, []byte("test"), 0600)
+				os.Chmod(dbPath, 0660) // Force past umask
+				return dbPath
+			},
+			wantStatus: StatusWarn,
+		},
+		{
+			name: "non-existent db file",
+			setup: func() string {
+				return filepath.Join(tmpDir, "nonexistent.db")
+			},
+			wantStatus: StatusPass, // Non-existent files are skipped
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.DefaultConfig()
+			cfg.Storage.DatabasePath = tt.setup()
+
+			ctx := context.Background()
+			result := checkDatabasePermissions(ctx, cfg, nil)
+
+			if result.Status != tt.wantStatus {
+				t.Errorf("checkDatabasePermissions() status = %v, want %v (message: %s)",
+					result.Status, tt.wantStatus, result.Message)
+			}
+
+			if result.ID != "db-permissions" {
+				t.Errorf("ID = %v, want db-permissions", result.ID)
+			}
+			if result.Category != CategorySecurity {
+				t.Errorf("Category = %v, want %v", result.Category, CategorySecurity)
+			}
+		})
+	}
+}
+
+func TestCheckDatabasePermissions_WithWALFiles(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "dbperm_wal_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	t.Run("db ok but WAL world-readable", func(t *testing.T) {
+		dbPath := filepath.Join(tmpDir, "wal_test.db")
+		os.WriteFile(dbPath, []byte("test"), 0640)
+		os.WriteFile(dbPath+"-wal", []byte("wal"), 0600)
+		os.Chmod(dbPath+"-wal", 0644) // Force past umask
+
+		cfg := config.DefaultConfig()
+		cfg.Storage.DatabasePath = dbPath
+
+		result := checkDatabasePermissions(context.Background(), cfg, nil)
+		if result.Status != StatusFail {
+			t.Errorf("Expected fail when WAL is world-readable, got %v", result.Status)
+		}
+		if result.FixID != "db-permissions" {
+			t.Errorf("FixID = %v, want db-permissions", result.FixID)
+		}
+	})
+
+	t.Run("all files correct", func(t *testing.T) {
+		dbPath := filepath.Join(tmpDir, "all_ok.db")
+		os.WriteFile(dbPath, []byte("test"), 0640)
+		os.WriteFile(dbPath+"-wal", []byte("wal"), 0640)
+		os.WriteFile(dbPath+"-shm", []byte("shm"), 0640)
+
+		cfg := config.DefaultConfig()
+		cfg.Storage.DatabasePath = dbPath
+
+		result := checkDatabasePermissions(context.Background(), cfg, nil)
+		if result.Status != StatusPass {
+			t.Errorf("Expected pass when all files are 0640, got %v (message: %s)", result.Status, result.Message)
+		}
+	})
+}
+
 func TestCheckConfigPorts(t *testing.T) {
 	cfg := config.DefaultConfig()
 	// Use high ports that are unlikely to be in use

@@ -368,6 +368,7 @@ func TestAllFixesImplementInterface(t *testing.T) {
 		&FixCertRenewal{},
 		&FixCreateDataDir{},
 		&FixCleanupQueue{},
+		&FixDatabasePermissions{},
 	}
 
 	for _, fix := range fixes {
@@ -430,6 +431,131 @@ func TestFixApplyIdempotency(t *testing.T) {
 	err = fix.Apply(ctx, cfg, nil)
 	if err != nil {
 		t.Errorf("Second Apply() failed: %v", err)
+	}
+}
+
+func TestFixDatabasePermissions(t *testing.T) {
+	fix := &FixDatabasePermissions{}
+
+	t.Run("ID", func(t *testing.T) {
+		if fix.ID() != "db-permissions" {
+			t.Errorf("ID() = %v, want db-permissions", fix.ID())
+		}
+	})
+
+	t.Run("Description", func(t *testing.T) {
+		if fix.Description() == "" {
+			t.Error("Description() should not be empty")
+		}
+	})
+
+	t.Run("CanAutoFix", func(t *testing.T) {
+		if !fix.CanAutoFix() {
+			t.Error("CanAutoFix() should return true")
+		}
+	})
+
+	t.Run("DryRun", func(t *testing.T) {
+		cfg := config.DefaultConfig()
+		cfg.Storage.DatabasePath = "/var/lib/mailserver/mail.db"
+		msg := fix.DryRun(context.Background(), cfg, nil)
+		if msg == "" {
+			t.Error("DryRun() should return a message")
+		}
+	})
+
+	t.Run("Apply fixes permissions", func(t *testing.T) {
+		tmpDir, err := os.MkdirTemp("", "fix_test")
+		if err != nil {
+			t.Fatalf("Failed to create temp dir: %v", err)
+		}
+		defer os.RemoveAll(tmpDir)
+
+		dbPath := filepath.Join(tmpDir, "test.db")
+		os.WriteFile(dbPath, []byte("test"), 0666)
+		os.WriteFile(dbPath+"-wal", []byte("wal"), 0666)
+		os.WriteFile(dbPath+"-shm", []byte("shm"), 0666)
+
+		cfg := config.DefaultConfig()
+		cfg.Storage.DatabasePath = dbPath
+
+		err = fix.Apply(context.Background(), cfg, nil)
+		if err != nil {
+			t.Fatalf("Apply() error = %v", err)
+		}
+
+		// Verify permissions were fixed
+		for _, path := range []string{dbPath, dbPath + "-wal", dbPath + "-shm"} {
+			info, err := os.Stat(path)
+			if err != nil {
+				t.Fatalf("Failed to stat %s: %v", path, err)
+			}
+			if info.Mode().Perm() != 0640 {
+				t.Errorf("%s permissions = %o, want 0640", filepath.Base(path), info.Mode().Perm())
+			}
+		}
+	})
+
+	t.Run("Apply with empty path", func(t *testing.T) {
+		cfg := config.DefaultConfig()
+		cfg.Storage.DatabasePath = ""
+
+		err := fix.Apply(context.Background(), cfg, nil)
+		if err == nil {
+			t.Error("Apply() should fail with empty path")
+		}
+	})
+
+	t.Run("Apply skips non-existent WAL/SHM", func(t *testing.T) {
+		tmpDir, err := os.MkdirTemp("", "fix_test")
+		if err != nil {
+			t.Fatalf("Failed to create temp dir: %v", err)
+		}
+		defer os.RemoveAll(tmpDir)
+
+		dbPath := filepath.Join(tmpDir, "test.db")
+		os.WriteFile(dbPath, []byte("test"), 0666)
+		// Don't create WAL or SHM files
+
+		cfg := config.DefaultConfig()
+		cfg.Storage.DatabasePath = dbPath
+
+		err = fix.Apply(context.Background(), cfg, nil)
+		if err != nil {
+			t.Fatalf("Apply() should succeed even without WAL/SHM: %v", err)
+		}
+
+		info, _ := os.Stat(dbPath)
+		if info.Mode().Perm() != 0640 {
+			t.Errorf("permissions = %o, want 0640", info.Mode().Perm())
+		}
+	})
+}
+
+func TestFixDatabasePermissions_Idempotent(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "fix_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "test.db")
+	os.WriteFile(dbPath, []byte("test"), 0640)
+
+	fix := &FixDatabasePermissions{}
+	cfg := config.DefaultConfig()
+	cfg.Storage.DatabasePath = dbPath
+
+	// Apply twice should not fail
+	for i := 0; i < 2; i++ {
+		if err := fix.Apply(context.Background(), cfg, nil); err != nil {
+			t.Fatalf("Apply() #%d error: %v", i+1, err)
+		}
+	}
+
+	info, _ := os.Stat(dbPath)
+	if info.Mode().Perm() != 0640 {
+		t.Errorf("permissions = %o, want 0640", info.Mode().Perm())
 	}
 }
 

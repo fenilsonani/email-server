@@ -369,6 +369,43 @@ func (f *FixStartRedis) Apply(ctx context.Context, cfg *config.Config, _ *queue.
 	return nil
 }
 
+// FixDatabasePermissions fixes database file permissions.
+type FixDatabasePermissions struct{}
+
+func (f *FixDatabasePermissions) ID() string {
+	return "db-permissions"
+}
+
+func (f *FixDatabasePermissions) Description() string {
+	return "Fix database file permissions to 0640"
+}
+
+func (f *FixDatabasePermissions) CanAutoFix() bool {
+	return true
+}
+
+func (f *FixDatabasePermissions) DryRun(ctx context.Context, cfg *config.Config, _ *queue.RedisQueue) string {
+	return fmt.Sprintf("Would chmod 0640 on: %s, %s-wal, %s-shm", cfg.Storage.DatabasePath, cfg.Storage.DatabasePath, cfg.Storage.DatabasePath)
+}
+
+func (f *FixDatabasePermissions) Apply(ctx context.Context, cfg *config.Config, _ *queue.RedisQueue) error {
+	dbPath := cfg.Storage.DatabasePath
+	if dbPath == "" {
+		return errors.New("database path not configured")
+	}
+
+	files := []string{dbPath, dbPath + "-wal", dbPath + "-shm"}
+	for _, path := range files {
+		if _, err := os.Stat(path); err == nil {
+			if err := os.Chmod(path, 0640); err != nil { // #nosec G302 -- group-read needed for backup tools
+				return fmt.Errorf("failed to chmod %s: %w", path, err)
+			}
+		}
+	}
+
+	return nil
+}
+
 // FixRestartMailserver restarts the mail server service.
 type FixRestartMailserver struct{}
 

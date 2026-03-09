@@ -166,10 +166,9 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check if user is admin
-	var isAdmin bool
-	err = s.db.QueryRowContext(r.Context(), "SELECT is_admin FROM users WHERE id = ?", user.ID).Scan(&isAdmin)
-	if err != nil || !isAdmin {
+	// Check if user has admin role (via roles table or legacy is_admin flag)
+	adminUser, loadErr := s.loadAdminUser(r.Context(), user.ID)
+	if loadErr != nil || adminUser == nil {
 		s.rateLimiter.RecordFailure(clientIP)
 		s.renderTemplate(w, "login.html", map[string]interface{}{
 			"Title": "Admin Login",
@@ -223,21 +222,42 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 
 // handleUsers shows user list
 func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
+	adminUser := GetAdminUser(r)
+
 	// Get pagination parameters
 	pagination := getPaginationParams(r)
 
 	// Get filter parameters
 	filterUsername := r.URL.Query().Get("username")
 	filterDomain := r.URL.Query().Get("domain")
-	filterIsAdmin := r.URL.Query().Get("is_admin")
+	filterRole := r.URL.Query().Get("role")
 
 	// Build query with filters
-	query := `SELECT u.id, u.username, d.name as domain, u.is_admin, u.created_at
+	query := `SELECT u.id, u.username, d.name as domain, u.is_admin, u.created_at,
+		COALESCE((SELECT r.name FROM user_roles ur JOIN roles r ON ur.role_id = r.id WHERE ur.user_id = u.id LIMIT 1), '') as role_name
 		FROM users u
 		JOIN domains d ON u.domain_id = d.id WHERE 1=1`
 	countQuery := `SELECT COUNT(*) FROM users u
 		JOIN domains d ON u.domain_id = d.id WHERE 1=1`
 	args := []interface{}{}
+
+	// Domain scoping for domain_admin
+	if adminUser != nil && adminUser.Role == "domain_admin" {
+		if len(adminUser.DomainIDs) > 0 {
+			placeholders := make([]string, len(adminUser.DomainIDs))
+			for i, id := range adminUser.DomainIDs {
+				placeholders[i] = "?"
+				args = append(args, id)
+			}
+			domainFilter := " AND u.domain_id IN (" + strings.Join(placeholders, ",") + ")" // #nosec G202 -- parameterized placeholders only
+			query += domainFilter
+			countQuery += domainFilter
+		} else {
+			// Empty DomainIDs means no domains assigned — return no results
+			query += " AND 1=0"
+			countQuery += " AND 1=0"
+		}
+	}
 
 	// Add filters to query
 	if filterUsername != "" {
@@ -250,9 +270,15 @@ func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 		countQuery += " AND d.name = ?"
 		args = append(args, filterDomain)
 	}
-	if filterIsAdmin == "1" {
-		query += " AND u.is_admin = 1"
-		countQuery += " AND u.is_admin = 1"
+	if filterRole != "" {
+		if filterRole == "admin" {
+			query += " AND u.is_admin = 1"
+			countQuery += " AND u.is_admin = 1"
+		} else {
+			query += " AND EXISTS (SELECT 1 FROM user_roles ur2 JOIN roles r2 ON ur2.role_id = r2.id WHERE ur2.user_id = u.id AND r2.name = ?)"
+			countQuery += " AND EXISTS (SELECT 1 FROM user_roles ur2 JOIN roles r2 ON ur2.role_id = r2.id WHERE ur2.user_id = u.id AND r2.name = ?)"
+			args = append(args, filterRole)
+		}
 	}
 
 	// Get total count
@@ -282,17 +308,22 @@ func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 		Domain    string
 		Email     string
 		IsAdmin   bool
+		Role      string
 		CreatedAt time.Time
 	}
 
 	var users []User
 	for rows.Next() {
 		var u User
-		if err := rows.Scan(&u.ID, &u.Username, &u.Domain, &u.IsAdmin, &u.CreatedAt); err != nil {
+		if err := rows.Scan(&u.ID, &u.Username, &u.Domain, &u.IsAdmin, &u.CreatedAt, &u.Role); err != nil {
 			s.logger.ErrorContext(r.Context(), "Failed to scan user row", err)
 			continue
 		}
 		u.Email = u.Username + "@" + u.Domain
+		// If no role but is_admin, show as super_admin
+		if u.Role == "" && u.IsAdmin {
+			u.Role = "super_admin"
+		}
 		users = append(users, u)
 	}
 
@@ -325,7 +356,8 @@ func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 		"Domains":        domains,
 		"FilterUsername": filterUsername,
 		"FilterDomain":   filterDomain,
-		"FilterIsAdmin":  filterIsAdmin,
+		"FilterRole":     filterRole,
+		"AdminUser":      adminUser,
 		"CurrentPage":    pagination.Page,
 		"TotalPages":     totalPages,
 		"TotalCount":     totalCount,
@@ -366,6 +398,7 @@ func (s *Server) handleUserAdd(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// POST - create user
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1MB limit
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "Bad request", http.StatusBadRequest)
 		return
@@ -374,7 +407,7 @@ func (s *Server) handleUserAdd(w http.ResponseWriter, r *http.Request) {
 	username := r.FormValue("username")
 	password := r.FormValue("password")
 	domainIDStr := r.FormValue("domain_id")
-	isAdmin := r.FormValue("is_admin") == "on"
+	role := r.FormValue("role")
 
 	// Validate domain_id parsing
 	domainID, err := strconv.ParseInt(domainIDStr, 10, 64)
@@ -400,6 +433,13 @@ func (s *Server) handleUserAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check domain access for domain_admin
+	currentAdmin := GetAdminUser(r)
+	if currentAdmin != nil && !currentAdmin.HasDomainAccess(domainID) {
+		http.Error(w, "Access denied - you cannot create users in this domain", http.StatusForbidden)
+		return
+	}
+
 	user, err := s.authenticator.CreateUser(r.Context(), username, password, domainID)
 	if err != nil {
 		s.logger.ErrorContext(r.Context(), "Failed to create user", err)
@@ -410,18 +450,23 @@ func (s *Server) handleUserAdd(w http.ResponseWriter, r *http.Request) {
 	// Initialize default mailboxes for the new user
 	if err := s.store.InitializeUserMailboxes(r.Context(), user.ID); err != nil {
 		s.logger.ErrorContext(r.Context(), "Failed to initialize mailboxes", err)
-		// User was created but mailboxes failed - log but don't fail the request
 	}
 
-	if isAdmin {
-		s.db.ExecContext(r.Context(), "UPDATE users SET is_admin = TRUE WHERE id = ?", user.ID)
+	// Assign role if specified (only super_admin can assign roles)
+	if role != "" && role != "none" {
+		if currentAdmin != nil && currentAdmin.Role == "super_admin" {
+			_ = s.assignUserRole(r.Context(), user.ID, role, domainID)
+			if role == "super_admin" || role == "domain_admin" || role == "support" {
+				_, _ = s.db.ExecContext(r.Context(), "UPDATE users SET is_admin = TRUE WHERE id = ?", user.ID)
+			}
+		}
 	}
 
 	// Audit log
-	adminUser := getSessionUser(r)
-	s.auditLogger.Log(r.Context(), adminUser, audit.EventUserCreate, user.Username, map[string]interface{}{
+	auditUser := getSessionUser(r)
+	_ = s.auditLogger.Log(r.Context(), auditUser, audit.EventUserCreate, user.Username, map[string]interface{}{
 		"domain_id": domainID,
-		"is_admin":  isAdmin,
+		"role":      role,
 	}, getIP(r))
 
 	http.Redirect(w, r, "/admin/users", http.StatusSeeOther)
@@ -441,48 +486,179 @@ func (s *Server) handleUserEdit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	currentAdmin := GetAdminUser(r)
+
 	if r.Method == http.MethodGet {
 		var username, domain string
 		var isAdmin bool
+		var editDomainID int64
 		err := s.db.QueryRowContext(r.Context(),
-			`SELECT u.username, d.name, u.is_admin FROM users u
+			`SELECT u.username, d.name, u.is_admin, u.domain_id FROM users u
 			 JOIN domains d ON u.domain_id = d.id WHERE u.id = ?`, userID).
-			Scan(&username, &domain, &isAdmin)
+			Scan(&username, &domain, &isAdmin, &editDomainID)
 		if err != nil {
 			http.NotFound(w, r)
 			return
 		}
 
+		// Check domain access for domain_admin
+		if currentAdmin != nil && !currentAdmin.HasDomainAccess(editDomainID) {
+			http.Error(w, "Access denied", http.StatusForbidden)
+			return
+		}
+
+		// Get current role
+		var currentRole string
+		roleErr := s.db.QueryRowContext(r.Context(),
+			`SELECT r.name FROM user_roles ur JOIN roles r ON ur.role_id = r.id WHERE ur.user_id = ? LIMIT 1`, userID,
+		).Scan(&currentRole)
+		if roleErr != nil && isAdmin {
+			currentRole = "super_admin"
+		}
+
+		// Get scoped domains for domain_admin role
+		var scopedDomains []string
+		if currentRole == "domain_admin" {
+			dRows, _ := s.db.QueryContext(r.Context(),
+				`SELECT d.name FROM user_roles ur JOIN domains d ON ur.domain_id = d.id WHERE ur.user_id = ? AND ur.domain_id IS NOT NULL`, userID)
+			if dRows != nil {
+				defer dRows.Close()
+				for dRows.Next() {
+					var dName string
+					if dRows.Scan(&dName) == nil {
+						scopedDomains = append(scopedDomains, dName)
+					}
+				}
+			}
+		}
+
+		// Get all domains for role assignment dropdown
+		var allDomains []struct {
+			ID   int64
+			Name string
+		}
+		if currentAdmin != nil && currentAdmin.Role == "super_admin" {
+			dRows, _ := s.db.QueryContext(r.Context(), "SELECT id, name FROM domains ORDER BY name")
+			if dRows != nil {
+				defer dRows.Close()
+				for dRows.Next() {
+					var d struct {
+						ID   int64
+						Name string
+					}
+					if dRows.Scan(&d.ID, &d.Name) == nil {
+						allDomains = append(allDomains, d)
+					}
+				}
+			}
+		}
+
 		s.renderTemplate(w, "user_edit.html", map[string]interface{}{
-			"Title":    "Edit User",
-			"UserID":   userID,
-			"Username": username,
-			"Email":    username + "@" + domain,
-			"IsAdmin":  isAdmin,
+			"Title":          "Edit User",
+			"UserID":         userID,
+			"Username":       username,
+			"Email":          username + "@" + domain,
+			"IsAdmin":        isAdmin,
+			"CurrentRole":    currentRole,
+			"ScopedDomains":  scopedDomains,
+			"AllDomains":     allDomains,
+			"AdminUser":      currentAdmin,
 		})
 		return
 	}
 
 	// POST - update user
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1MB limit
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "Bad request", http.StatusBadRequest)
 		return
 	}
 
 	password := r.FormValue("password")
-	isAdmin := r.FormValue("is_admin") == "on"
+	role := r.FormValue("role")
 
-	// Update admin status
-	var updateErr error
-	_, updateErr = s.db.ExecContext(r.Context(), "UPDATE users SET is_admin = ? WHERE id = ?", isAdmin, userID)
-	if updateErr != nil {
-		http.Error(w, "Failed to update user", http.StatusInternalServerError)
+	// Check domain access
+	var editDomainID int64
+	if err := s.db.QueryRowContext(r.Context(), "SELECT domain_id FROM users WHERE id = ?", userID).Scan(&editDomainID); err != nil {
+		http.Error(w, "User not found", http.StatusNotFound)
 		return
+	}
+	if currentAdmin != nil && !currentAdmin.HasDomainAccess(editDomainID) {
+		http.Error(w, "Access denied", http.StatusForbidden)
+		return
+	}
+
+	// Update role (only super_admin can change roles)
+	if currentAdmin != nil && currentAdmin.Role == "super_admin" {
+		tx, txErr := s.db.BeginTx(r.Context(), nil)
+		if txErr != nil {
+			s.logger.Error("Failed to begin transaction", "error", txErr.Error())
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
+		defer func() {
+			if txErr != nil {
+				_ = tx.Rollback()
+			}
+		}()
+
+		// Clear existing roles
+		if _, txErr = tx.ExecContext(r.Context(), "DELETE FROM user_roles WHERE user_id = ?", userID); txErr != nil {
+			s.logger.Error("Failed to clear roles", "error", txErr.Error())
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		if role != "" && role != "none" {
+			// Get role ID
+			var roleID int64
+			if txErr = tx.QueryRowContext(r.Context(), "SELECT id FROM roles WHERE name = ?", role).Scan(&roleID); txErr != nil {
+				s.logger.Warn("Role not found", "role", role, "error", txErr.Error())
+				http.Error(w, "Invalid role", http.StatusBadRequest)
+				return
+			}
+
+			// Assign scoped domains for domain_admin
+			if role == "domain_admin" {
+				if domainIDs, ok := r.Form["role_domains"]; ok {
+					for _, idStr := range domainIDs {
+						if dID, parseErr := strconv.ParseInt(idStr, 10, 64); parseErr == nil {
+							_, txErr = tx.ExecContext(r.Context(),
+								"INSERT OR IGNORE INTO user_roles (user_id, role_id, domain_id) VALUES (?, ?, ?)",
+								userID, roleID, dID)
+							if txErr != nil {
+								s.logger.Error("Failed to assign domain role", "error", txErr.Error())
+								http.Error(w, "Internal server error", http.StatusInternalServerError)
+								return
+							}
+						}
+					}
+				}
+			} else {
+				if _, txErr = tx.ExecContext(r.Context(),
+					"INSERT OR IGNORE INTO user_roles (user_id, role_id) VALUES (?, ?)",
+					userID, roleID); txErr != nil {
+					s.logger.Error("Failed to assign role", "error", txErr.Error())
+					http.Error(w, "Internal server error", http.StatusInternalServerError)
+					return
+				}
+			}
+
+			// Sync is_admin flag for backward compat
+			_, _ = tx.ExecContext(r.Context(), "UPDATE users SET is_admin = TRUE WHERE id = ?", userID)
+		} else {
+			_, _ = tx.ExecContext(r.Context(), "UPDATE users SET is_admin = FALSE WHERE id = ?", userID)
+		}
+
+		if txErr = tx.Commit(); txErr != nil {
+			s.logger.Error("Failed to commit role update", "error", txErr.Error())
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
 	}
 
 	// Update password if provided
 	if password != "" {
-		// Validate password
 		if err := validation.Password(password); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -491,17 +667,15 @@ func (s *Server) handleUserEdit(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Failed to update password", http.StatusInternalServerError)
 			return
 		}
-		// Invalidate all sessions for this user after password change (security best practice)
 		s.invalidateUserSessions(userID)
-		// Audit log password change
-		adminUser := getSessionUser(r)
-		s.auditLogger.Log(r.Context(), adminUser, audit.EventPasswordChange, strconv.FormatInt(userID, 10), nil, getIP(r))
+		auditUser := getSessionUser(r)
+		_ = s.auditLogger.Log(r.Context(), auditUser, audit.EventPasswordChange, strconv.FormatInt(userID, 10), nil, getIP(r))
 	}
 
 	// Audit log user update
-	adminUser := getSessionUser(r)
-	s.auditLogger.Log(r.Context(), adminUser, audit.EventUserUpdate, strconv.FormatInt(userID, 10), map[string]interface{}{
-		"is_admin": isAdmin,
+	auditUser := getSessionUser(r)
+	_ = s.auditLogger.Log(r.Context(), auditUser, audit.EventUserUpdate, strconv.FormatInt(userID, 10), map[string]interface{}{
+		"role": role,
 	}, getIP(r))
 
 	http.Redirect(w, r, "/admin/users", http.StatusSeeOther)
@@ -541,6 +715,31 @@ func (s *Server) handleUserDelete(w http.ResponseWriter, r *http.Request) {
 	s.auditLogger.Log(r.Context(), adminUser, audit.EventUserDelete, strconv.FormatInt(userID, 10), nil, getIP(r))
 
 	http.Redirect(w, r, "/admin/users", http.StatusSeeOther)
+}
+
+// assignUserRole assigns a role to a user in the user_roles table
+func (s *Server) assignUserRole(ctx context.Context, userID int64, roleName string, domainID int64) error {
+	var roleID int64
+	err := s.db.QueryRowContext(ctx, "SELECT id FROM roles WHERE name = ?", roleName).Scan(&roleID)
+	if err != nil {
+		s.logger.Warn("Failed to find role for assignment", "role", roleName, "error", err.Error())
+		return fmt.Errorf("role %q not found: %w", roleName, err)
+	}
+
+	if roleName == "domain_admin" && domainID > 0 {
+		_, err = s.db.ExecContext(ctx,
+			"INSERT OR IGNORE INTO user_roles (user_id, role_id, domain_id) VALUES (?, ?, ?)",
+			userID, roleID, domainID)
+	} else {
+		_, err = s.db.ExecContext(ctx,
+			"INSERT OR IGNORE INTO user_roles (user_id, role_id) VALUES (?, ?)",
+			userID, roleID)
+	}
+	if err != nil {
+		s.logger.Error("Failed to assign user role", "user_id", userID, "role", roleName, "error", err.Error())
+		return fmt.Errorf("failed to assign role: %w", err)
+	}
+	return nil
 }
 
 // handleDomains shows domain list

@@ -229,10 +229,7 @@ func (s *Server) handleMicrosoftAutodiscover(w http.ResponseWriter, r *http.Requ
 		slog.String("remote_addr", r.RemoteAddr))
 }
 
-// Apple mobileconfig template - Email only
-// Note: CardDAV/CalDAV cannot be included because Apple validates accounts during
-// profile installation before password entry, causing DAAccountValidationDomain:102 errors.
-// Users should add Contacts/Calendar manually via System Settings after email is configured.
+// Apple mobileconfig template - Email, CalDAV, and CardDAV
 const appleMobileconfigTemplate = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -289,9 +286,61 @@ const appleMobileconfigTemplate = `<?xml version="1.0" encoding="UTF-8"?>
             <key>SMIMEEnabled</key>
             <false/>
         </dict>
+        <dict>
+            <key>CalDAVAccountDescription</key>
+            <string>{{.DisplayName}} Calendar</string>
+            <key>CalDAVHostName</key>
+            <string>{{.Hostname}}</string>
+            <key>CalDAVPort</key>
+            <integer>443</integer>
+            <key>CalDAVPrincipalURL</key>
+            <string>/principals/{{.Email}}/</string>
+            <key>CalDAVUseSSL</key>
+            <true/>
+            <key>CalDAVUsername</key>
+            <string>{{.Email}}</string>
+            <key>PayloadDescription</key>
+            <string>CalDAV calendar account</string>
+            <key>PayloadDisplayName</key>
+            <string>{{.DisplayName}} Calendar</string>
+            <key>PayloadIdentifier</key>
+            <string>com.{{.Domain}}.caldav</string>
+            <key>PayloadType</key>
+            <string>com.apple.caldav.account</string>
+            <key>PayloadUUID</key>
+            <string>{{.CalDAVUUID}}</string>
+            <key>PayloadVersion</key>
+            <integer>1</integer>
+        </dict>
+        <dict>
+            <key>CardDAVAccountDescription</key>
+            <string>{{.DisplayName}} Contacts</string>
+            <key>CardDAVHostName</key>
+            <string>{{.Hostname}}</string>
+            <key>CardDAVPort</key>
+            <integer>443</integer>
+            <key>CardDAVPrincipalURL</key>
+            <string>/principals/{{.Email}}/</string>
+            <key>CardDAVUseSSL</key>
+            <true/>
+            <key>CardDAVUsername</key>
+            <string>{{.Email}}</string>
+            <key>PayloadDescription</key>
+            <string>CardDAV contacts account</string>
+            <key>PayloadDisplayName</key>
+            <string>{{.DisplayName}} Contacts</string>
+            <key>PayloadIdentifier</key>
+            <string>com.{{.Domain}}.carddav</string>
+            <key>PayloadType</key>
+            <string>com.apple.carddav.account</string>
+            <key>PayloadUUID</key>
+            <string>{{.CardDAVUUID}}</string>
+            <key>PayloadVersion</key>
+            <integer>1</integer>
+        </dict>
     </array>
     <key>PayloadDescription</key>
-    <string>Email configuration for {{.Domain}}</string>
+    <string>Mail, Calendar, and Contacts for {{.Domain}}</string>
     <key>PayloadDisplayName</key>
     <string>{{.DisplayName}}</string>
     <key>PayloadIdentifier</key>
@@ -317,35 +366,46 @@ func (s *Server) handleAppleMobileconfig(w http.ResponseWriter, r *http.Request)
 		fmt.Fprintf(w, `<!DOCTYPE html>
 <html>
 <head>
-    <title>%s - Email Setup</title>
+    <title>%s - account setup</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; max-width: 400px; margin: 50px auto; padding: 20px; }
-        h1 { font-size: 24px; }
-        input[type=email] { width: 100%%; padding: 12px; margin: 10px 0; border: 1px solid #ccc; border-radius: 8px; font-size: 16px; }
-        button { width: 100%%; padding: 12px; background: #007AFF; color: white; border: none; border-radius: 8px; font-size: 16px; cursor: pointer; }
-        button:hover { background: #0056b3; }
-        p { color: #666; font-size: 14px; }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: Georgia, 'Times New Roman', Times, serif; font-size: 14px; background: #f6f6f0; color: #000; line-height: 1.5; display: flex; justify-content: center; align-items: center; min-height: 100vh; padding: 1rem; }
+        .card { background: #fff; border: 2px solid #d0d0d0; padding: 1.5rem; width: 100%%; max-width: 380px; }
+        h1 { font-size: 1.25rem; font-weight: 700; text-transform: lowercase; margin-bottom: 0.75rem; text-align: center; }
+        p { font-size: 12px; color: #828282; margin-bottom: 0.75rem; }
+        .form-group { margin-bottom: 0.75rem; }
+        .form-group label { display: block; margin-bottom: 0.25rem; font-weight: 700; font-size: 12px; }
+        input[type=email] { width: 100%%; padding: 4px 6px; border: 1px solid #d0d0d0; font-size: 12px; font-family: inherit; }
+        input[type=email]:focus { outline: none; border-color: #000; }
+        button { width: 100%%; padding: 6px 8px; background: #000; color: #fff; border: 1px solid #000; font-size: 11px; font-family: inherit; cursor: pointer; }
+        button:hover { background: #1a1a1a; }
+        .info { margin-top: 0.75rem; padding: 0.5rem; border: 1px solid #d0d0d0; background: #f6f6f0; font-size: 11px; color: #828282; }
+        .info strong { color: #000; }
+        @media (max-width: 768px) {
+            input[type=email] { padding: 8px 10px; font-size: 14px; min-height: 44px; }
+            button { padding: 8px 12px; font-size: 12px; min-height: 44px; }
+            .card { padding: 1rem; border: 1px solid #d0d0d0; max-width: 100%%; }
+        }
     </style>
 </head>
 <body>
-    <h1>%s Account Setup</h1>
-    <p>Enter your email address to download the configuration profile.</p>
-    <form method="get">
-        <input type="email" name="email" placeholder="your.email@%s" required>
-        <button type="submit">Download Profile</button>
-    </form>
-    <p>This profile configures <strong>Mail</strong> on your iPhone, iPad, or Mac.</p>
-    <hr style="margin: 20px 0; border: none; border-top: 1px solid #eee;">
-    <h2 style="font-size: 18px; margin-bottom: 10px;">Add Contacts &amp; Calendar</h2>
-    <p>After installing the mail profile, add Contacts and Calendar manually:</p>
-    <ol style="font-size: 13px; padding-left: 20px; color: #555;">
-        <li><strong>iPhone/iPad:</strong> Settings → Apps → Contacts → Accounts → Add Account → Other → Add CardDAV/CalDAV Account</li>
-        <li><strong>Mac:</strong> System Settings → Internet Accounts → Add Other Account → CardDAV/CalDAV</li>
-    </ol>
-    <p style="font-size: 12px; color: #888; margin-top: 10px;">Server: <code>mail.%s</code> | Username: your email | Port: 443 (SSL)</p>
+    <div class="card">
+        <h1>%s account setup</h1>
+        <p>enter your email address to download the configuration profile for your device.</p>
+        <form method="get">
+            <div class="form-group">
+                <label>email address</label>
+                <input type="email" name="email" placeholder="you@%s" required>
+            </div>
+            <button type="submit">download profile</button>
+        </form>
+        <div class="info">
+            this profile configures <strong>mail</strong>, <strong>calendar</strong>, and <strong>contacts</strong> on your iPhone, iPad, or Mac.
+        </div>
+    </div>
 </body>
-</html>`, s.config.DisplayName, s.config.DisplayName, s.config.Domain, s.config.Domain)
+</html>`, s.config.DisplayName, s.config.DisplayName, s.config.Domain)
 		return
 	}
 
@@ -363,6 +423,8 @@ func (s *Server) handleAppleMobileconfig(w http.ResponseWriter, r *http.Request)
 	// Generate deterministic UUIDs based on email
 	emailUUID := generateUUID(email + "-email")
 	profileUUID := generateUUID(email + "-profile")
+	caldavUUID := generateUUID(email + "-caldav")
+	carddavUUID := generateUUID(email + "-carddav")
 
 	data := struct {
 		DisplayName string
@@ -373,6 +435,8 @@ func (s *Server) handleAppleMobileconfig(w http.ResponseWriter, r *http.Request)
 		SMTPPort    int
 		EmailUUID   string
 		ProfileUUID string
+		CalDAVUUID  string
+		CardDAVUUID string
 	}{
 		DisplayName: displayName,
 		Domain:      emailDomain,
@@ -382,6 +446,8 @@ func (s *Server) handleAppleMobileconfig(w http.ResponseWriter, r *http.Request)
 		SMTPPort:    s.config.SMTPPort,
 		EmailUUID:   emailUUID,
 		ProfileUUID: profileUUID,
+		CalDAVUUID:  caldavUUID,
+		CardDAVUUID: carddavUUID,
 	}
 
 	tmpl, err := template.New("mobileconfig").Parse(appleMobileconfigTemplate)
@@ -393,7 +459,7 @@ func (s *Server) handleAppleMobileconfig(w http.ResponseWriter, r *http.Request)
 
 	// Set headers for profile download
 	w.Header().Set("Content-Type", "application/x-apple-aspen-config")
-	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s-email.mobileconfig\"", emailDomain))
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s.mobileconfig\"", emailDomain))
 
 	if err := tmpl.Execute(w, data); err != nil {
 		s.logger.Error("Failed to execute mobileconfig template", slog.Any("error", err))
