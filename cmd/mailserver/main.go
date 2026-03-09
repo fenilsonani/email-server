@@ -1213,7 +1213,7 @@ var userDeleteCmd = &cobra.Command{
 		if !userDeleteForce {
 			fmt.Printf("Are you sure you want to delete user '%s'? This cannot be undone. [y/N] ", email)
 			var confirm string
-			fmt.Scanln(&confirm)
+			_, _ = fmt.Scanln(&confirm)
 			if confirm != "y" && confirm != "Y" {
 				fmt.Println("Cancelled.")
 				return nil
@@ -1484,14 +1484,14 @@ var domainDeleteCmd = &cobra.Command{
 
 		// Count users in this domain
 		var userCount int
-		db.QueryRowContext(context.Background(),
+		_ = db.QueryRowContext(context.Background(),
 			"SELECT COUNT(*) FROM users WHERE domain_id = (SELECT id FROM domains WHERE name = ?)",
 			domainName).Scan(&userCount)
 
 		if !domainDeleteForce {
 			fmt.Printf("Are you sure you want to delete domain '%s'? (%d users will be deleted) [y/N] ", domainName, userCount)
 			var confirm string
-			fmt.Scanln(&confirm)
+			_, _ = fmt.Scanln(&confirm)
 			if confirm != "y" && confirm != "Y" {
 				fmt.Println("Cancelled.")
 				return nil
@@ -1499,7 +1499,7 @@ var domainDeleteCmd = &cobra.Command{
 		}
 
 		// Delete users first (cascade may not be enabled)
-		db.ExecContext(context.Background(),
+		_, _ = db.ExecContext(context.Background(),
 			"DELETE FROM users WHERE domain_id = (SELECT id FROM domains WHERE name = ?)", domainName)
 
 		result, err := db.ExecContext(context.Background(), "DELETE FROM domains WHERE name = ?", domainName)
@@ -1652,7 +1652,7 @@ var dbRestoreCmd = &cobra.Command{
 		if !dbRestoreForce {
 			fmt.Printf("This will REPLACE the current database with '%s'. Are you sure? [y/N] ", backupPath)
 			var confirm string
-			fmt.Scanln(&confirm)
+			_, _ = fmt.Scanln(&confirm)
 			if confirm != "y" && confirm != "Y" {
 				fmt.Println("Cancelled.")
 				return nil
@@ -1660,13 +1660,13 @@ var dbRestoreCmd = &cobra.Command{
 		}
 
 		// Copy backup file to database path
-		src, err := os.Open(backupPath)
+		src, err := os.Open(backupPath) // #nosec G304 -- path from validated CLI flag
 		if err != nil {
 			return fmt.Errorf("failed to open backup: %w", err)
 		}
 		defer src.Close()
 
-		dst, err := os.Create(dbPath)
+		dst, err := os.Create(dbPath) // #nosec G304 -- path from server config
 		if err != nil {
 			return fmt.Errorf("failed to create database file: %w", err)
 		}
@@ -1677,8 +1677,8 @@ var dbRestoreCmd = &cobra.Command{
 		}
 
 		// Remove WAL/SHM files if they exist
-		os.Remove(dbPath + "-wal")
-		os.Remove(dbPath + "-shm")
+		_ = os.Remove(dbPath + "-wal")
+		_ = os.Remove(dbPath + "-shm")
 
 		fmt.Printf("Database restored from '%s'\n", backupPath)
 		fmt.Println("Restart the mail server to use the restored database.")
@@ -1705,7 +1705,7 @@ var dbShellCmd = &cobra.Command{
 		fmt.Println("Type .quit to exit")
 
 		// Open in read-only mode
-		shellCmd := exec.Command(sqlite3Path, "file:"+dbPath+"?mode=ro")
+		shellCmd := exec.Command(sqlite3Path, "file:"+dbPath+"?mode=ro") // #nosec G204 -- sqlite3Path from exec.LookPath
 		shellCmd.Stdin = os.Stdin
 		shellCmd.Stdout = os.Stdout
 		shellCmd.Stderr = os.Stderr
@@ -1764,7 +1764,7 @@ var dbStatsCmd = &cobra.Command{
 
 		for _, table := range tables {
 			var count int64
-			db.QueryRowContext(context.Background(),
+			_ = db.QueryRowContext(context.Background(),
 				fmt.Sprintf("SELECT COUNT(*) FROM \"%s\"", table)).Scan(&count)
 			fmt.Printf("  %-30s  %d rows\n", table, count)
 		}

@@ -397,7 +397,7 @@ func (f *FixDatabasePermissions) Apply(ctx context.Context, cfg *config.Config, 
 	files := []string{dbPath, dbPath + "-wal", dbPath + "-shm"}
 	for _, path := range files {
 		if _, err := os.Stat(path); err == nil {
-			if err := os.Chmod(path, 0640); err != nil {
+			if err := os.Chmod(path, 0640); err != nil { // #nosec G302 -- group-read needed for backup tools
 				return fmt.Errorf("failed to chmod %s: %w", path, err)
 			}
 		}
