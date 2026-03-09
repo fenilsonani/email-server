@@ -14,6 +14,8 @@ import (
 	"github.com/emersion/go-imap/v2/imapserver"
 	"github.com/fenilsonani/email-server/internal/auth"
 	"github.com/fenilsonani/email-server/internal/metrics"
+	"github.com/fenilsonani/email-server/internal/search"
+	"github.com/fenilsonani/email-server/internal/search/query"
 	"github.com/fenilsonani/email-server/internal/storage"
 )
 
@@ -1021,6 +1023,7 @@ func (s *Session) Namespace() (*imap.NamespaceData, error) {
 func (s *Session) Search(kind imapserver.NumKind, criteria *imap.SearchCriteria, options *imap.SearchOptions) (*imap.SearchData, error) {
 	s.mu.RLock()
 	selected := s.selected
+	user := s.user
 	s.mu.RUnlock()
 
 	if selected == nil {
@@ -1030,24 +1033,18 @@ func (s *Session) Search(kind imapserver.NumKind, criteria *imap.SearchCriteria,
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	// Convert criteria to our format
-	storageCriteria := &storage.SearchCriteria{}
-	if criteria != nil {
-		if !criteria.Since.IsZero() {
-			storageCriteria.Since = &criteria.Since
-		}
-		if !criteria.Before.IsZero() {
-			storageCriteria.Before = &criteria.Before
-		}
-		for _, f := range criteria.Flag {
-			storageCriteria.Flags = append(storageCriteria.Flags, storage.Flag(f))
-		}
-		for _, f := range criteria.NotFlag {
-			storageCriteria.NotFlags = append(storageCriteria.NotFlags, storage.Flag(f))
-		}
+	var uids []uint32
+	var err error
+
+	// Check if full-text search is needed and available
+	if s.server.searchEngine != nil && needsFullTextSearch(criteria) {
+		// Use full-text search engine
+		uids, err = s.searchWithEngine(ctx, selected.ID, user.ID, criteria)
+	} else {
+		// Fall back to database search
+		uids, err = s.searchWithStorage(ctx, selected.ID, criteria)
 	}
 
-	uids, err := s.server.store.SearchMessages(ctx, selected.ID, storageCriteria)
 	if err != nil {
 		return nil, fmt.Errorf("failed to search messages: %w", err)
 	}
@@ -1082,6 +1079,121 @@ func (s *Session) Search(kind imapserver.NumKind, criteria *imap.SearchCriteria,
 	return &imap.SearchData{
 		All: imap.SeqSetNum(seqNums...),
 	}, nil
+}
+
+// searchWithStorage uses the storage layer for simple searches
+func (s *Session) searchWithStorage(ctx context.Context, mailboxID int64, criteria *imap.SearchCriteria) ([]uint32, error) {
+	storageCriteria := &storage.SearchCriteria{}
+	if criteria != nil {
+		if !criteria.Since.IsZero() {
+			storageCriteria.Since = &criteria.Since
+		}
+		if !criteria.Before.IsZero() {
+			storageCriteria.Before = &criteria.Before
+		}
+		for _, f := range criteria.Flag {
+			storageCriteria.Flags = append(storageCriteria.Flags, storage.Flag(f))
+		}
+		for _, f := range criteria.NotFlag {
+			storageCriteria.NotFlags = append(storageCriteria.NotFlags, storage.Flag(f))
+		}
+	}
+	return s.server.store.SearchMessages(ctx, mailboxID, storageCriteria)
+}
+
+// searchWithEngine uses the full-text search engine
+func (s *Session) searchWithEngine(ctx context.Context, mailboxID, userID int64, criteria *imap.SearchCriteria) ([]uint32, error) {
+	// Build search query from IMAP criteria
+	sq := buildSearchQuery(criteria, mailboxID, userID)
+
+	// Execute search
+	result, err := s.server.searchEngine.Search(ctx, sq)
+	if err != nil {
+		// Fall back to storage search on error
+		log.Printf("Full-text search failed, falling back to storage: %v", err)
+		return s.searchWithStorage(ctx, mailboxID, criteria)
+	}
+
+	// Extract UIDs from search results
+	uids := make([]uint32, 0, len(result.Hits))
+	for _, hit := range result.Hits {
+		if hit.MailboxID == mailboxID {
+			uids = append(uids, hit.UID)
+		}
+	}
+
+	return uids, nil
+}
+
+// needsFullTextSearch checks if the criteria requires full-text search.
+// Delegates to query.IsFullTextSearch which handles Body, Text, Header,
+// and recursive NOT/OR checks.
+func needsFullTextSearch(criteria *imap.SearchCriteria) bool {
+	return query.IsFullTextSearch(criteria)
+}
+
+// buildSearchQuery converts IMAP criteria to a search query
+func buildSearchQuery(criteria *imap.SearchCriteria, mailboxID, userID int64) *search.SearchQuery {
+	sq := &search.SearchQuery{
+		MailboxID: mailboxID,
+		UserID:    userID,
+		Limit:     10000, // IMAP searches return all matches
+	}
+
+	if criteria == nil {
+		return sq
+	}
+
+	// Date filters
+	if !criteria.Since.IsZero() {
+		t := criteria.Since
+		sq.Since = &t
+	}
+	if !criteria.Before.IsZero() {
+		t := criteria.Before
+		sq.Before = &t
+	}
+
+	// Flag filters
+	for _, flag := range criteria.Flag {
+		sq.HasFlags = append(sq.HasFlags, string(flag))
+	}
+	for _, flag := range criteria.NotFlag {
+		sq.NotFlags = append(sq.NotFlags, string(flag))
+	}
+
+	// Header searches
+	for _, h := range criteria.Header {
+		key := strings.ToLower(h.Key)
+		switch key {
+		case "from":
+			sq.From = h.Value
+		case "to":
+			sq.To = h.Value
+		case "subject":
+			sq.Subject = h.Value
+		}
+	}
+
+	// Body search
+	for _, bodyPart := range criteria.Body {
+		if sq.Body != "" {
+			sq.Body = sq.Body + " " + bodyPart
+		} else {
+			sq.Body = bodyPart
+		}
+	}
+
+	// Text search (searches all fields)
+	for _, text := range criteria.Text {
+		if sq.Text != "" {
+			sq.Text = sq.Text + " " + text
+		} else {
+			sq.Text = text
+		}
+	}
+
+	return sq
 }
 
 // Helper functions
