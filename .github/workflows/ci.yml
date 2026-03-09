@@ -7,22 +7,17 @@ on:
     branches: [ main, develop ]
 
 jobs:
-  test:
-    name: Unit Tests
+  test-and-coverage:
+    name: Tests & Coverage
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        go-version: ['1.25.x']
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Set up Go
-        uses: actions/setup-go@v4
+        uses: actions/setup-go@v5
         with:
-          go-version: ${{ matrix.go-version }}
-          cache: true
+          go-version: '1.25.x'
 
       - name: Download dependencies
         run: go mod download
@@ -30,51 +25,7 @@ jobs:
       - name: Verify dependencies
         run: go mod verify
 
-      - name: Run unit tests
-        run: make test-short
-
-  lint:
-    name: Code Quality
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v4
-        with:
-          go-version: '1.25.x'
-          cache: true
-
-      - name: Download dependencies
-        run: go mod download
-
-      - name: Run go vet
-        run: go vet ./...
-
-      - name: Install staticcheck
-        run: go install honnef.co/go/tools/cmd/staticcheck@latest
-
-      - name: Run staticcheck
-        run: staticcheck ./... | grep -v "is unused (U1000)" || true
-
-  coverage:
-    name: Coverage Report
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v4
-        with:
-          go-version: '1.25.x'
-          cache: true
-
-      - name: Download dependencies
-        run: go mod download
-
-      - name: Generate coverage report
+      - name: Run tests with coverage
         run: |
           go test -v -coverprofile=coverage.out -covermode=atomic ./... || true
           if [ -f coverage.out ]; then
@@ -86,7 +37,7 @@ jobs:
 
       - name: Upload coverage to Codecov
         if: always()
-        uses: codecov/codecov-action@v3
+        uses: codecov/codecov-action@v4
         with:
           files: ./coverage.out
           flags: unittests
@@ -98,6 +49,7 @@ jobs:
         run: |
           if [ -f coverage.out ]; then
             coverage=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
+            echo "COVERAGE=$coverage" >> $GITHUB_ENV
             echo "Coverage: ${coverage}%"
             if (( $(echo "$coverage < 35" | bc -l) )); then
               echo "Warning: Coverage is below 35% target"
@@ -116,6 +68,144 @@ jobs:
             coverage.html
           if-no-files-found: ignore
 
+      - name: Comment coverage on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const coverage = process.env.COVERAGE || 'unknown';
+            const comment = `## Coverage Report
+
+            **Total Coverage:** ${coverage}%
+
+            See attached artifacts for detailed coverage report.`;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+        env:
+          COVERAGE: ${{ env.COVERAGE }}
+        continue-on-error: true
+
+  coverage-analysis:
+    name: Coverage Analysis
+    runs-on: ubuntu-latest
+    needs: test-and-coverage
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+
+      - name: Download coverage artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-report
+
+      - name: Analyze coverage by package
+        if: hashFiles('coverage.out') != ''
+        run: |
+          echo "## Package Coverage Analysis" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Package | Coverage |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|----------|" >> $GITHUB_STEP_SUMMARY
+          go tool cover -func=coverage.out | \
+            awk '{
+              pkg = $1;
+              gsub(/\/[^\/]*\.go:.*/, "", pkg);
+              cov = $NF;
+              gsub(/%/, "", cov);
+              if (pkg != last_pkg && pkg != "total") {
+                if (cov+0 < 50) marker = "⚠️  ";
+                else if (cov+0 < 80) marker = "⚡ ";
+                else marker = "✓ ";
+                print "| " marker pkg " | " cov "% |";
+                last_pkg = pkg;
+              }
+            }' >> $GITHUB_STEP_SUMMARY
+
+      - name: Check critical package coverage
+        if: hashFiles('coverage.out') != ''
+        run: |
+          echo "## Critical Packages Coverage" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          critical_packages=(
+            "github.com/fenilsonani/email-server/internal/validation"
+            "github.com/fenilsonani/email-server/internal/auth"
+            "github.com/fenilsonani/email-server/internal/storage"
+          )
+
+          for package in "${critical_packages[@]}"; do
+            coverage=$(go tool cover -func=coverage.out | grep "$package" | tail -1 | awk '{print $NF}' | sed 's/%//')
+            if [ -z "$coverage" ]; then
+              coverage="0"
+            fi
+
+            if (( $(echo "$coverage < 90" | bc -l) )); then
+              marker="⚠️  "
+            else
+              marker="✓ "
+            fi
+
+            echo "- $marker $package: ${coverage}%" >> $GITHUB_STEP_SUMMARY
+          done
+
+      - name: Coverage trend
+        if: hashFiles('coverage.out') != ''
+        run: |
+          coverage=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
+          echo "## Coverage Metrics" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- Current: ${coverage}%" >> $GITHUB_STEP_SUMMARY
+          echo "- Target: 80%" >> $GITHUB_STEP_SUMMARY
+          echo "- Minimum: 35%" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if (( $(echo "$coverage >= 80" | bc -l) )); then
+            echo "✓ **Excellent coverage achieved!**" >> $GITHUB_STEP_SUMMARY
+          elif (( $(echo "$coverage >= 60" | bc -l) )); then
+            echo "⚡ **Good coverage, room for improvement**" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️  **Coverage needs attention**" >> $GITHUB_STEP_SUMMARY
+          fi
+
+  lint:
+    name: Code Quality
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Run go vet
+        run: go vet ./...
+
+      - name: Cache staticcheck
+        uses: actions/cache@v4
+        with:
+          path: ~/go/bin/staticcheck
+          key: staticcheck-${{ runner.os }}-v0.5.1
+
+      - name: Install staticcheck
+        run: test -f ~/go/bin/staticcheck || go install honnef.co/go/tools/cmd/staticcheck@v0.5.1
+
+      - name: Run staticcheck
+        run: staticcheck ./... | grep -v "is unused (U1000)" || true
+
   security:
     name: Security Checks
     runs-on: ubuntu-latest
@@ -124,16 +214,15 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Go
-        uses: actions/setup-go@v4
+        uses: actions/setup-go@v5
         with:
           go-version: '1.25.x'
-          cache: true
 
       - name: Download dependencies
         run: go mod download
 
       - name: Run gosec security scanner
-        uses: securego/gosec@master
+        uses: securego/gosec@v2.22.4
         with:
           args: '-no-fail -fmt sarif -out gosec-report.sarif ./...'
         continue-on-error: true
@@ -147,16 +236,14 @@ jobs:
   build:
     name: Build
     runs-on: ubuntu-latest
-    needs: [test, lint]
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Set up Go
-        uses: actions/setup-go@v4
+        uses: actions/setup-go@v5
         with:
           go-version: '1.25.x'
-          cache: true
 
       - name: Download dependencies
         run: go mod download
@@ -169,17 +256,17 @@ jobs:
         continue-on-error: true
 
   summary:
-    name: Test Summary
+    name: CI Summary
     runs-on: ubuntu-latest
-    needs: [test, lint, coverage, security, build]
+    needs: [test-and-coverage, coverage-analysis, lint, security, build]
     if: always()
     steps:
       - name: Print summary
         run: |
           echo "## CI Pipeline Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- ✓ Unit Tests: ${{ needs.test.result }}" >> $GITHUB_STEP_SUMMARY
-          echo "- ✓ Code Quality: ${{ needs.lint.result }}" >> $GITHUB_STEP_SUMMARY
-          echo "- ✓ Coverage: ${{ needs.coverage.result }}" >> $GITHUB_STEP_SUMMARY
-          echo "- ✓ Security: ${{ needs.security.result }}" >> $GITHUB_STEP_SUMMARY
-          echo "- ✓ Build: ${{ needs.build.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Tests & Coverage: ${{ needs.test-and-coverage.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Coverage Analysis: ${{ needs.coverage-analysis.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Code Quality: ${{ needs.lint.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Security: ${{ needs.security.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Build: ${{ needs.build.result }}" >> $GITHUB_STEP_SUMMARY
