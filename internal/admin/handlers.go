@@ -573,7 +573,10 @@ func (s *Server) handleUserEdit(w http.ResponseWriter, r *http.Request) {
 
 	// Check domain access
 	var editDomainID int64
-	s.db.QueryRowContext(r.Context(), "SELECT domain_id FROM users WHERE id = ?", userID).Scan(&editDomainID)
+	if err := s.db.QueryRowContext(r.Context(), "SELECT domain_id FROM users WHERE id = ?", userID).Scan(&editDomainID); err != nil {
+		http.Error(w, "User not found", http.StatusNotFound)
+		return
+	}
 	if currentAdmin != nil && !currentAdmin.HasDomainAccess(editDomainID) {
 		http.Error(w, "Access denied", http.StatusForbidden)
 		return
