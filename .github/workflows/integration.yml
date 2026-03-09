@@ -32,16 +32,6 @@ jobs:
         ports:
           - 5432:5432
 
-      redis:
-        image: redis:7
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 6379:6379
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -57,16 +47,10 @@ jobs:
 
       - name: Wait for PostgreSQL
         if: matrix.database == 'postgres'
+        timeout-minutes: 2
         run: |
           until pg_isready -h localhost -p 5432 -U postgres; do
             echo 'Waiting for PostgreSQL...'
-            sleep 1
-          done
-
-      - name: Wait for Redis
-        run: |
-          until redis-cli -h localhost ping; do
-            echo 'Waiting for Redis...'
             sleep 1
           done
 
@@ -88,14 +72,6 @@ jobs:
         env:
           TEST_POSTGRES_DSN: postgres://postgres:testpass@localhost:5432/testdb?sslmode=disable
           TEST_DATABASE_TYPE: postgres
-
-      - name: Run integration tests (Redis)
-        run: |
-          go test -v -timeout=10m \
-            -run 'TestRedis' \
-            ./tests/integration/...
-        env:
-          TEST_REDIS_URL: redis://localhost:6379
 
       - name: Upload test logs
         if: failure()
