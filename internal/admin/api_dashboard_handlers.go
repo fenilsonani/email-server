@@ -2,7 +2,6 @@ package admin
 
 import (
 	"crypto/rand"
-	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
@@ -14,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/fenilsonani/email-server/internal/api"
 	"github.com/fenilsonani/email-server/internal/org"
 )
 
@@ -143,16 +143,12 @@ func (s *Server) handleAPICreateAPIKey(w http.ResponseWriter, r *http.Request) {
 		req.RateLimitPerHr = 1000
 	}
 
-	// Generate API key
-	keyBytes := make([]byte, 32)
-	if _, err := rand.Read(keyBytes); err != nil {
+	// Generate API key using the same function the public API uses for validation
+	fullKey, prefix, keyHash, keySalt, genErr := api.GenerateAPIKey(false)
+	if genErr != nil {
 		s.jsonError(w, http.StatusInternalServerError, "Failed to generate API key")
 		return
 	}
-	fullKey := "ms_" + hex.EncodeToString(keyBytes)
-	prefix := fullKey[:10]
-	hash := sha256.Sum256([]byte(fullKey))
-	keyHash := hex.EncodeToString(hash[:])
 
 	var expiresAt *time.Time
 	if req.ExpiresInDays > 0 {
@@ -161,9 +157,9 @@ func (s *Server) handleAPICreateAPIKey(w http.ResponseWriter, r *http.Request) {
 	}
 
 	res, err := s.db.ExecContext(r.Context(), `
-		INSERT INTO api_keys (domain_id, key_hash, key_prefix, name, scopes, rate_limit_per_hour, expires_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
-	`, req.DomainID, keyHash, prefix, req.Name, req.Scopes, req.RateLimitPerHr, expiresAt)
+		INSERT INTO api_keys (domain_id, key_hash, key_prefix, name, scopes, rate_limit_per_hour, expires_at, key_salt)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, req.DomainID, keyHash, prefix, req.Name, req.Scopes, req.RateLimitPerHr, expiresAt, keySalt)
 	if err != nil {
 		s.jsonError(w, http.StatusInternalServerError, "Failed to create API key")
 		return
