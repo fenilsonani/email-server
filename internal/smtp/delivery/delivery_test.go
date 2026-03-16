@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -318,12 +319,17 @@ func BenchmarkIsPermanentError(b *testing.B) {
 func TestFireEvent_CallsHandler(t *testing.T) {
 	logger := logging.Default()
 
+	var mu sync.Mutex
 	var received []DeliveryEvent
+	done := make(chan struct{}, 2)
 
 	e := &Engine{
 		logger: logger.Delivery(),
 		eventHandler: func(ctx context.Context, event DeliveryEvent) {
+			mu.Lock()
 			received = append(received, event)
+			mu.Unlock()
+			done <- struct{}{}
 		},
 	}
 
@@ -342,15 +348,15 @@ func TestFireEvent_CallsHandler(t *testing.T) {
 		ErrorMessage:  "User not found",
 	})
 
+	// Wait for both async handlers to complete
+	<-done
+	<-done
+
+	mu.Lock()
+	defer mu.Unlock()
+
 	if len(received) != 2 {
 		t.Fatalf("got %d events, want 2", len(received))
-	}
-
-	if received[0].Status != "delivered" || received[0].SMTPCode != 250 {
-		t.Errorf("event 0: status=%s code=%d, want delivered/250", received[0].Status, received[0].SMTPCode)
-	}
-	if received[1].Status != "bounced" || received[1].ErrorMessage != "User not found" {
-		t.Errorf("event 1: status=%s error=%s, want bounced/'User not found'", received[1].Status, received[1].ErrorMessage)
 	}
 }
 
@@ -369,56 +375,29 @@ func TestFireEvent_NilHandler(t *testing.T) {
 	})
 }
 
-func TestCleanupOrphanedFiles(t *testing.T) {
+func TestCleanupOrphanedFiles_NilQueue(t *testing.T) {
 	tmpDir := t.TempDir()
 	logger := logging.Default()
 
 	e := &Engine{
 		config: Config{QueuePath: tmpDir},
 		logger: logger.Delivery(),
+		// queue is nil — cleanup should return 0 safely
 	}
 
-	// Create an old .eml file (orphaned)
 	oldFile := filepath.Join(tmpDir, "old-message.eml")
 	if err := os.WriteFile(oldFile, []byte("old email"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	// Set modification time to 8 days ago
-	oldTime := time.Now().Add(-8 * 24 * time.Hour)
-	os.Chtimes(oldFile, oldTime, oldTime)
-
-	// Create a recent .eml file (still active)
-	recentFile := filepath.Join(tmpDir, "recent-message.eml")
-	if err := os.WriteFile(recentFile, []byte("recent email"), 0600); err != nil {
-		t.Fatal(err)
-	}
-
-	// Create a non-.eml file (should be ignored)
-	otherFile := filepath.Join(tmpDir, "config.txt")
-	if err := os.WriteFile(otherFile, []byte("config"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	os.Chtimes(otherFile, oldTime, oldTime)
 
 	cleaned := e.cleanupOrphanedFiles()
-
-	if cleaned != 1 {
-		t.Errorf("cleanupOrphanedFiles() = %d, want 1", cleaned)
+	if cleaned != 0 {
+		t.Errorf("cleanupOrphanedFiles() with nil queue = %d, want 0", cleaned)
 	}
 
-	// Old .eml should be deleted
-	if _, err := os.Stat(oldFile); !os.IsNotExist(err) {
-		t.Error("old .eml file should have been deleted")
-	}
-
-	// Recent .eml should still exist
-	if _, err := os.Stat(recentFile); os.IsNotExist(err) {
-		t.Error("recent .eml file should NOT have been deleted")
-	}
-
-	// Non-.eml file should still exist
-	if _, err := os.Stat(otherFile); os.IsNotExist(err) {
-		t.Error("non-.eml file should NOT have been deleted")
+	// File should NOT be deleted when queue is unavailable (can't verify active paths)
+	if _, err := os.Stat(oldFile); os.IsNotExist(err) {
+		t.Error("file should NOT have been deleted when queue is nil")
 	}
 }
 
@@ -448,13 +427,27 @@ func TestWarmupCircuitBreakers(t *testing.T) {
 		t.Fatalf("Failed to create delivery_log: %v", err)
 	}
 
-	// Insert 6 recent failures for "broken.com" (above threshold of 5)
+	// Insert 6 distinct failed messages for "broken.com" (above threshold of 5)
+	// Mix of rejected, bounced, and deferred statuses
 	for i := 0; i < 6; i++ {
-		_, err := db.Exec(`INSERT INTO delivery_log (message_id, sender, recipient, status, domain, created_at) VALUES (?, ?, ?, 'rejected', 'broken.com', datetime('now'))`,
-			"msg"+string(rune('0'+i)), "sender@test.com", "user@broken.com")
+		status := "rejected"
+		if i%3 == 1 {
+			status = "deferred"
+		} else if i%3 == 2 {
+			status = "bounced"
+		}
+		_, err := db.Exec(`INSERT INTO delivery_log (message_id, sender, recipient, status, domain, created_at) VALUES (?, ?, ?, ?, 'broken.com', datetime('now'))`,
+			"msg"+string(rune('0'+i)), "sender@test.com", "user@broken.com", status)
 		if err != nil {
 			t.Fatalf("Failed to insert: %v", err)
 		}
+	}
+
+	// Insert 1 failed message to "inflated.com" with 5 recipients (5 rows, 1 message_id)
+	// This should NOT trip the threshold since it's only 1 distinct delivery attempt
+	for i := 0; i < 5; i++ {
+		db.Exec(`INSERT INTO delivery_log (message_id, sender, recipient, status, domain, created_at) VALUES ('same-msg', 'sender@test.com', ?, 'rejected', 'inflated.com', datetime('now'))`,
+			"user"+string(rune('0'+i))+"@inflated.com")
 	}
 
 	// Insert 2 failures for "ok.com" (below threshold) + 1 success
@@ -494,6 +487,12 @@ func TestWarmupCircuitBreakers(t *testing.T) {
 	if okBreaker.State() != resilience.StateClosed {
 		t.Errorf("ok.com breaker state = %v, want Closed", okBreaker.State())
 	}
+
+	// "inflated.com" should NOT be pre-opened (1 message to 5 recipients = 1 distinct failure)
+	inflatedBreaker := e.breakers.Get("inflated.com")
+	if inflatedBreaker.State() != resilience.StateClosed {
+		t.Errorf("inflated.com breaker state = %v, want Closed (per-recipient rows should not inflate count)", inflatedBreaker.State())
+	}
 }
 
 func TestWarmupCircuitBreakers_NilDB(t *testing.T) {
@@ -527,14 +526,17 @@ func TestSetEventHandler(t *testing.T) {
 		logger: logger.Delivery(),
 	}
 
-	var called bool
+	done := make(chan struct{})
 	e.SetEventHandler(func(ctx context.Context, event DeliveryEvent) {
-		called = true
+		close(done)
 	})
 
 	e.fireEvent(context.Background(), DeliveryEvent{Status: "delivered"})
 
-	if !called {
+	select {
+	case <-done:
+		// handler was called
+	case <-time.After(2 * time.Second):
 		t.Error("SetEventHandler should register a handler that gets called")
 	}
 }

@@ -171,7 +171,8 @@ func WithEventHandler(h DeliveryEventHandler) EngineOption {
 }
 
 // SetEventHandler sets the delivery event handler after engine creation.
-// This is useful when the handler depends on components initialized after the engine.
+// This must be called before Start() since workers read eventHandler without
+// synchronization. It is safe to call between NewEngine() and Start().
 func (e *Engine) SetEventHandler(h DeliveryEventHandler) {
 	e.eventHandler = h
 }
@@ -1026,18 +1027,21 @@ func (e *Engine) warmupCircuitBreakers() {
 		return
 	}
 
-	// Find domains where the last N deliveries within the breaker timeout window
-	// were all failures (matching the failure threshold of 5).
-	// We look at the last hour to catch domains that were recently broken.
+	oneHourAgo := time.Now().Add(-1 * time.Hour)
+
+	// Find domains where 5+ distinct delivery attempts failed within the last hour.
+	// Count by message_id to avoid inflating counts from per-recipient log rows.
+	// Include 'deferred' alongside 'rejected'/'bounced' since temporary failures
+	// (timeouts, 4xx) also trip the circuit breaker during normal operation.
 	rows, err := e.db.QueryContext(e.ctx, `
-		SELECT domain, COUNT(*) as fail_count
+		SELECT domain, COUNT(DISTINCT message_id) as fail_count
 		FROM delivery_log
-		WHERE status IN ('rejected', 'bounced')
+		WHERE status IN ('rejected', 'bounced', 'deferred')
 		  AND domain IS NOT NULL
-		  AND created_at > datetime('now', '-1 hour')
+		  AND created_at > ?
 		GROUP BY domain
-		HAVING fail_count >= 5
-	`)
+		HAVING COUNT(DISTINCT message_id) >= 5
+	`, oneHourAgo)
 	if err != nil {
 		e.logger.Warn("Failed to query delivery_log for circuit breaker warmup",
 			"error", err.Error())
@@ -1055,11 +1059,14 @@ func (e *Engine) warmupCircuitBreakers() {
 
 		// Check that there are no recent successes that would indicate recovery
 		var successCount int
-		e.db.QueryRowContext(e.ctx, `
+		if err := e.db.QueryRowContext(e.ctx, `
 			SELECT COUNT(*) FROM delivery_log
 			WHERE domain = ? AND status = 'delivered'
-			  AND created_at > datetime('now', '-1 hour')
-		`, domain).Scan(&successCount)
+			  AND created_at > ?
+		`, domain, oneHourAgo).Scan(&successCount); err != nil {
+			e.logger.Debug("Failed to check recent successes for domain",
+				"domain", domain, "error", err.Error())
+		}
 
 		if successCount > 0 {
 			continue // Domain recovered, don't pre-open
@@ -1080,15 +1087,26 @@ func (e *Engine) warmupCircuitBreakers() {
 	}
 }
 
-// orphanFileMaxAge is the age after which an .eml file is considered orphaned.
-// Matches the queue's retry_max_age default of 7 days.
-const orphanFileMaxAge = 7 * 24 * time.Hour
+// orphanFileMinAge is the minimum age before a file is considered for orphan
+// cleanup. Files younger than this are likely still being processed.
+const orphanFileMinAge = 1 * time.Hour
 
 // cleanupOrphanedFiles removes .eml files from the queue directory that are
-// older than orphanFileMaxAge. These are leftovers from completed or expired
-// deliveries where the cleanup step failed or the process crashed.
+// not referenced by any active queue entry in Redis. Only files older than
+// orphanFileMinAge are considered, to avoid racing with in-flight enqueues.
 func (e *Engine) cleanupOrphanedFiles() int {
 	if e.config.QueuePath == "" {
+		return 0
+	}
+
+	// Get all file paths still referenced by pending/processing messages
+	if e.queue == nil {
+		return 0
+	}
+	activePaths, err := e.queue.ActiveMessagePaths(e.ctx)
+	if err != nil {
+		e.logger.Warn("Failed to query active message paths for orphan cleanup",
+			"error", err.Error())
 		return 0
 	}
 
@@ -1099,7 +1117,7 @@ func (e *Engine) cleanupOrphanedFiles() int {
 		return 0
 	}
 
-	cutoff := time.Now().Add(-orphanFileMaxAge)
+	cutoff := time.Now().Add(-orphanFileMinAge)
 	cleaned := 0
 
 	for _, entry := range entries {
@@ -1112,14 +1130,23 @@ func (e *Engine) cleanupOrphanedFiles() int {
 			continue
 		}
 
-		if info.ModTime().Before(cutoff) {
-			path := filepath.Join(e.config.QueuePath, entry.Name())
-			if err := os.Remove(path); err != nil {
-				e.logger.Warn("Failed to remove orphaned file",
-					"path", path, "error", err.Error())
-			} else {
-				cleaned++
-			}
+		// Skip recent files to avoid racing with in-flight enqueues
+		if !info.ModTime().Before(cutoff) {
+			continue
+		}
+
+		path := filepath.Join(e.config.QueuePath, entry.Name())
+
+		// Only delete if NOT referenced by any active queue entry
+		if activePaths[path] {
+			continue
+		}
+
+		if err := os.Remove(path); err != nil {
+			e.logger.Warn("Failed to remove orphaned file",
+				"path", path, "error", err.Error())
+		} else {
+			cleaned++
 		}
 	}
 
@@ -1280,10 +1307,20 @@ func (e *Engine) extractMessageID(messagePath string) string {
 	return messageID
 }
 
-// fireEvent dispatches a delivery event to the registered handler, if any.
+// fireEvent dispatches a delivery event to the registered handler asynchronously.
+// The event is passed by value so the handler is not tied to the caller's lifetime.
 func (e *Engine) fireEvent(ctx context.Context, event DeliveryEvent) {
 	if e.eventHandler != nil {
-		e.eventHandler(ctx, event)
+		go func(ev DeliveryEvent) {
+			defer func() {
+				if r := recover(); r != nil {
+					e.logger.Error("Panic in delivery event handler",
+						"error", fmt.Sprintf("%v", r),
+						"message_id", ev.SMTPMessageID)
+				}
+			}()
+			e.eventHandler(context.Background(), ev)
+		}(event)
 	}
 }
 
