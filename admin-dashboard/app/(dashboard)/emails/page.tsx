@@ -74,6 +74,8 @@ function SendLogsContent() {
 
   const showDetail = async (id: number) => {
     setDetailLoading(true);
+    setResending(false);
+    setResendResult(null);
     const res = await api.get<EmailDetail>(`/v1/emails/${id}`);
     if (res.success && res.data) setDetail(res.data);
     setDetailLoading(false);
@@ -97,7 +99,8 @@ function SendLogsContent() {
 
   if (detail) {
     const e = detail.email;
-    const canResend = ["bounced", "failed", "delivered", "sent"].includes(e.status);
+    const isResendableStatus = ["bounced", "failed", "delivered", "sent"].includes(e.status);
+    const canResend = isResendableStatus && Boolean(e.template_slug);
     return (
       <PageShell
         title={
@@ -119,20 +122,26 @@ function SendLogsContent() {
               {e.template_slug && <div className="flex justify-between"><span className="text-muted-foreground">Template</span><span className="font-mono text-[12px]">{e.template_slug}</span></div>}
               {e.message_id && <div className="flex justify-between"><span className="text-muted-foreground">Message-ID</span><span className="font-mono text-[11px] truncate max-w-[200px]">{e.message_id}</span></div>}
             </div>
-            {canResend && (
+            {isResendableStatus && (
               <div className="pt-2 border-t border-border">
-                <button
-                  onClick={() => handleResend(e.id)}
-                  disabled={resending}
-                  className="flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-[12px] font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-                >
-                  {resending ? <Loader2 className="h-3 w-3 animate-spin" /> : <RotateCcw className="h-3 w-3" />}
-                  Resend
-                </button>
-                {resendResult && (
-                  <p className={`mt-2 text-[12px] ${resendResult.success ? "text-emerald-400" : "text-red-400"}`}>
-                    {resendResult.message}
-                  </p>
+                {canResend ? (
+                  <>
+                    <button
+                      onClick={() => handleResend(e.id)}
+                      disabled={resending}
+                      className="flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-[12px] font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                    >
+                      {resending ? <Loader2 className="h-3 w-3 animate-spin" /> : <RotateCcw className="h-3 w-3" />}
+                      Resend
+                    </button>
+                    {resendResult && (
+                      <p className={`mt-2 text-[12px] ${resendResult.success ? "text-emerald-400" : "text-red-400"}`}>
+                        {resendResult.message}
+                      </p>
+                    )}
+                  </>
+                ) : (
+                  <p className="text-[12px] text-muted-foreground">Resend via API with body: POST /api/v1/emails/{`{message_id}`}/resend</p>
                 )}
               </div>
             )}

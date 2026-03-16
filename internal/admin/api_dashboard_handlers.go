@@ -861,9 +861,9 @@ func (s *Server) handleAPIResendEmail(w http.ResponseWriter, r *http.Request) {
 
 	// Only allow resend for terminal statuses
 	switch status {
-	case "bounced", "failed", "delivered", "sent":
+	case api.StatusBounced, api.StatusFailed, api.StatusDelivered, api.StatusSent:
 		// OK
-	case "queued", "scheduled":
+	case api.StatusQueued, api.StatusScheduled:
 		s.jsonError(w, http.StatusConflict, "Email is still "+status+", cannot resend")
 		return
 	default:
@@ -871,12 +871,15 @@ func (s *Server) handleAPIResendEmail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse optional body from request
+	// Parse optional body from request — empty body is valid for template resends
 	var req struct {
 		HTML string `json:"html,omitempty"`
 		Text string `json:"text,omitempty"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && r.ContentLength > 0 {
+		s.jsonError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
 
 	htmlBody := req.HTML
 	textBody := req.Text
@@ -916,7 +919,7 @@ func (s *Server) handleAPIResendEmail(w http.ResponseWriter, r *http.Request) {
 	_, err = s.db.ExecContext(r.Context(), `
 		INSERT INTO sent_emails (domain_id, message_id, tracking_id, from_email, to_email, subject, template_slug, status)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`, domainID, messageID, trackingID, fromEmail, toEmail, subject, templateSlug, "queued")
+	`, domainID, messageID, trackingID, fromEmail, toEmail, subject, templateSlug, api.StatusQueued)
 	if err != nil {
 		s.jsonError(w, http.StatusInternalServerError, "Failed to store resend record")
 		return
@@ -935,7 +938,7 @@ func (s *Server) handleAPIResendEmail(w http.ResponseWriter, r *http.Request) {
 
 	if err := s.deliveryEngine.Enqueue(r.Context(), fromEmail, []string{toEmail}, msgPath); err != nil {
 		os.Remove(msgPath)
-		s.db.ExecContext(r.Context(), `UPDATE sent_emails SET status = 'failed' WHERE message_id = ?`, messageID)
+		s.db.ExecContext(r.Context(), `UPDATE sent_emails SET status = ? WHERE message_id = ?`, api.StatusFailed, messageID)
 		s.jsonError(w, http.StatusInternalServerError, "Failed to queue email for delivery")
 		return
 	}

@@ -736,10 +736,13 @@ func (s *Server) handleResendEmail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse request body
+	// Parse request body — empty body is valid for template resends
 	var req ResendRequest
 	if err := parseJSONRequest(r, &req); err != nil {
-		// Allow empty body (for template resends)
+		if r.ContentLength > 0 {
+			errorResponse(w, requestID, "Invalid request body", CodeInvalidRequest, http.StatusBadRequest)
+			return
+		}
 		req = ResendRequest{}
 	}
 
@@ -817,9 +820,9 @@ func (s *Server) handleResendEmail(w http.ResponseWriter, r *http.Request) {
 			}
 			return
 		}
-		htmlBody = tmpl.HTMLBody
-		textBody = tmpl.TextBody
-		// Note: variables are not stored, so template is re-rendered with current defaults
+		// Re-render template with provided variables (or empty if none supplied)
+		htmlBody = renderTemplateString(tmpl.HTMLBody, req.Variables)
+		textBody = renderTemplateString(tmpl.TextBody, req.Variables)
 	} else if htmlBody == "" && textBody == "" {
 		// Plain send without body
 		errorResponse(w, requestID, "Body (html or text) is required for non-template emails", CodeValidationError, http.StatusBadRequest)
@@ -854,8 +857,8 @@ func (s *Server) handleResendEmail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Trigger webhook
-	go s.triggerWebhook(r.Context(), domainID, EventQueued, &WebhookEvent{
+	// Trigger webhook — use background context since request may end before delivery
+	go s.triggerWebhook(context.Background(), domainID, EventQueued, &WebhookEvent{
 		Event:     EventQueued,
 		Timestamp: time.Now(),
 		MessageID: messageID,

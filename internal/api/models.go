@@ -310,9 +310,10 @@ const (
 
 // ResendRequest is the request body for resending an email
 type ResendRequest struct {
-	HTML  string `json:"html,omitempty"`
-	Text  string `json:"text,omitempty"`
-	Force bool   `json:"force,omitempty"` // Bypass suppression check
+	HTML      string            `json:"html,omitempty"`
+	Text      string            `json:"text,omitempty"`
+	Variables map[string]string `json:"variables,omitempty"` // Template variables for re-rendering
+	Force     bool              `json:"force,omitempty"`     // Bypass suppression check
 }
 
 // ResendResponse is the response for a successful resend
