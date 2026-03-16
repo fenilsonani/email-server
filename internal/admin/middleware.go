@@ -489,7 +489,7 @@ func (s *Server) withAPIAuth(next http.HandlerFunc) http.HandlerFunc {
 const (
 	maxCSRFTokens   = 10000 // Maximum CSRF tokens in cache
 	maxSessionCache = 10000 // Maximum sessions in cache
-	maxCSRFFormBody = 10 << 20
+	maxCSRFFormBody = maxAdminFormBody
 )
 
 var (
