@@ -498,7 +498,7 @@ func (w *WebhookRetryWorker) retryFailedDeliveries(ctx context.Context) {
 		  AND wh.is_active = TRUE
 		  AND wh.failure_count < ?
 		ORDER BY wd.created_at ASC
-		LIMIT 50
+		LIMIT 200
 	`, webhookMaxRetryAttempts, cutoff, webhookMaxFailures)
 	if err != nil {
 		w.server.logger.Error("Failed to query failed webhook deliveries", "error", err.Error())
@@ -519,6 +519,9 @@ func (w *WebhookRetryWorker) retryFailedDeliveries(ctx context.Context) {
 
 	var deliveries []failedDelivery
 	for rows.Next() {
+		if len(deliveries) >= 50 {
+			break
+		}
 		var d failedDelivery
 		if err := rows.Scan(&d.ID, &d.WebhookID, &d.EventType, &d.Payload, &d.AttemptCount, &d.CreatedAt, &d.URL, &d.Secret); err != nil {
 			continue
