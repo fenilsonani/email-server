@@ -100,9 +100,9 @@ func (s *Server) Start(listen string) error {
 	mux.Handle("/api/v1/templates", s.authMiddleware(http.HandlerFunc(s.handleTemplates)))
 	mux.Handle("/api/v1/templates/", s.authMiddleware(http.HandlerFunc(s.handleTemplateBySlug)))
 
-	// Emails (status, history)
+	// Emails (status, history, resend)
 	mux.Handle("/api/v1/emails", s.authMiddleware(http.HandlerFunc(s.handleListEmails)))
-	mux.Handle("/api/v1/emails/", s.authMiddleware(http.HandlerFunc(s.handleGetEmail)))
+	mux.Handle("/api/v1/emails/", s.authMiddleware(http.HandlerFunc(s.handleEmailByID)))
 
 	// Stats
 	mux.Handle("/api/v1/stats", s.authMiddleware(http.HandlerFunc(s.handleStats)))

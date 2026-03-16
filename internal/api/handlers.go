@@ -602,6 +602,15 @@ func (s *Server) handleListEmails(w http.ResponseWriter, r *http.Request) {
 	}, http.StatusOK)
 }
 
+// handleEmailByID dispatches to GET (detail) or POST .../resend
+func (s *Server) handleEmailByID(w http.ResponseWriter, r *http.Request) {
+	if strings.HasSuffix(r.URL.Path, "/resend") {
+		s.handleResendEmail(w, r)
+		return
+	}
+	s.handleGetEmail(w, r)
+}
+
 // handleGetEmail handles GET /api/v1/emails/{id}
 func (s *Server) handleGetEmail(w http.ResponseWriter, r *http.Request) {
 	requestID := getRequestIDFromContext(r.Context())
@@ -706,6 +715,168 @@ func (s *Server) handleGetEmail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	successResponse(w, requestID, e, http.StatusOK)
+}
+
+// handleResendEmail handles POST /api/v1/emails/{message_id}/resend
+func (s *Server) handleResendEmail(w http.ResponseWriter, r *http.Request) {
+	requestID := getRequestIDFromContext(r.Context())
+
+	if r.Method != http.MethodPost {
+		errorResponse(w, requestID, "Method not allowed", CodeMethodNotAllowed, http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Extract message_id from path: /api/v1/emails/{message_id}/resend
+	path := strings.TrimPrefix(r.URL.Path, "/api/v1/emails/")
+	path = strings.TrimSuffix(path, "/resend")
+	originalMessageID := path
+
+	if originalMessageID == "" {
+		errorResponse(w, requestID, "Message ID is required", CodeValidationError, http.StatusBadRequest)
+		return
+	}
+
+	// Parse request body — empty body is valid for template resends
+	var req ResendRequest
+	if err := parseJSONRequest(r, &req); err != nil {
+		if r.ContentLength > 0 {
+			errorResponse(w, requestID, "Invalid request body", CodeInvalidRequest, http.StatusBadRequest)
+			return
+		}
+		req = ResendRequest{}
+	}
+
+	domainID, _ := s.getDomainID(r.Context())
+	apiKey := getAPIKeyFromContext(r.Context())
+	if apiKey == nil {
+		errorResponse(w, requestID, "Authentication required", CodeUnauthorized, http.StatusUnauthorized)
+		return
+	}
+
+	// Look up the original email
+	var origEmail struct {
+		ID           int64
+		FromEmail    string
+		ToEmail      string
+		Subject      string
+		TemplateSlug sql.NullString
+		Status       string
+		DomainID     int64
+		ReplyTo      string
+	}
+	err := s.db.QueryRowContext(r.Context(), `
+		SELECT id, from_email, to_email, subject, template_slug, status, domain_id
+		FROM sent_emails
+		WHERE message_id = ? AND domain_id = ?
+	`, originalMessageID, domainID).Scan(
+		&origEmail.ID, &origEmail.FromEmail, &origEmail.ToEmail,
+		&origEmail.Subject, &origEmail.TemplateSlug, &origEmail.Status, &origEmail.DomainID,
+	)
+	if err == sql.ErrNoRows {
+		errorResponse(w, requestID, "Email not found", CodeNotFound, http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		s.logger.Error("Failed to look up email for resend", "error", err.Error())
+		errorResponse(w, requestID, "Internal server error", CodeInternalError, http.StatusInternalServerError)
+		return
+	}
+
+	// Only allow resend for terminal statuses
+	switch origEmail.Status {
+	case StatusBounced, StatusFailed, StatusDelivered, StatusSent:
+		// OK to resend
+	case StatusQueued, StatusScheduled:
+		errorResponse(w, requestID, "Email is still "+origEmail.Status+", cannot resend", CodeConflict, http.StatusConflict)
+		return
+	default:
+		errorResponse(w, requestID, "Email status '"+origEmail.Status+"' is not resendable", CodeValidationError, http.StatusBadRequest)
+		return
+	}
+
+	// Check suppression (unless force=true)
+	if !req.Force && s.suppression != nil {
+		suppressed, _, err := s.suppression.IsSuppressed(r.Context(), domainID, origEmail.ToEmail)
+		if err != nil {
+			s.logger.Error("Failed to check suppression for resend", "error", err.Error())
+		} else if suppressed {
+			errorResponse(w, requestID, "Recipient is suppressed. Use force=true to override.", CodeSuppressed, http.StatusUnprocessableEntity)
+			return
+		}
+	}
+
+	// Determine email body
+	htmlBody := req.HTML
+	textBody := req.Text
+
+	if origEmail.TemplateSlug.Valid && origEmail.TemplateSlug.String != "" {
+		// Template-based email: re-render the template
+		tmpl, err := s.getTemplateBySlug(r.Context(), domainID, origEmail.TemplateSlug.String)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				errorResponse(w, requestID, "Original template '"+origEmail.TemplateSlug.String+"' no longer exists", CodeNotFound, http.StatusNotFound)
+			} else {
+				errorResponse(w, requestID, "Failed to fetch template", CodeInternalError, http.StatusInternalServerError)
+			}
+			return
+		}
+		// Re-render template with provided variables (or empty if none supplied)
+		htmlBody = renderTemplateString(tmpl.HTMLBody, req.Variables)
+		textBody = renderTemplateString(tmpl.TextBody, req.Variables)
+	} else if htmlBody == "" && textBody == "" {
+		// Plain send without body
+		errorResponse(w, requestID, "Body (html or text) is required for non-template emails", CodeValidationError, http.StatusBadRequest)
+		return
+	}
+
+	// Generate new IDs
+	senderDomain := s.config.Server.Hostname
+	if parts := splitEmail(origEmail.FromEmail); len(parts) == 2 && parts[1] != "" {
+		senderDomain = parts[1]
+	}
+	messageID := generateMessageID(senderDomain)
+	trackingID := generateTrackingID()
+
+	// Store new sent_emails record
+	_, err = s.db.ExecContext(r.Context(), `
+		INSERT INTO sent_emails (domain_id, api_key_id, message_id, tracking_id, from_email, to_email, subject, template_slug, status)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, domainID, apiKey.ID, messageID, trackingID, origEmail.FromEmail, origEmail.ToEmail, origEmail.Subject, origEmail.TemplateSlug, StatusQueued)
+	if err != nil {
+		s.logger.Error("Failed to store resend email record", "error", err.Error())
+		errorResponse(w, requestID, "Internal server error", CodeInternalError, http.StatusInternalServerError)
+		return
+	}
+
+	// Queue the email for delivery
+	err = s.queueEmail(r.Context(), messageID, origEmail.FromEmail, origEmail.ToEmail, origEmail.Subject, htmlBody, textBody, "", nil, nil)
+	if err != nil {
+		s.logger.Error("Failed to queue resend email", "error", err.Error())
+		s.db.ExecContext(r.Context(), `UPDATE sent_emails SET status = ? WHERE message_id = ?`, StatusFailed, messageID)
+		errorResponse(w, requestID, "Failed to queue email", CodeQueueError, http.StatusInternalServerError)
+		return
+	}
+
+	// Trigger webhook — use background context since request may end before delivery
+	go s.triggerWebhook(context.Background(), domainID, EventQueued, &WebhookEvent{
+		Event:     EventQueued,
+		Timestamp: time.Now(),
+		MessageID: messageID,
+		Recipient: origEmail.ToEmail,
+	})
+
+	s.logger.Info("Email resent",
+		"original_message_id", originalMessageID,
+		"new_message_id", messageID,
+		"to", origEmail.ToEmail,
+		"request_id", requestID)
+
+	successResponse(w, requestID, ResendResponse{
+		Success:    true,
+		MessageID:  messageID,
+		Status:     StatusQueued,
+		OriginalID: originalMessageID,
+	}, http.StatusOK)
 }
 
 // handleStats handles GET /api/v1/stats
@@ -884,6 +1055,16 @@ func isValidContentType(ct string) bool {
 	return len(parts) == 2 && parts[0] != "" && parts[1] != ""
 }
 
+// GenerateMessageID generates a unique Message-ID for an email (exported for admin package)
+func GenerateMessageID(hostname string) string {
+	return generateMessageID(hostname)
+}
+
+// GenerateTrackingID generates a unique tracking ID (exported for admin package)
+func GenerateTrackingID() string {
+	return generateTrackingID()
+}
+
 func generateMessageID(hostname string) string {
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
@@ -956,6 +1137,11 @@ func (s *Server) saveMessageToQueue(data []byte) (string, error) {
 	}
 
 	return path, nil
+}
+
+// BuildEmailMessage constructs a MIME email message (exported for use by admin package)
+func BuildEmailMessage(messageID, from, to, subject, html, text, replyTo string, headers map[string]string, attachments []Attachment) string {
+	return buildEmailMessage(messageID, from, to, subject, html, text, replyTo, headers, attachments)
 }
 
 // buildEmailMessage constructs a MIME email message

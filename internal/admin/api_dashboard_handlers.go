@@ -9,6 +9,8 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -720,12 +722,20 @@ func (s *Server) handleAPISentEmails(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAPISentEmailByID(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/admin/api/v1/emails/")
+
+	// Dispatch resend sub-resource: POST /admin/api/v1/emails/{id}/resend
+	if strings.HasSuffix(path, "/resend") {
+		s.handleAPIResendEmail(w, r)
+		return
+	}
+
 	if r.Method != http.MethodGet {
 		s.jsonError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
 
-	idStr := strings.TrimPrefix(r.URL.Path, "/admin/api/v1/emails/")
+	idStr := path
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
 		s.jsonError(w, http.StatusBadRequest, "Invalid email ID")
@@ -805,6 +815,141 @@ func (s *Server) handleAPISentEmailByID(w http.ResponseWriter, r *http.Request) 
 	s.jsonResponse(w, http.StatusOK, map[string]interface{}{
 		"email":    email,
 		"attempts": attempts,
+	})
+}
+
+// =============================================================================
+// Resend Email
+// =============================================================================
+
+func (s *Server) handleAPIResendEmail(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.jsonError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+
+	if s.deliveryEngine == nil {
+		s.jsonError(w, http.StatusServiceUnavailable, "Delivery engine not configured")
+		return
+	}
+
+	// Extract ID from path: /admin/api/v1/emails/{id}/resend
+	path := strings.TrimPrefix(r.URL.Path, "/admin/api/v1/emails/")
+	path = strings.TrimSuffix(path, "/resend")
+	id, err := strconv.ParseInt(path, 10, 64)
+	if err != nil {
+		s.jsonError(w, http.StatusBadRequest, "Invalid email ID")
+		return
+	}
+
+	// Look up the original email
+	var fromEmail, toEmail, subject, status string
+	var templateSlug sql.NullString
+	var domainID int64
+	err = s.db.QueryRowContext(r.Context(), `
+		SELECT from_email, to_email, subject, template_slug, status, domain_id
+		FROM sent_emails WHERE id = ?
+	`, id).Scan(&fromEmail, &toEmail, &subject, &templateSlug, &status, &domainID)
+	if err == sql.ErrNoRows {
+		s.jsonError(w, http.StatusNotFound, "Email not found")
+		return
+	}
+	if err != nil {
+		s.jsonError(w, http.StatusInternalServerError, "Failed to look up email")
+		return
+	}
+
+	// Only allow resend for terminal statuses
+	switch status {
+	case api.StatusBounced, api.StatusFailed, api.StatusDelivered, api.StatusSent:
+		// OK
+	case api.StatusQueued, api.StatusScheduled:
+		s.jsonError(w, http.StatusConflict, "Email is still "+status+", cannot resend")
+		return
+	default:
+		s.jsonError(w, http.StatusBadRequest, "Email status '"+status+"' is not resendable")
+		return
+	}
+
+	// Parse optional body from request — empty body is valid for template resends
+	var req struct {
+		HTML string `json:"html,omitempty"`
+		Text string `json:"text,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && r.ContentLength > 0 {
+		s.jsonError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	htmlBody := req.HTML
+	textBody := req.Text
+
+	// If template-based, re-render
+	if templateSlug.Valid && templateSlug.String != "" {
+		var tmplHTML, tmplText sql.NullString
+		err := s.db.QueryRowContext(r.Context(), `
+			SELECT html_body, text_body FROM email_templates
+			WHERE domain_id = ? AND slug = ?
+		`, domainID, templateSlug.String).Scan(&tmplHTML, &tmplText)
+		if err != nil {
+			s.jsonError(w, http.StatusNotFound, "Original template '"+templateSlug.String+"' no longer exists")
+			return
+		}
+		if tmplHTML.Valid {
+			htmlBody = tmplHTML.String
+		}
+		if tmplText.Valid {
+			textBody = tmplText.String
+		}
+	} else if htmlBody == "" && textBody == "" {
+		s.jsonError(w, http.StatusBadRequest, "Body (html or text) is required for non-template emails")
+		return
+	}
+
+	// Generate new IDs
+	senderDomain := s.config.Server.Hostname
+	parts := strings.SplitN(fromEmail, "@", 2)
+	if len(parts) == 2 && parts[1] != "" {
+		senderDomain = parts[1]
+	}
+	messageID := api.GenerateMessageID(senderDomain)
+	trackingID := api.GenerateTrackingID()
+
+	// Store new sent_emails record
+	_, err = s.db.ExecContext(r.Context(), `
+		INSERT INTO sent_emails (domain_id, message_id, tracking_id, from_email, to_email, subject, template_slug, status)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, domainID, messageID, trackingID, fromEmail, toEmail, subject, templateSlug, api.StatusQueued)
+	if err != nil {
+		s.jsonError(w, http.StatusInternalServerError, "Failed to store resend record")
+		return
+	}
+
+	// Build and queue the email
+	msg := api.BuildEmailMessage(messageID, fromEmail, toEmail, subject, htmlBody, textBody, "", nil, nil)
+
+	// Save to queue directory
+	filename := fmt.Sprintf("%d-%s.eml", time.Now().UnixNano(), trackingID[:16])
+	msgPath := filepath.Join(s.queuePath, filename)
+	if err := os.WriteFile(msgPath, []byte(msg), 0600); err != nil {
+		s.jsonError(w, http.StatusInternalServerError, "Failed to save message")
+		return
+	}
+
+	if err := s.deliveryEngine.Enqueue(r.Context(), fromEmail, []string{toEmail}, msgPath); err != nil {
+		os.Remove(msgPath)
+		s.db.ExecContext(r.Context(), `UPDATE sent_emails SET status = ? WHERE message_id = ?`, api.StatusFailed, messageID)
+		s.jsonError(w, http.StatusInternalServerError, "Failed to queue email for delivery")
+		return
+	}
+
+	s.logger.Info("Admin resent email", "original_id", id, "new_message_id", messageID, "to", toEmail)
+
+	s.jsonResponse(w, http.StatusOK, map[string]interface{}{
+		"success":             true,
+		"message_id":          messageID,
+		"status":              "queued",
+		"original_email_id":   id,
 	})
 }
 

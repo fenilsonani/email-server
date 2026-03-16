@@ -739,6 +739,13 @@ var serveCmd = &cobra.Command{
 				orgStore := org.NewStore(db.RawDB())
 				adminSrv.SetOrgStore(orgStore)
 
+				// Set delivery engine for email resend functionality
+				if resources.deliveryEngine != nil {
+					queuePath := filepath.Join(cfg.Storage.DataDir, "queue")
+					adminSrv.SetDeliveryEngine(resources.deliveryEngine, queuePath)
+					logger.Info("Admin server configured with delivery engine for resend")
+				}
+
 				// Start feature scheduler for scheduled sends, snooze wake-ups, undo send
 				featureScheduler := features.NewScheduler(featuresStore, logger)
 

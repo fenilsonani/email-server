@@ -308,6 +308,22 @@ const (
 	EventFailed    = "failed"
 )
 
+// ResendRequest is the request body for resending an email
+type ResendRequest struct {
+	HTML      string            `json:"html,omitempty"`
+	Text      string            `json:"text,omitempty"`
+	Variables map[string]string `json:"variables,omitempty"` // Template variables for re-rendering
+	Force     bool              `json:"force,omitempty"`     // Bypass suppression check
+}
+
+// ResendResponse is the response for a successful resend
+type ResendResponse struct {
+	Success      bool   `json:"success"`
+	MessageID    string `json:"message_id"`
+	Status       string `json:"status"`
+	OriginalID   string `json:"original_message_id"`
+}
+
 // API scopes
 const (
 	ScopeSend      = "send"
