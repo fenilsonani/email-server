@@ -77,10 +77,10 @@ func TestCopyDir(t *testing.T) {
 
 	// Create files
 	files := map[string]string{
-		"file1.txt":              "content1",
-		"subdir1/file2.txt":      "content2",
+		"file1.txt":                "content1",
+		"subdir1/file2.txt":        "content2",
 		"subdir1/nested/file3.txt": "content3",
-		"subdir2/file4.txt":      "content4",
+		"subdir2/file4.txt":        "content4",
 	}
 	for path, content := range files {
 		if err := os.WriteFile(filepath.Join(srcDir, path), []byte(content), 0644); err != nil {
@@ -114,8 +114,8 @@ func TestCreateTarGz(t *testing.T) {
 
 	// Create test files
 	files := map[string]string{
-		"file1.txt":         "content1",
-		"subdir/file2.txt":  "content2",
+		"file1.txt":        "content1",
+		"subdir/file2.txt": "content2",
 	}
 	for path, content := range files {
 		fullPath := filepath.Join(srcDir, path)
@@ -183,9 +183,9 @@ func TestExtractTarGz(t *testing.T) {
 
 	// Create test files
 	files := map[string]string{
-		"file1.txt":         "content1",
-		"subdir/file2.txt":  "content2",
-		"subdir/file3.txt":  "content3",
+		"file1.txt":        "content1",
+		"subdir/file2.txt": "content2",
+		"subdir/file3.txt": "content3",
 	}
 	for path, content := range files {
 		fullPath := filepath.Join(srcDir, path)
@@ -404,6 +404,39 @@ func TestExtractTarGz_RejectsAbsoluteEntries(t *testing.T) {
 	err := extractTarGz(archivePath, extractDir)
 	if err == nil {
 		t.Fatal("expected absolute-path archive to be rejected")
+	}
+}
+
+func TestExtractTarGz_StripsSpecialPermissionBits(t *testing.T) {
+	archivePath := filepath.Join(t.TempDir(), "modes.tar.gz")
+	extractDir := t.TempDir()
+	targetPath := filepath.Join(extractDir, "bin", "tool")
+
+	if err := writeTestTarGz(archivePath, []tar.Header{
+		{
+			Name:     "bin/tool",
+			Mode:     0o4755,
+			Size:     int64(len("tool")),
+			Typeflag: tar.TypeReg,
+		},
+	}, []string{"tool"}); err != nil {
+		t.Fatalf("failed to create mode archive: %v", err)
+	}
+
+	if err := extractTarGz(archivePath, extractDir); err != nil {
+		t.Fatalf("extractTarGz() error = %v", err)
+	}
+
+	info, err := os.Stat(targetPath)
+	if err != nil {
+		t.Fatalf("failed to stat extracted file: %v", err)
+	}
+
+	if got := info.Mode().Perm(); got != 0o755 {
+		t.Fatalf("extracted mode = %o, want %o", got, 0o755)
+	}
+	if info.Mode()&os.ModeSetuid != 0 {
+		t.Fatalf("expected setuid bit to be stripped, mode=%v", info.Mode())
 	}
 }
 
