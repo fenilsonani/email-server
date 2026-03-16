@@ -65,6 +65,43 @@ func TestExtractBackup_RejectsAbsoluteEntries(t *testing.T) {
 	}
 }
 
+func TestExtractBackup_StripsSpecialPermissionBits(t *testing.T) {
+	archivePath := filepath.Join(t.TempDir(), "mode.tar.gz")
+	destDir := t.TempDir()
+
+	if err := writeAdminTestTarGz(archivePath, []tar.Header{
+		{
+			Name:     "maildir/message.txt",
+			Mode:     0o4755,
+			Size:     int64(len("hello")),
+			Typeflag: tar.TypeReg,
+		},
+	}, []string{"hello"}); err != nil {
+		t.Fatalf("failed to create mode archive: %v", err)
+	}
+
+	file, err := os.Open(archivePath)
+	if err != nil {
+		t.Fatalf("failed to open archive: %v", err)
+	}
+	defer file.Close()
+
+	if err := extractBackup(file, destDir); err != nil {
+		t.Fatalf("extractBackup() error = %v", err)
+	}
+
+	info, err := os.Stat(filepath.Join(destDir, "maildir", "message.txt"))
+	if err != nil {
+		t.Fatalf("Stat() error = %v", err)
+	}
+	if info.Mode().Perm() != 0o755 {
+		t.Fatalf("permissions = %o, want %o", info.Mode().Perm(), 0o755)
+	}
+	if info.Mode()&os.ModeSetuid != 0 {
+		t.Fatalf("setuid bit should be stripped, mode=%v", info.Mode())
+	}
+}
+
 func writeAdminTestTarGz(archivePath string, headers []tar.Header, bodies []string) error {
 	outFile, err := os.Create(archivePath)
 	if err != nil {

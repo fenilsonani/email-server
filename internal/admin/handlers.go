@@ -3573,7 +3573,11 @@ func extractBackup(file *os.File, destDir string) error {
 			if err != nil {
 				return err
 			}
-			if err := os.Chmod(targetPath, mode); err != nil {
+			safeMode := mode.Perm()
+			if safeMode == 0 {
+				safeMode = 0o600
+			}
+			if err := os.Chmod(targetPath, safeMode); err != nil {
 				return err
 			}
 		}

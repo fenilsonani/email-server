@@ -160,7 +160,7 @@ func (s *Server) withCSRF(next http.HandlerFunc) http.HandlerFunc {
 			token = r.URL.Query().Get("csrf_token")
 		}
 		if token == "" && requestHasFormBody(r) {
-			if err := parseFormWithLimit(w, r, maxCSRFFormBody); err != nil {
+			if err := parseCSRFBody(w, r); err != nil {
 				status := formErrorStatus(err)
 				http.Error(w, "Invalid or expired CSRF token", status)
 				return
@@ -199,6 +199,14 @@ func requestHasFormBody(r *http.Request) bool {
 	return strings.HasPrefix(contentType, "application/x-www-form-urlencoded") ||
 		strings.HasPrefix(contentType, "multipart/form-data") ||
 		strings.HasPrefix(contentType, "text/plain")
+}
+
+func parseCSRFBody(w http.ResponseWriter, r *http.Request) error {
+	contentType := r.Header.Get("Content-Type")
+	if strings.HasPrefix(contentType, "multipart/form-data") {
+		return parseMultipartFormWithLimit(w, r, maxUserPortalMultipartMemory, maxCSRFFormBody)
+	}
+	return parseFormWithLimit(w, r, maxCSRFFormBody)
 }
 
 func isValidCSRFToken(token string) bool {
