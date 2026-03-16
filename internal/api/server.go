@@ -72,6 +72,11 @@ func NewServer(
 	// Initialize scheduler for scheduled emails
 	s.scheduler = NewScheduler(db, s, 30*time.Second)
 
+	// Register delivery event handler for webhooks and auto-suppression
+	if deliveryEngine != nil {
+		s.registerDeliveryEventHandler(deliveryEngine)
+	}
+
 	return s, nil
 }
 
@@ -226,6 +231,73 @@ func (s *Server) canSendFromDomain(ctx context.Context, email string) (bool, err
 	}
 
 	return emailDomain == domainName, nil
+}
+
+// registerDeliveryEventHandler hooks the API server into delivery engine events
+// so that webhooks fire and bounced addresses get auto-suppressed.
+func (s *Server) registerDeliveryEventHandler(engine *delivery.Engine) {
+	engine.SetEventHandler(func(ctx context.Context, event delivery.DeliveryEvent) {
+		if event.SMTPMessageID == "" {
+			return
+		}
+
+		fullMessageID := "<" + event.SMTPMessageID + ">"
+
+		// Look up the domain_id and recipient for this message
+		var domainID int64
+		var recipient string
+		err := s.db.QueryRowContext(ctx,
+			`SELECT domain_id, to_email FROM sent_emails WHERE message_id = ? LIMIT 1`,
+			fullMessageID,
+		).Scan(&domainID, &recipient)
+		if err != nil {
+			// Not an API-sent email (e.g., relayed SMTP) — skip
+			return
+		}
+
+		switch event.Status {
+		case "delivered":
+			go s.triggerWebhook(ctx, domainID, EventDelivered, &WebhookEvent{
+				Event:     EventDelivered,
+				Timestamp: time.Now(),
+				MessageID: fullMessageID,
+				Recipient: recipient,
+			})
+
+		case "bounced":
+			go s.triggerWebhook(ctx, domainID, EventBounced, &WebhookEvent{
+				Event:     EventBounced,
+				Timestamp: time.Now(),
+				MessageID: fullMessageID,
+				Recipient: recipient,
+				Data: map[string]interface{}{
+					"reason":    event.ErrorMessage,
+					"smtp_code": event.SMTPCode,
+				},
+			})
+
+			// Auto-suppress hard-bounced addresses
+			if s.suppression != nil {
+				if suppressErr := s.suppression.AddFromBounce(ctx, domainID, recipient); suppressErr != nil {
+					s.logger.Warn("Failed to auto-suppress bounced address",
+						"email", recipient, "error", suppressErr.Error())
+				} else {
+					s.logger.Info("Auto-suppressed bounced address", "email", recipient)
+				}
+			}
+
+		case "failed":
+			go s.triggerWebhook(ctx, domainID, EventFailed, &WebhookEvent{
+				Event:     EventFailed,
+				Timestamp: time.Now(),
+				MessageID: fullMessageID,
+				Recipient: recipient,
+				Data: map[string]interface{}{
+					"reason": event.ErrorMessage,
+				},
+			})
+		}
+	})
 }
 
 // splitEmail splits an email into local part and domain

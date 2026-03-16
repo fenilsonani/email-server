@@ -99,6 +99,9 @@ type Engine struct {
 	// Deduplication
 	dedupTracker *queue.DeliveryTracker
 
+	// External event handler for webhooks, suppression, etc.
+	eventHandler DeliveryEventHandler
+
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -110,6 +113,30 @@ type Engine struct {
 	totalRetried int64
 	totalBounced int64
 }
+
+// DeliveryEvent contains information about a delivery outcome for external consumers.
+type DeliveryEvent struct {
+	// SMTPMessageID is the Message-ID header value (without angle brackets).
+	SMTPMessageID string
+	// Recipients is the list of recipient addresses.
+	Recipients []string
+	// Sender is the envelope sender.
+	Sender string
+	// Status is "delivered", "bounced", or "failed".
+	Status string
+	// SMTPCode is the SMTP response code (e.g., 250, 550).
+	SMTPCode int
+	// ErrorMessage is the error/bounce reason (empty on success).
+	ErrorMessage string
+	// Domain is the recipient domain.
+	Domain string
+	// Attempt is the delivery attempt number.
+	Attempt int
+}
+
+// DeliveryEventHandler is called by the delivery engine when a message
+// reaches a terminal state. Implementations must be safe for concurrent use.
+type DeliveryEventHandler func(ctx context.Context, event DeliveryEvent)
 
 // EngineOption configures the delivery engine.
 type EngineOption func(*Engine)
@@ -133,6 +160,19 @@ func WithDedupTracker(dt *queue.DeliveryTracker) EngineOption {
 	return func(e *Engine) {
 		e.dedupTracker = dt
 	}
+}
+
+// WithEventHandler sets a callback for delivery events (delivered, bounced, failed).
+func WithEventHandler(h DeliveryEventHandler) EngineOption {
+	return func(e *Engine) {
+		e.eventHandler = h
+	}
+}
+
+// SetEventHandler sets the delivery event handler after engine creation.
+// This is useful when the handler depends on components initialized after the engine.
+func (e *Engine) SetEventHandler(h DeliveryEventHandler) {
+	e.eventHandler = h
 }
 
 // NewEngine creates a new delivery engine.
@@ -355,6 +395,10 @@ func (e *Engine) deliverMessage(msg *queue.Message) {
 			e.dedupTracker.MarkFailed(ctx, smtpMessageID, err.Error())
 		}
 		e.updateSentEmailStatus(ctx, smtpMessageID, "failed", "", err.Error(), msg.Attempts)
+		e.fireEvent(ctx, DeliveryEvent{
+			SMTPMessageID: smtpMessageID, Recipients: msg.Recipients, Sender: msg.Sender,
+			Status: "failed", ErrorMessage: err.Error(), Domain: msg.Domain, Attempt: msg.Attempts,
+		})
 		if span != nil {
 			span.SetError(err)
 		}
@@ -424,6 +468,11 @@ func (e *Engine) deliverMessage(msg *queue.Message) {
 
 			// Update sent_emails status for API send logs
 			e.updateSentEmailStatus(ctx, smtpMessageID, "bounced", "", err.Error(), msg.Attempts)
+			e.fireEvent(ctx, DeliveryEvent{
+				SMTPMessageID: smtpMessageID, Recipients: msg.Recipients, Sender: msg.Sender,
+				Status: "bounced", SMTPCode: smtpCode, ErrorMessage: err.Error(),
+				Domain: msg.Domain, Attempt: msg.Attempts,
+			})
 
 			// Clean up the original message file
 			if err := e.cleanupMessageFile(msg.MessagePath); err != nil {
@@ -477,6 +526,10 @@ func (e *Engine) deliverMessage(msg *queue.Message) {
 
 	// Update sent_emails status for API send logs
 	e.updateSentEmailStatus(ctx, smtpMessageID, "delivered", "250 OK", "", msg.Attempts)
+	e.fireEvent(ctx, DeliveryEvent{
+		SMTPMessageID: smtpMessageID, Recipients: msg.Recipients, Sender: msg.Sender,
+		Status: "delivered", SMTPCode: 250, Domain: msg.Domain, Attempt: msg.Attempts,
+	})
 
 	// Clean up the message file from disk
 	if err := e.cleanupMessageFile(msg.MessagePath); err != nil {
@@ -1105,6 +1158,13 @@ func (e *Engine) extractMessageID(messagePath string) string {
 	messageID = strings.TrimPrefix(messageID, "<")
 	messageID = strings.TrimSuffix(messageID, ">")
 	return messageID
+}
+
+// fireEvent dispatches a delivery event to the registered handler, if any.
+func (e *Engine) fireEvent(ctx context.Context, event DeliveryEvent) {
+	if e.eventHandler != nil {
+		e.eventHandler(ctx, event)
+	}
 }
 
 // maxBounceReasonLen limits stored bounce reasons to prevent storage abuse

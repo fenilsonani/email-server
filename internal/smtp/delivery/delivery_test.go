@@ -314,6 +314,79 @@ func BenchmarkIsPermanentError(b *testing.B) {
 	}
 }
 
+func TestFireEvent_CallsHandler(t *testing.T) {
+	logger := logging.Default()
+
+	var received []DeliveryEvent
+
+	e := &Engine{
+		logger: logger.Delivery(),
+		eventHandler: func(ctx context.Context, event DeliveryEvent) {
+			received = append(received, event)
+		},
+	}
+
+	e.fireEvent(context.Background(), DeliveryEvent{
+		SMTPMessageID: "test@example.com",
+		Recipients:    []string{"rcpt@example.com"},
+		Status:        "delivered",
+		SMTPCode:      250,
+	})
+
+	e.fireEvent(context.Background(), DeliveryEvent{
+		SMTPMessageID: "bounce@example.com",
+		Recipients:    []string{"bad@example.com"},
+		Status:        "bounced",
+		SMTPCode:      550,
+		ErrorMessage:  "User not found",
+	})
+
+	if len(received) != 2 {
+		t.Fatalf("got %d events, want 2", len(received))
+	}
+
+	if received[0].Status != "delivered" || received[0].SMTPCode != 250 {
+		t.Errorf("event 0: status=%s code=%d, want delivered/250", received[0].Status, received[0].SMTPCode)
+	}
+	if received[1].Status != "bounced" || received[1].ErrorMessage != "User not found" {
+		t.Errorf("event 1: status=%s error=%s, want bounced/'User not found'", received[1].Status, received[1].ErrorMessage)
+	}
+}
+
+func TestFireEvent_NilHandler(t *testing.T) {
+	logger := logging.Default()
+
+	e := &Engine{
+		logger:       logger.Delivery(),
+		eventHandler: nil,
+	}
+
+	// Should not panic
+	e.fireEvent(context.Background(), DeliveryEvent{
+		SMTPMessageID: "test@example.com",
+		Status:        "delivered",
+	})
+}
+
+func TestSetEventHandler(t *testing.T) {
+	logger := logging.Default()
+
+	e := &Engine{
+		logger: logger.Delivery(),
+	}
+
+	var called bool
+	e.SetEventHandler(func(ctx context.Context, event DeliveryEvent) {
+		called = true
+	})
+
+	e.fireEvent(context.Background(), DeliveryEvent{Status: "delivered"})
+
+	if !called {
+		t.Error("SetEventHandler should register a handler that gets called")
+	}
+}
+
 // setupTestDB creates an in-memory SQLite database with the sent_emails table.
 func setupTestDB(t *testing.T) *sql.DB {
 	t.Helper()
