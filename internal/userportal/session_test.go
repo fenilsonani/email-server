@@ -23,7 +23,7 @@ func TestGetClientIP_TrustedProxyHandling(t *testing.T) {
 	t.Run("trusted proxy uses forwarded header", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/account/login", nil)
 		req.RemoteAddr = "127.0.0.1:1234"
-		req.Header.Set("X-Forwarded-For", "203.0.113.10, 127.0.0.1")
+		req.Header.Set("X-Forwarded-For", "198.51.100.8, 203.0.113.10")
 
 		if got := s.getClientIP(req); got != "203.0.113.10" {
 			t.Fatalf("getClientIP() = %q, want %q", got, "203.0.113.10")
@@ -156,6 +156,32 @@ func TestValidateSession_AcceptsLegacySessionWithoutBoundMetadata(t *testing.T) 
 	}
 }
 
+func TestValidateSession_RejectsMissingBoundUserAgent(t *testing.T) {
+	db := openUserPortalTestDB(t)
+	defer db.Close()
+
+	now := time.Now().UTC()
+	expiresAt := now.Add(2 * time.Hour)
+
+	if _, err := db.Exec(`
+		INSERT INTO user_sessions (token, user_id, created_at, expires_at, ip_address, user_agent)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`, "token-missing-ua", 13, now, expiresAt, "203.0.113.10", "Mozilla/5.0"); err != nil {
+		t.Fatalf("failed to insert session: %v", err)
+	}
+
+	s := newTestUserPortalServer(t, db)
+
+	req := httptest.NewRequest(http.MethodGet, "/account/", nil)
+	req.RemoteAddr = "127.0.0.1:1234"
+	req.Header.Set("X-Forwarded-For", "203.0.113.10")
+
+	userID, valid := s.validateSession(req, "token-missing-ua")
+	if valid || userID != 0 {
+		t.Fatalf("validateSession() = (%d, %v), want (0, false)", userID, valid)
+	}
+}
+
 func TestCreateSession_StoresNormalizedClientMetadata(t *testing.T) {
 	db := openUserPortalTestDB(t)
 	defer db.Close()
@@ -164,7 +190,7 @@ func TestCreateSession_StoresNormalizedClientMetadata(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/account/login", nil)
 	req.RemoteAddr = "127.0.0.1:1234"
-	req.Header.Set("X-Forwarded-For", "203.0.113.44, 127.0.0.1")
+	req.Header.Set("X-Forwarded-For", "198.51.100.8, 203.0.113.44")
 	req.Header.Set("User-Agent", longUserAgent(300))
 
 	token, err := s.createSession(context.Background(), 55, req)

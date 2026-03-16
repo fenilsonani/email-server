@@ -503,12 +503,17 @@ func validateSetupConfig(cfg *SetupConfig) error {
 	if cfg == nil {
 		return fmt.Errorf("setup config is required")
 	}
-	if err := validation.Domain(cfg.Domain); err != nil {
+	domain := strings.ToLower(strings.TrimSpace(cfg.Domain))
+	if err := validation.Domain(domain); err != nil {
 		return fmt.Errorf("invalid domain: %w", err)
 	}
-	if err := validation.Domain(cfg.Hostname); err != nil {
+	cfg.Domain = domain
+
+	hostname := strings.ToLower(strings.TrimSpace(cfg.Hostname))
+	if err := validation.Domain(hostname); err != nil {
 		return fmt.Errorf("invalid hostname: %w", err)
 	}
+	cfg.Hostname = hostname
 	if _, err := mail.ParseAddress(cfg.AdminEmail); err != nil {
 		return fmt.Errorf("invalid admin email: %w", err)
 	}

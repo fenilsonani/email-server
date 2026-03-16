@@ -65,3 +65,28 @@ func TestShouldUseDANERequiresDNSSEC(t *testing.T) {
 		t.Fatal("shouldUseDANE() should reject missing TLSA records")
 	}
 }
+
+func TestTLSRequirementReason(t *testing.T) {
+	enforcePolicy := &STSPolicy{Mode: STSModeEnforce}
+
+	tests := []struct {
+		name       string
+		stsPolicy  *STSPolicy
+		useDANE    bool
+		requireTLS bool
+		want       string
+	}{
+		{name: "none", want: ""},
+		{name: "require tls", requireTLS: true, want: "STARTTLS required"},
+		{name: "mta-sts", stsPolicy: enforcePolicy, want: "MTA-STS enforces TLS"},
+		{name: "dane wins", stsPolicy: enforcePolicy, useDANE: true, requireTLS: true, want: "DANE requires TLS"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tlsRequirementReason(tt.stsPolicy, tt.useDANE, tt.requireTLS); got != tt.want {
+				t.Fatalf("tlsRequirementReason() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

@@ -102,6 +102,9 @@ func (s *Store) CreateMailbox(ctx context.Context, userID int64, name string, sp
 	}
 	randomMask := uint32(randomBytes[0])<<24 | uint32(randomBytes[1])<<16 | uint32(randomBytes[2])<<8 | uint32(randomBytes[3])
 	uidValidity := timestamp ^ randomMask
+	if uidValidity == 0 {
+		uidValidity = 1
+	}
 
 	// Insert into database
 	result, err := s.db.ExecContext(ctx,

@@ -244,11 +244,8 @@ func getClientIP(r *http.Request) string {
 
 	if directIP == "127.0.0.1" || directIP == "::1" {
 		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			parts := strings.Split(xff, ",")
-			if len(parts) > 0 {
-				if ip := normalizeTrackingIP(strings.TrimSpace(parts[0])); ip != "" {
-					return ip
-				}
+			if ip := forwardedTrackingIP(xff); ip != "" {
+				return ip
 			}
 		}
 
@@ -260,6 +257,16 @@ func getClientIP(r *http.Request) string {
 	}
 
 	return directIP
+}
+
+func forwardedTrackingIP(header string) string {
+	parts := strings.Split(header, ",")
+	for i := len(parts) - 1; i >= 0; i-- {
+		if ip := normalizeTrackingIP(strings.TrimSpace(parts[i])); ip != "" {
+			return ip
+		}
+	}
+	return ""
 }
 
 func normalizeTrackingIP(value string) string {

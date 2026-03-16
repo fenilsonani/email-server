@@ -63,7 +63,7 @@ func (s *Server) validateSession(r *http.Request, token string) (int64, bool) {
 	}
 
 	currentUserAgent := normalizeUserAgent(r.UserAgent())
-	if userAgent != "" && currentUserAgent != "" && userAgent != currentUserAgent {
+	if userAgent != "" && userAgent != currentUserAgent {
 		s.db.Exec(`DELETE FROM user_sessions WHERE token = ?`, token)
 		return 0, false
 	}
@@ -131,12 +131,8 @@ func (s *Server) getClientIP(r *http.Request) string {
 
 	if s.trustedProxies[directIP] {
 		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			ips := strings.Split(xff, ",")
-			if len(ips) > 0 {
-				clientIP := normalizeIP(strings.TrimSpace(ips[0]))
-				if clientIP != "" {
-					return clientIP
-				}
+			if clientIP := forwardedUserPortalIP(xff); clientIP != "" {
+				return clientIP
 			}
 		}
 
@@ -149,6 +145,16 @@ func (s *Server) getClientIP(r *http.Request) string {
 	}
 
 	return directIP
+}
+
+func forwardedUserPortalIP(header string) string {
+	ips := strings.Split(header, ",")
+	for i := len(ips) - 1; i >= 0; i-- {
+		if clientIP := normalizeIP(strings.TrimSpace(ips[i])); clientIP != "" {
+			return clientIP
+		}
+	}
+	return ""
 }
 
 func sessionIPMatches(storedIP, currentIP string) bool {

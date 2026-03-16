@@ -698,6 +698,9 @@ func (s *Server) csrfBinding(r *http.Request) string {
 		return "client:" + s.rateLimiter.GetClientIP(r)
 	}
 
+	if ip := normalizeRemoteIP(r.RemoteAddr); ip != "" {
+		return "client:" + ip
+	}
 	return "client:" + r.RemoteAddr
 }
 

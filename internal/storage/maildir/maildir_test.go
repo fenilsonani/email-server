@@ -127,6 +127,9 @@ func TestStore_CreateMailbox(t *testing.T) {
 	if mb.UIDNext != 1 {
 		t.Errorf("Expected UIDNext 1, got %d", mb.UIDNext)
 	}
+	if mb.UIDValidity == 0 {
+		t.Error("Expected UIDValidity to be non-zero")
+	}
 
 	// Create with special use
 	sent, err := store.CreateMailbox(ctx, userID, "Sent", storage.SpecialUseSent)
@@ -136,6 +139,9 @@ func TestStore_CreateMailbox(t *testing.T) {
 
 	if sent.SpecialUse != storage.SpecialUseSent {
 		t.Errorf("Expected special use %s, got %s", storage.SpecialUseSent, sent.SpecialUse)
+	}
+	if sent.UIDValidity == 0 {
+		t.Error("Expected Sent UIDValidity to be non-zero")
 	}
 }
 

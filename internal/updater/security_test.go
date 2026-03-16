@@ -33,6 +33,63 @@ func TestValidateUpdaterConfigRejectsRelativePaths(t *testing.T) {
 	}
 }
 
+func TestValidateUpdaterConfigRejectsInvalidSettings(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  config.UpdaterConfig
+	}{
+		{
+			name: "relative binary path",
+			cfg: config.UpdaterConfig{
+				GitRepoURL:     "https://github.com/fenilsonani/email-server",
+				BuildPath:      "/tmp/mailserver-build",
+				BinaryPath:     "bin/mailserver",
+				SystemdService: "mailserver.service",
+				MaxBackups:     5,
+			},
+		},
+		{
+			name: "invalid git repo url",
+			cfg: config.UpdaterConfig{
+				GitRepoURL:     "ftp://example.com/repo",
+				BuildPath:      "/tmp/mailserver-build",
+				BinaryPath:     "/usr/local/bin/mailserver",
+				SystemdService: "mailserver.service",
+				MaxBackups:     5,
+			},
+		},
+		{
+			name: "invalid systemd service name",
+			cfg: config.UpdaterConfig{
+				GitRepoURL:     "https://github.com/fenilsonani/email-server",
+				BuildPath:      "/tmp/mailserver-build",
+				BinaryPath:     "/usr/local/bin/mailserver",
+				SystemdService: "/etc/passwd.service",
+				MaxBackups:     5,
+			},
+		},
+		{
+			name: "negative max backups",
+			cfg: config.UpdaterConfig{
+				GitRepoURL:     "https://github.com/fenilsonani/email-server",
+				BuildPath:      "/tmp/mailserver-build",
+				BinaryPath:     "/usr/local/bin/mailserver",
+				SystemdService: "mailserver.service",
+				MaxBackups:     -1,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := tt.cfg
+			if err := validateUpdaterConfig(&cfg); err == nil {
+				t.Fatalf("validateUpdaterConfig() succeeded unexpectedly for %s", tt.name)
+			}
+		})
+	}
+}
+
 func TestNormalizeTarget(t *testing.T) {
 	tests := []struct {
 		name       string

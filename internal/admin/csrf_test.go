@@ -105,6 +105,41 @@ func TestCSRFBinding_RejectsOversizedFormBody(t *testing.T) {
 	}
 }
 
+func TestCSRFBinding_AcceptsURLEncodedBodyWithinLimit(t *testing.T) {
+	resetAdminCSRFTokens()
+
+	server := &Server{rateLimiter: DefaultRateLimiter()}
+	handler := server.withCSRF(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	getReq := httptest.NewRequest(http.MethodGet, "/admin/login", nil)
+	getReq.RemoteAddr = "127.0.0.1:1234"
+	getReq.Header.Set("X-Forwarded-For", "203.0.113.10")
+	getW := httptest.NewRecorder()
+	handler.ServeHTTP(getW, getReq)
+
+	token := getW.Header().Get("X-CSRF-Token")
+	if len(token) == 0 {
+		t.Fatalf("expected csrf token on GET")
+	}
+
+	form := url.Values{
+		"csrf_token": {token},
+		"field":      {"value"},
+	}
+	postReq := httptest.NewRequest(http.MethodPost, "/admin/login", strings.NewReader(form.Encode()))
+	postReq.RemoteAddr = "127.0.0.1:1234"
+	postReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	postReq.Header.Set("X-Forwarded-For", "203.0.113.10")
+	postW := httptest.NewRecorder()
+	handler.ServeHTTP(postW, postReq)
+
+	if postW.Code != http.StatusOK {
+		t.Fatalf("urlencoded POST status = %d, want %d", postW.Code, http.StatusOK)
+	}
+}
+
 func TestCSRFBinding_AcceptsMultipartBodyWithinRestoreLimit(t *testing.T) {
 	resetAdminCSRFTokens()
 

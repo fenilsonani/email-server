@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -25,30 +24,22 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 
 // getClientIP extracts the client IP address from the request
 func getClientIP(r *http.Request) string {
-	directIP, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
+	directIP := normalizeRemoteIP(r.RemoteAddr)
+	if directIP == "" {
 		directIP = r.RemoteAddr
 	}
 
 	if directIP == "127.0.0.1" || directIP == "::1" {
-		if ip := r.Header.Get("X-Forwarded-For"); ip != "" {
-			if idx := strings.Index(ip, ","); idx != -1 {
-				ip = ip[:idx]
-			}
-			if parsed := net.ParseIP(strings.TrimSpace(ip)); parsed != nil {
-				return parsed.String()
-			}
+		if ip := forwardedIPFromHeader(r.Header.Get("X-Forwarded-For")); ip != "" {
+			return ip
 		}
 		if ip := r.Header.Get("X-Real-IP"); ip != "" {
-			if parsed := net.ParseIP(strings.TrimSpace(ip)); parsed != nil {
-				return parsed.String()
+			if parsed := normalizeRemoteIP(strings.TrimSpace(ip)); parsed != "" {
+				return parsed
 			}
 		}
 	}
 
-	if parsed := net.ParseIP(directIP); parsed != nil {
-		return parsed.String()
-	}
 	return directIP
 }
 

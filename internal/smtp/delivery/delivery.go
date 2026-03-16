@@ -807,12 +807,8 @@ func (e *Engine) deliverToHostWithTLS(ctx context.Context, addr, hostname string
 			}
 
 			if err := client.StartTLS(tlsConfig); err != nil {
-				// Check MTA-STS policy - if enforcing, TLS failure is fatal
-				if stsPolicy != nil && stsPolicy.ShouldEnforceTLS() {
-					return fmt.Errorf("MTA-STS enforced TLS but STARTTLS failed: %w", err)
-				}
-				if e.config.RequireTLS {
-					return fmt.Errorf("STARTTLS required but failed: %w", err)
+				if reason := tlsRequirementReason(stsPolicy, useDANE, e.config.RequireTLS); reason != "" {
+					return fmt.Errorf("%s but STARTTLS failed: %w", reason, err)
 				}
 				// SECURITY WARNING: TLS downgrade attack possible here
 				e.logger.WarnContext(ctx, "SECURITY: STARTTLS failed, falling back to plaintext - potential downgrade attack",
@@ -835,11 +831,8 @@ func (e *Engine) deliverToHostWithTLS(ctx context.Context, addr, hostname string
 			}
 		} else {
 			// No STARTTLS support
-			if stsPolicy != nil && stsPolicy.ShouldEnforceTLS() {
-				return fmt.Errorf("MTA-STS enforces TLS but server doesn't support STARTTLS")
-			}
-			if e.config.RequireTLS {
-				return fmt.Errorf("STARTTLS required but not supported by server")
+			if reason := tlsRequirementReason(stsPolicy, useDANE, e.config.RequireTLS); reason != "" {
+				return fmt.Errorf("%s but server doesn't support STARTTLS", reason)
 			}
 		}
 	}
@@ -912,6 +905,19 @@ func (e *Engine) daneVerifyConnection(ctx context.Context, hostname string, tlsa
 
 func shouldUseDANE(tlsaRecords []TLSARecord, dnssecValid bool) bool {
 	return len(tlsaRecords) > 0 && dnssecValid
+}
+
+func tlsRequirementReason(stsPolicy *STSPolicy, useDANE, requireTLS bool) string {
+	if useDANE {
+		return "DANE requires TLS"
+	}
+	if stsPolicy != nil && stsPolicy.ShouldEnforceTLS() {
+		return "MTA-STS enforces TLS"
+	}
+	if requireTLS {
+		return "STARTTLS required"
+	}
+	return ""
 }
 
 // recoveryWorker periodically recovers stale messages.
