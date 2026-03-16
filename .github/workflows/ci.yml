@@ -17,7 +17,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25.x'
+          go-version: '1.25.8'
 
       - name: Download dependencies
         run: go mod download
@@ -101,7 +101,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25.x'
+          go-version: '1.25.8'
 
       - name: Download coverage artifact
         uses: actions/download-artifact@v4
@@ -186,7 +186,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25.x'
+          go-version: '1.25.8'
 
       - name: Download dependencies
         run: go mod download
@@ -198,10 +198,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/go/bin/staticcheck
-          key: staticcheck-${{ runner.os }}-v0.5.1
+          key: staticcheck-${{ runner.os }}-v0.7.0
 
       - name: Install staticcheck
-        run: test -f ~/go/bin/staticcheck || go install honnef.co/go/tools/cmd/staticcheck@v0.5.1
+        run: test -f ~/go/bin/staticcheck || go install honnef.co/go/tools/cmd/staticcheck@v0.7.0
 
       - name: Run staticcheck
         run: staticcheck ./... | grep -v "is unused (U1000)" || true
@@ -216,7 +216,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25.x'
+          go-version: '1.25.8'
 
       - name: Download dependencies
         run: go mod download
@@ -249,7 +249,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25.x'
+          go-version: '1.25.8'
 
       - name: Download dependencies
         run: go mod download

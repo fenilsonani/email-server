@@ -20,7 +20,7 @@ require (
 	github.com/miekg/dns v1.1.70
 	github.com/pquerna/otp v1.5.0
 	github.com/prometheus/client_golang v1.23.2
-	github.com/redis/go-redis/v9 v9.7.0
+	github.com/redis/go-redis/v9 v9.7.3
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/crypto v0.46.0
 	gopkg.in/yaml.v3 v3.0.1
