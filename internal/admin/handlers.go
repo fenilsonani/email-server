@@ -25,6 +25,7 @@ import (
 
 	"github.com/fenilsonani/email-server/internal/audit"
 	"github.com/fenilsonani/email-server/internal/queue"
+	"github.com/fenilsonani/email-server/internal/safecast"
 	"github.com/fenilsonani/email-server/internal/security"
 	"github.com/fenilsonani/email-server/internal/validation"
 )
@@ -126,13 +127,13 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// POST - handle login
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "Bad request", http.StatusBadRequest)
+	if err := parseFormWithLimit(w, r, maxAdminFormBody); err != nil {
+		http.Error(w, "Bad request", formErrorStatus(err))
 		return
 	}
 
-	username := r.FormValue("username")
-	password := r.FormValue("password")
+	username := r.PostForm.Get("username")
+	password := r.PostForm.Get("password")
 
 	user, err := s.authenticator.Authenticate(r.Context(), username, password)
 	if err != nil {
@@ -398,16 +399,15 @@ func (s *Server) handleUserAdd(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// POST - create user
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1MB limit
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "Bad request", http.StatusBadRequest)
+	if err := parseFormWithLimit(w, r, maxAdminFormBody); err != nil {
+		http.Error(w, "Bad request", formErrorStatus(err))
 		return
 	}
 
-	username := r.FormValue("username")
-	password := r.FormValue("password")
-	domainIDStr := r.FormValue("domain_id")
-	role := r.FormValue("role")
+	username := r.PostForm.Get("username")
+	password := r.PostForm.Get("password")
+	domainIDStr := r.PostForm.Get("domain_id")
+	role := r.PostForm.Get("role")
 
 	// Validate domain_id parsing
 	domainID, err := strconv.ParseInt(domainIDStr, 10, 64)
@@ -554,28 +554,27 @@ func (s *Server) handleUserEdit(w http.ResponseWriter, r *http.Request) {
 		}
 
 		s.renderTemplate(w, "user_edit.html", map[string]interface{}{
-			"Title":          "Edit User",
-			"UserID":         userID,
-			"Username":       username,
-			"Email":          username + "@" + domain,
-			"IsAdmin":        isAdmin,
-			"CurrentRole":    currentRole,
-			"ScopedDomains":  scopedDomains,
-			"AllDomains":     allDomains,
-			"AdminUser":      currentAdmin,
+			"Title":         "Edit User",
+			"UserID":        userID,
+			"Username":      username,
+			"Email":         username + "@" + domain,
+			"IsAdmin":       isAdmin,
+			"CurrentRole":   currentRole,
+			"ScopedDomains": scopedDomains,
+			"AllDomains":    allDomains,
+			"AdminUser":     currentAdmin,
 		})
 		return
 	}
 
 	// POST - update user
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1MB limit
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "Bad request", http.StatusBadRequest)
+	if err := parseFormWithLimit(w, r, maxAdminFormBody); err != nil {
+		http.Error(w, "Bad request", formErrorStatus(err))
 		return
 	}
 
-	password := r.FormValue("password")
-	role := r.FormValue("role")
+	password := r.PostForm.Get("password")
+	role := r.PostForm.Get("role")
 
 	// Check domain access
 	var editDomainID int64
@@ -908,10 +907,10 @@ func (s *Server) handleDomains(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.renderTemplate(w, "domains.html", map[string]interface{}{
-		"Title":      "Domains",
-		"Domains":    domains,
-		"Error":      errorMsg,
-		"FilterName": filterName,
+		"Title":       "Domains",
+		"Domains":     domains,
+		"Error":       errorMsg,
+		"FilterName":  filterName,
 		"CurrentPage": pagination.Page,
 		"TotalPages":  totalPages,
 		"TotalCount":  totalCount,
@@ -949,14 +948,14 @@ func (s *Server) handleSieve(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// POST - save script
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "Bad request", http.StatusBadRequest)
+	if err := parseFormWithLimit(w, r, maxAdminFormBody); err != nil {
+		http.Error(w, "Bad request", formErrorStatus(err))
 		return
 	}
 
-	name := r.FormValue("name")
-	content := r.FormValue("content")
-	action := r.FormValue("action")
+	name := r.PostForm.Get("name")
+	content := r.PostForm.Get("content")
+	action := r.PostForm.Get("action")
 
 	switch action {
 	case "create":
@@ -1219,12 +1218,12 @@ func (s *Server) handleDomainAdd(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// POST - create domain
-	if err := r.ParseForm(); err != nil {
+	if err := parseFormWithLimit(w, r, maxAdminFormBody); err != nil {
 		http.Redirect(w, r, "/admin/domains?error=Bad+request", http.StatusSeeOther)
 		return
 	}
 
-	name := strings.TrimSpace(strings.ToLower(r.FormValue("name")))
+	name := strings.TrimSpace(strings.ToLower(r.PostForm.Get("name")))
 
 	// Validate domain name
 	if err := validation.Domain(name); err != nil {
@@ -1241,16 +1240,16 @@ func (s *Server) handleDomainAdd(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get DKIM configuration from form
-	generateDKIM := r.FormValue("generate_dkim") == "on"
-	dkimSelector := r.FormValue("dkim_selector")
+	generateDKIM := r.PostForm.Get("generate_dkim") == "on"
+	dkimSelector := r.PostForm.Get("dkim_selector")
 	if dkimSelector == "" {
 		dkimSelector = "mail"
 	}
 	dkimBits := 2048
-	if r.FormValue("dkim_bits") == "4096" {
+	if r.PostForm.Get("dkim_bits") == "4096" {
 		dkimBits = 4096
 	}
-	dkimStorage := r.FormValue("dkim_storage")
+	dkimStorage := r.PostForm.Get("dkim_storage")
 	if dkimStorage == "" {
 		dkimStorage = "database"
 	}
@@ -1377,12 +1376,12 @@ func (s *Server) handleDomainVerifyOwnership(w http.ResponseWriter, r *http.Requ
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"success":           false,
-			"verified":          false,
-			"message":           "TXT record not found",
-			"expected_record":   verifyDomain,
-			"expected_value":    verificationToken,
-			"instructions":      "Add a TXT record with the name '_mailserver-verify' and the value shown above",
+			"success":         false,
+			"verified":        false,
+			"message":         "TXT record not found",
+			"expected_record": verifyDomain,
+			"expected_value":  verificationToken,
+			"instructions":    "Add a TXT record with the name '_mailserver-verify' and the value shown above",
 		})
 		return
 	}
@@ -1421,12 +1420,12 @@ func (s *Server) handleDomainVerifyOwnership(w http.ResponseWriter, r *http.Requ
 	} else {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"success":           false,
-			"verified":          false,
-			"message":           "TXT record found but value doesn't match",
-			"expected_record":   verifyDomain,
-			"expected_value":    verificationToken,
-			"found_values":      txtRecords,
+			"success":         false,
+			"verified":        false,
+			"message":         "TXT record found but value doesn't match",
+			"expected_record": verifyDomain,
+			"expected_value":  verificationToken,
+			"found_values":    txtRecords,
 		})
 	}
 }
@@ -1459,23 +1458,23 @@ func (s *Server) handleDKIMGenerate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Parse form values
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "Bad request", http.StatusBadRequest)
+	if err := parseFormWithLimit(w, r, maxAdminFormBody); err != nil {
+		http.Error(w, "Bad request", formErrorStatus(err))
 		return
 	}
 
-	selector := r.FormValue("selector")
+	selector := r.PostForm.Get("selector")
 	if selector == "" {
 		selector = "mail"
 	}
 
-	bitsStr := r.FormValue("bits")
+	bitsStr := r.PostForm.Get("bits")
 	bits := 2048
 	if bitsStr == "4096" {
 		bits = 4096
 	}
 
-	storageType := r.FormValue("storage")
+	storageType := r.PostForm.Get("storage")
 	if storageType == "" {
 		storageType = "database"
 	}
@@ -2054,13 +2053,13 @@ func (s *Server) handleAPIStats(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	// Use proper JSON encoding to prevent injection
 	response := struct {
-		Users          int              `json:"users"`
-		Domains        int              `json:"domains"`
-		Messages       int              `json:"messages"`
+		Users          int               `json:"users"`
+		Domains        int               `json:"domains"`
+		Messages       int               `json:"messages"`
 		Queue          *queue.QueueStats `json:"queue"`
-		RecentAuth     []RecentAuth     `json:"recent_auth"`
-		RecentDelivery []RecentDelivery `json:"recent_delivery"`
-		Uptime         string           `json:"uptime"`
+		RecentAuth     []RecentAuth      `json:"recent_auth"`
+		RecentDelivery []RecentDelivery  `json:"recent_delivery"`
+		Uptime         string            `json:"uptime"`
 	}{
 		Users:          stats.TotalUsers,
 		Domains:        stats.TotalDomains,
@@ -2308,11 +2307,11 @@ func (s *Server) handleEmailPreview(w http.ResponseWriter, r *http.Request) {
 
 	// Render template
 	s.renderTemplate(w, "email_preview.html", map[string]interface{}{
-		"Title":     "Email Preview",
-		"MessageID": messageID,
-		"Sender":    msg.Sender,
+		"Title":      "Email Preview",
+		"MessageID":  messageID,
+		"Sender":     msg.Sender,
 		"Recipients": strings.Join(msg.Recipients, ", "),
-		"Parsed":    parsed,
+		"Parsed":     parsed,
 	})
 }
 
@@ -2585,12 +2584,12 @@ func (s *Server) handleTestEmail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// POST - send test email
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "Bad request", http.StatusBadRequest)
+	if err := parseFormWithLimit(w, r, maxAdminFormBody); err != nil {
+		http.Error(w, "Bad request", formErrorStatus(err))
 		return
 	}
 
-	recipient := r.FormValue("recipient")
+	recipient := r.PostForm.Get("recipient")
 	if recipient == "" {
 		s.renderTemplate(w, "test_email.html", map[string]interface{}{
 			"Title": "Send Test Email",
@@ -2900,8 +2899,8 @@ func (s *Server) handleRestore(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Parse multipart form (max 500MB)
-	if err := r.ParseMultipartForm(500 << 20); err != nil {
-		http.Error(w, "Failed to parse form", http.StatusBadRequest)
+	if err := parseMultipartFormWithLimit(w, r, maxAdminMultipartBody, maxAdminMultipartBody); err != nil {
+		http.Error(w, "Failed to parse form", formErrorStatus(err))
 		return
 	}
 
@@ -2964,7 +2963,7 @@ func (s *Server) handleDKIMAutoRotate(w http.ResponseWriter, r *http.Request) {
 
 	// Parse days parameter
 	days := 90 // default
-	if d := r.FormValue("days"); d != "" {
+	if d := r.PostForm.Get("days"); d != "" {
 		if parsed, err := strconv.Atoi(d); err == nil && parsed > 0 {
 			days = parsed
 		}
@@ -3531,10 +3530,13 @@ func extractBackup(file *os.File, destDir string) error {
 			return fmt.Errorf("error reading tar: %w", err)
 		}
 
-		// Security: prevent path traversal
-		targetPath := filepath.Join(destDir, header.Name)
-		if !strings.HasPrefix(targetPath, filepath.Clean(destDir)+string(os.PathSeparator)) {
-			continue // Skip suspicious paths
+		if header.Size < 0 {
+			return fmt.Errorf("invalid archive entry size for %q", header.Name)
+		}
+
+		targetPath, err := safeExtractBackupPath(destDir, header.Name)
+		if err != nil {
+			return err
 		}
 
 		switch header.Typeflag {
@@ -3553,18 +3555,52 @@ func extractBackup(file *os.File, destDir string) error {
 				return err
 			}
 
-			if _, err := io.Copy(outFile, tarReader); err != nil {
+			if _, err := io.CopyN(outFile, tarReader, header.Size); err != nil {
 				outFile.Close()
 				return err
 			}
-			outFile.Close()
+			if err := outFile.Close(); err != nil {
+				return err
+			}
 
 			// Restore permissions
-			os.Chmod(targetPath, os.FileMode(header.Mode))
+			mode, err := safecast.Int64ToFileMode(header.Mode)
+			if err != nil {
+				return err
+			}
+			if err := os.Chmod(targetPath, mode); err != nil {
+				return err
+			}
 		}
 	}
 
 	return nil
+}
+
+func safeExtractBackupPath(destDir, headerName string) (string, error) {
+	cleanName := filepath.Clean(headerName)
+	if cleanName == "." || cleanName == "" {
+		return "", fmt.Errorf("invalid archive entry path %q", headerName)
+	}
+	if filepath.IsAbs(cleanName) {
+		return "", fmt.Errorf("archive entry %q uses absolute path", headerName)
+	}
+
+	destRoot, err := filepath.Abs(destDir)
+	if err != nil {
+		return "", err
+	}
+
+	targetPath := filepath.Join(destRoot, cleanName)
+	relPath, err := filepath.Rel(destRoot, targetPath)
+	if err != nil {
+		return "", err
+	}
+	if relPath == ".." || strings.HasPrefix(relPath, ".."+string(os.PathSeparator)) {
+		return "", fmt.Errorf("archive entry %q escapes destination", headerName)
+	}
+
+	return targetPath, nil
 }
 
 func getDirSize(path string) (int64, error) {

@@ -22,12 +22,13 @@ var staticFS embed.FS
 
 // Server handles the user self-service portal
 type Server struct {
-	db            *sql.DB
-	authenticator *auth.Authenticator
-	auditLogger   *audit.Logger
-	logger        *logging.Logger
-	templates     map[string]*template.Template
-	rateLimiter   *RateLimiter
+	db             *sql.DB
+	authenticator  *auth.Authenticator
+	auditLogger    *audit.Logger
+	logger         *logging.Logger
+	templates      map[string]*template.Template
+	rateLimiter    *RateLimiter
+	trustedProxies map[string]bool
 }
 
 // NewServer creates a new user portal server
@@ -39,6 +40,10 @@ func NewServer(db *sql.DB, authenticator *auth.Authenticator, auditLogger *audit
 		logger:        logger,
 		templates:     make(map[string]*template.Template),
 		rateLimiter:   NewRateLimiter(5, 15*time.Minute, 30*time.Minute),
+		trustedProxies: map[string]bool{
+			"127.0.0.1": true,
+			"::1":       true,
+		},
 	}
 
 	if err := s.loadTemplates(); err != nil {
@@ -57,9 +62,9 @@ func (s *Server) loadTemplates() error {
 
 	funcMap := template.FuncMap{
 		// SECURITY: safeHTML function removed - bypasses HTML escaping and could enable XSS
-		"divFloat":  func(a, b int64) float64 { return float64(a) / float64(b) },
-		"formatMB":  func(bytes int64) string { return fmt.Sprintf("%.1f", float64(bytes)/1048576) },
-		"formatGB":  func(bytes int64) string { return fmt.Sprintf("%.0f", float64(bytes)/1073741824) },
+		"divFloat": func(a, b int64) float64 { return float64(a) / float64(b) },
+		"formatMB": func(bytes int64) string { return fmt.Sprintf("%.1f", float64(bytes)/1048576) },
+		"formatGB": func(bytes int64) string { return fmt.Sprintf("%.0f", float64(bytes)/1073741824) },
 	}
 
 	pages := []string{
@@ -100,8 +105,8 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/account/login", s.withCSRF(s.handleLogin))
 
 	// Protected routes (auth required)
-	mux.HandleFunc("/account/", s.withUserAuth(s.handleDashboard))
-	mux.HandleFunc("/account/logout", s.withUserAuth(s.handleLogout))
+	mux.HandleFunc("/account/", s.withUserAuth(s.withCSRF(s.handleDashboard)))
+	mux.HandleFunc("/account/logout", s.withUserAuth(s.withCSRF(s.handleLogout)))
 	mux.HandleFunc("/account/password", s.withUserAuth(s.withCSRF(s.handlePassword)))
 	mux.HandleFunc("/account/profile", s.withUserAuth(s.withCSRF(s.handleProfile)))
 	mux.HandleFunc("/account/forwarding", s.withUserAuth(s.withCSRF(s.handleForwarding)))

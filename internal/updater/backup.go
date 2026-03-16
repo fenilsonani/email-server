@@ -27,8 +27,16 @@ func NewBackupManager(cfg *config.UpdaterConfig, logger *logging.Logger) *Backup
 
 // CreateBackup creates a pre-update backup of the binary and important files
 func (bm *BackupManager) CreateBackup(ctx context.Context, version, commitSHA string) (string, error) {
+	if err := validateUpdaterConfig(bm.config); err != nil {
+		return "", err
+	}
+	buildPath, _ := validateAbsolutePath(bm.config.BuildPath, "build path")
 	timestamp := time.Now().Format("20060102-150405")
-	backupDir := filepath.Join(bm.config.BuildPath, "backups", fmt.Sprintf("pre-update-%s", timestamp))
+	backupRoot := filepath.Join(buildPath, "backups")
+	backupDir := filepath.Join(backupRoot, fmt.Sprintf("pre-update-%s", timestamp))
+	if _, err := ensurePathWithinBase(backupRoot, backupDir, "backup directory"); err != nil {
+		return "", err
+	}
 
 	bm.logger.Info("Creating pre-update backup",
 		"version", version,
@@ -36,7 +44,7 @@ func (bm *BackupManager) CreateBackup(ctx context.Context, version, commitSHA st
 		"backup_dir", backupDir)
 
 	// Create backup directory
-	if err := os.MkdirAll(backupDir, 0755); err != nil {
+	if err := os.MkdirAll(backupDir, 0750); err != nil {
 		return "", fmt.Errorf("failed to create backup directory: %w", err)
 	}
 
@@ -58,18 +66,28 @@ func (bm *BackupManager) CreateBackup(ctx context.Context, version, commitSHA st
 // backupFile copies a file for backup
 func (bm *BackupManager) backupFile(src, dst string) error {
 	// Check if source exists
+	if err := validateUpdaterConfig(bm.config); err != nil {
+		return err
+	}
+	backupRoot := filepath.Join(filepath.Clean(bm.config.BuildPath), "backups")
+	if _, err := validateAbsolutePath(src, "backup source"); err != nil {
+		return err
+	}
+	if _, err := ensurePathWithinBase(backupRoot, dst, "backup destination"); err != nil {
+		return err
+	}
 	if _, err := os.Stat(src); err != nil {
 		return fmt.Errorf("source file not found: %w", err)
 	}
 
 	// Read source
-	data, err := os.ReadFile(src)
+	data, err := os.ReadFile(src) // #nosec G304 -- source path validated as an absolute managed path
 	if err != nil {
 		return fmt.Errorf("failed to read source: %w", err)
 	}
 
 	// Write backup
-	if err := os.WriteFile(dst, data, 0755); err != nil {
+	if err := os.WriteFile(dst, data, 0750); err != nil {
 		return fmt.Errorf("failed to write backup: %w", err)
 	}
 
@@ -92,11 +110,19 @@ Created at: %s
 	)
 
 	metadataPath := filepath.Join(backupDir, "metadata.txt")
-	return os.WriteFile(metadataPath, []byte(metadata), 0644)
+	return os.WriteFile(metadataPath, []byte(metadata), 0600)
 }
 
 // RestoreFromBackup restores a binary from a backup
 func (bm *BackupManager) RestoreFromBackup(ctx context.Context, backupDir string) error {
+	if err := validateUpdaterConfig(bm.config); err != nil {
+		return err
+	}
+	buildPath := filepath.Clean(bm.config.BuildPath)
+	backupRoot := filepath.Join(buildPath, "backups")
+	if _, err := ensurePathWithinBase(backupRoot, backupDir, "backup directory"); err != nil {
+		return err
+	}
 	binaryBackupPath := filepath.Join(backupDir, "mailserver-binary")
 	targetPath := bm.config.BinaryPath
 
@@ -110,13 +136,13 @@ func (bm *BackupManager) RestoreFromBackup(ctx context.Context, backupDir string
 	}
 
 	// Read backup
-	data, err := os.ReadFile(binaryBackupPath)
+	data, err := os.ReadFile(binaryBackupPath) // #nosec G304 -- backup path validated within managed backup directory
 	if err != nil {
 		return fmt.Errorf("failed to read backup: %w", err)
 	}
 
 	// Write to target
-	if err := os.WriteFile(targetPath, data, 0755); err != nil {
+	if err := os.WriteFile(targetPath, data, 0750); err != nil {
 		return fmt.Errorf("failed to write restored binary: %w", err)
 	}
 
@@ -126,7 +152,10 @@ func (bm *BackupManager) RestoreFromBackup(ctx context.Context, backupDir string
 
 // CleanupOldBackups removes old backups, keeping only the specified number
 func (bm *BackupManager) CleanupOldBackups(ctx context.Context) error {
-	backupParentDir := filepath.Join(bm.config.BuildPath, "backups")
+	if err := validateUpdaterConfig(bm.config); err != nil {
+		return err
+	}
+	backupParentDir := filepath.Join(filepath.Clean(bm.config.BuildPath), "backups")
 
 	// Check if directory exists
 	if _, err := os.Stat(backupParentDir); os.IsNotExist(err) {
@@ -167,7 +196,10 @@ func (bm *BackupManager) CleanupOldBackups(ctx context.Context) error {
 
 // ListBackups returns a list of available backups
 func (bm *BackupManager) ListBackups(ctx context.Context) ([]string, error) {
-	backupParentDir := filepath.Join(bm.config.BuildPath, "backups")
+	if err := validateUpdaterConfig(bm.config); err != nil {
+		return nil, err
+	}
+	backupParentDir := filepath.Join(filepath.Clean(bm.config.BuildPath), "backups")
 
 	// Check if directory exists
 	if _, err := os.Stat(backupParentDir); os.IsNotExist(err) {

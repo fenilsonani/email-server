@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/fenilsonani/email-server/internal/safecast"
 )
 
 // RecoverMaildirEmails scans the maildir directory and rebuilds the email index in the database.
@@ -232,5 +234,9 @@ func parseMaildirFlags(flagStr string) string {
 
 // generateUIDValidity generates a UID validity value for a new mailbox
 func generateUIDValidity() uint32 {
-	return uint32(os.Getpid())
+	pid, err := safecast.IntToUint32(os.Getpid())
+	if err != nil {
+		return 1
+	}
+	return pid
 }

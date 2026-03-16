@@ -28,10 +28,17 @@ func NewGitManager(cfg *config.UpdaterConfig, logger *logging.Logger) *GitManage
 
 // Fetch performs Git operations to fetch a specific target
 func (gm *GitManager) Fetch(ctx context.Context, targetType TargetType, target string) (string, error) {
-	buildPath := gm.config.BuildPath
+	if err := validateUpdaterConfig(gm.config); err != nil {
+		return "", err
+	}
+	target, err := normalizeTarget(targetType, target)
+	if err != nil {
+		return "", err
+	}
+	buildPath := filepath.Clean(gm.config.BuildPath)
 
 	// Ensure build path exists
-	if err := os.MkdirAll(buildPath, 0755); err != nil {
+	if err := os.MkdirAll(buildPath, 0750); err != nil {
 		return "", fmt.Errorf("failed to create build path: %w", err)
 	}
 
@@ -68,7 +75,7 @@ func (gm *GitManager) Fetch(ctx context.Context, targetType TargetType, target s
 func (gm *GitManager) cloneRepository(ctx context.Context, repoPath string) error {
 	gm.logger.Info("Cloning repository", "repo_url", gm.config.GitRepoURL, "path", repoPath)
 
-	cmd := exec.CommandContext(ctx, "git", "clone", "--depth", "1", gm.config.GitRepoURL, repoPath)
+	cmd := exec.CommandContext(ctx, "git", "clone", "--depth", "1", gm.config.GitRepoURL, repoPath) // #nosec G204 -- repository URL validated and no shell is used
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git clone failed: %w, output: %s", err, string(output))
 	}
@@ -80,7 +87,7 @@ func (gm *GitManager) cloneRepository(ctx context.Context, repoPath string) erro
 func (gm *GitManager) pullRepository(ctx context.Context, repoPath string) error {
 	gm.logger.Info("Pulling latest changes", "repo_path", repoPath)
 
-	cmd := exec.CommandContext(ctx, "git", "-C", repoPath, "fetch", "origin")
+	cmd := exec.CommandContext(ctx, "git", "-C", repoPath, "fetch", "origin") // #nosec G204 -- repo path validated under managed build directory
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git fetch failed: %w, output: %s", err, string(output))
 	}
@@ -105,19 +112,14 @@ func (gm *GitManager) checkoutTarget(ctx context.Context, repoPath string, targe
 	case TargetTypePR:
 		// For PRs, fetch the PR branch
 		// Format: PR #123 - we need to extract the number
-		prNum := target
-		if strings.Contains(target, "#") {
-			prNum = strings.TrimPrefix(target, "PR #")
-			prNum = strings.TrimSuffix(prNum, ": "+strings.Join(strings.Split(target, ": ")[1:], ": "))
-		}
-		checkoutRef = fmt.Sprintf("refs/pull/%s/head", prNum)
+		checkoutRef = fmt.Sprintf("refs/pull/%s/head", target)
 	default:
 		return "", fmt.Errorf("unknown target type: %s", targetType)
 	}
 
 	gm.logger.Info("Checking out target", "ref", checkoutRef)
 
-	cmd := exec.CommandContext(ctx, "git", "-C", repoPath, "checkout", checkoutRef)
+	cmd := exec.CommandContext(ctx, "git", "-C", repoPath, "checkout", checkoutRef) // #nosec G204 -- git ref normalized and repo path validated
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("git checkout failed: %w, output: %s", err, string(output))
 	}
@@ -133,7 +135,7 @@ func (gm *GitManager) checkoutTarget(ctx context.Context, repoPath string, targe
 
 // getHeadSHA returns the current HEAD commit SHA
 func (gm *GitManager) getHeadSHA(ctx context.Context, repoPath string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", "-C", repoPath, "rev-parse", "HEAD")
+	cmd := exec.CommandContext(ctx, "git", "-C", repoPath, "rev-parse", "HEAD") // #nosec G204 -- repo path validated under managed build directory
 	output, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("git rev-parse failed: %w", err)
@@ -144,8 +146,11 @@ func (gm *GitManager) getHeadSHA(ctx context.Context, repoPath string) (string, 
 
 // GetCurrentBranch returns the current git branch
 func (gm *GitManager) GetCurrentBranch(ctx context.Context) (string, error) {
-	repoPath := filepath.Join(gm.config.BuildPath, "repo")
-	cmd := exec.CommandContext(ctx, "git", "-C", repoPath, "rev-parse", "--abbrev-ref", "HEAD")
+	if err := validateUpdaterConfig(gm.config); err != nil {
+		return "", err
+	}
+	repoPath := filepath.Join(filepath.Clean(gm.config.BuildPath), "repo")
+	cmd := exec.CommandContext(ctx, "git", "-C", repoPath, "rev-parse", "--abbrev-ref", "HEAD") // #nosec G204 -- repo path validated under managed build directory
 	output, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("git rev-parse failed: %w", err)
@@ -156,7 +161,10 @@ func (gm *GitManager) GetCurrentBranch(ctx context.Context) (string, error) {
 
 // Clean removes the build directory
 func (gm *GitManager) Clean(ctx context.Context) error {
-	buildPath := gm.config.BuildPath
+	if err := validateUpdaterConfig(gm.config); err != nil {
+		return err
+	}
+	buildPath := filepath.Clean(gm.config.BuildPath)
 	if _, err := os.Stat(buildPath); os.IsNotExist(err) {
 		return nil
 	}

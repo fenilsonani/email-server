@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"time"
 
 	"golang.org/x/crypto/acme/autocert"
 )
@@ -54,8 +55,12 @@ func (h *HTTPChallengeServer) Start() error {
 	// Create HTTP server
 	addr := fmt.Sprintf(":%d", h.port)
 	h.server = &http.Server{
-		Addr:    addr,
-		Handler: mux,
+		Addr:              addr,
+		Handler:           mux,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		ReadHeaderTimeout: 5 * time.Second,
 	}
 
 	// Listen and serve in goroutine

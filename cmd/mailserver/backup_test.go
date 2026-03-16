@@ -359,3 +359,78 @@ func TestExtractTarGz_InvalidArchive(t *testing.T) {
 		t.Error("Expected error for invalid archive")
 	}
 }
+
+func TestExtractTarGz_RejectsTraversalEntries(t *testing.T) {
+	archivePath := filepath.Join(t.TempDir(), "traversal.tar.gz")
+	extractDir := t.TempDir()
+	outsidePath := filepath.Join(extractDir, "..", "outside.txt")
+
+	if err := writeTestTarGz(archivePath, []tar.Header{
+		{
+			Name:     "../outside.txt",
+			Mode:     0644,
+			Size:     int64(len("escape")),
+			Typeflag: tar.TypeReg,
+		},
+	}, []string{"escape"}); err != nil {
+		t.Fatalf("failed to create traversal archive: %v", err)
+	}
+
+	err := extractTarGz(archivePath, extractDir)
+	if err == nil {
+		t.Fatal("expected traversal archive to be rejected")
+	}
+
+	if _, statErr := os.Stat(outsidePath); !os.IsNotExist(statErr) {
+		t.Fatalf("outside path should not be created, stat err=%v", statErr)
+	}
+}
+
+func TestExtractTarGz_RejectsAbsoluteEntries(t *testing.T) {
+	archivePath := filepath.Join(t.TempDir(), "absolute.tar.gz")
+	extractDir := t.TempDir()
+
+	if err := writeTestTarGz(archivePath, []tar.Header{
+		{
+			Name:     "/tmp/absolute.txt",
+			Mode:     0644,
+			Size:     int64(len("escape")),
+			Typeflag: tar.TypeReg,
+		},
+	}, []string{"escape"}); err != nil {
+		t.Fatalf("failed to create absolute-path archive: %v", err)
+	}
+
+	err := extractTarGz(archivePath, extractDir)
+	if err == nil {
+		t.Fatal("expected absolute-path archive to be rejected")
+	}
+}
+
+func writeTestTarGz(archivePath string, headers []tar.Header, bodies []string) error {
+	outFile, err := os.Create(archivePath)
+	if err != nil {
+		return err
+	}
+	defer outFile.Close()
+
+	gzWriter := gzip.NewWriter(outFile)
+	defer gzWriter.Close()
+
+	tarWriter := tar.NewWriter(gzWriter)
+	defer tarWriter.Close()
+
+	for i, header := range headers {
+		hdr := header
+		if err := tarWriter.WriteHeader(&hdr); err != nil {
+			return err
+		}
+		if hdr.Typeflag == tar.TypeReg {
+			if _, err := tarWriter.Write([]byte(bodies[i])); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}

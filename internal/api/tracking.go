@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/base64"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -18,7 +19,7 @@ var trackingPixel = func() []byte {
 
 // Pre-compiled regex patterns for performance (avoid compiling on every request)
 var (
-	bodyTagRegex = regexp.MustCompile(`(?i)(</body>)`)
+	bodyTagRegex  = regexp.MustCompile(`(?i)(</body>)`)
 	linkHrefRegex = regexp.MustCompile(`(<a[^>]*href=["'])([^"']+)(["'][^>]*>)`)
 )
 
@@ -239,23 +240,43 @@ func isValidRedirectURL(u string) bool {
 
 // getClientIP gets the real client IP from request
 func getClientIP(r *http.Request) string {
-	// Check X-Forwarded-For header
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		parts := strings.Split(xff, ",")
-		if len(parts) > 0 {
-			return strings.TrimSpace(parts[0])
+	directIP := normalizeTrackingIP(r.RemoteAddr)
+
+	if directIP == "127.0.0.1" || directIP == "::1" {
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			parts := strings.Split(xff, ",")
+			if len(parts) > 0 {
+				if ip := normalizeTrackingIP(strings.TrimSpace(parts[0])); ip != "" {
+					return ip
+				}
+			}
+		}
+
+		if xri := r.Header.Get("X-Real-IP"); xri != "" {
+			if ip := normalizeTrackingIP(strings.TrimSpace(xri)); ip != "" {
+				return ip
+			}
 		}
 	}
 
-	// Check X-Real-IP header
-	if xri := r.Header.Get("X-Real-IP"); xri != "" {
-		return xri
+	return directIP
+}
+
+func normalizeTrackingIP(value string) string {
+	if value == "" {
+		return ""
 	}
 
-	// Fall back to RemoteAddr
-	ip := r.RemoteAddr
-	if idx := strings.LastIndex(ip, ":"); idx != -1 {
-		ip = ip[:idx]
+	if ip := net.ParseIP(value); ip != nil {
+		return ip.String()
 	}
-	return ip
+
+	host, _, err := net.SplitHostPort(value)
+	if err == nil {
+		if ip := net.ParseIP(host); ip != nil {
+			return ip.String()
+		}
+	}
+
+	return ""
 }

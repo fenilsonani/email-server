@@ -34,14 +34,14 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// POST - handle login
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "Bad request", http.StatusBadRequest)
+	if err := parseFormWithLimit(w, r, maxUserPortalFormBody); err != nil {
+		http.Error(w, "Bad request", formErrorStatus(err))
 		return
 	}
 
-	email := strings.TrimSpace(r.FormValue("email"))
-	password := r.FormValue("password")
-	clientIP := getClientIP(r)
+	email := strings.TrimSpace(r.PostForm.Get("email"))
+	password := r.PostForm.Get("password")
+	clientIP := s.getClientIP(r)
 
 	// Check rate limiting
 	if s.rateLimiter.IsBlocked(clientIP) {
@@ -118,6 +118,11 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 // handleLogout handles user logout
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
 	if cookie, err := r.Cookie(sessionCookieName); err == nil {
 		s.deleteSession(cookie.Value)
 	}
@@ -198,14 +203,14 @@ func (s *Server) handlePassword(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// POST - handle password change
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "Bad request", http.StatusBadRequest)
+	if err := parseFormWithLimit(w, r, maxUserPortalFormBody); err != nil {
+		http.Error(w, "Bad request", formErrorStatus(err))
 		return
 	}
 
-	currentPassword := r.FormValue("current_password")
-	newPassword := r.FormValue("new_password")
-	confirmPassword := r.FormValue("confirm_password")
+	currentPassword := r.PostForm.Get("current_password")
+	newPassword := r.PostForm.Get("new_password")
+	confirmPassword := r.PostForm.Get("confirm_password")
 
 	// Validate new passwords match
 	if newPassword != confirmPassword {
@@ -253,9 +258,9 @@ func (s *Server) handlePassword(w http.ResponseWriter, r *http.Request) {
 	s.invalidateUserSessions(userID)
 
 	// Audit log
-	clientIP := getClientIP(r)
+	clientIP := s.getClientIP(r)
 	s.auditLogger.Log(r.Context(), user.Email, audit.EventPasswordChange, user.Email, map[string]interface{}{
-		"portal":    "user",
+		"portal":       "user",
 		"self_service": true,
 	}, clientIP)
 
@@ -281,12 +286,12 @@ func (s *Server) handleProfile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// POST - update profile
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "Bad request", http.StatusBadRequest)
+	if err := parseFormWithLimit(w, r, maxUserPortalFormBody); err != nil {
+		http.Error(w, "Bad request", formErrorStatus(err))
 		return
 	}
 
-	displayName := strings.TrimSpace(r.FormValue("display_name"))
+	displayName := strings.TrimSpace(r.PostForm.Get("display_name"))
 	if len(displayName) > 255 {
 		displayName = displayName[:255]
 	}
@@ -344,14 +349,14 @@ func (s *Server) handleForwarding(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// POST - update forwarding
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "Bad request", http.StatusBadRequest)
+	if err := parseFormWithLimit(w, r, maxUserPortalFormBody); err != nil {
+		http.Error(w, "Bad request", formErrorStatus(err))
 		return
 	}
 
-	newForwardTo := strings.TrimSpace(r.FormValue("forward_to"))
-	newKeepCopy := r.FormValue("keep_copy") == "on"
-	newIsActive := r.FormValue("is_active") == "on"
+	newForwardTo := strings.TrimSpace(r.PostForm.Get("forward_to"))
+	newKeepCopy := r.PostForm.Get("keep_copy") == "on"
+	newIsActive := r.PostForm.Get("is_active") == "on"
 
 	// Validate email if forwarding is active
 	if newIsActive && newForwardTo == "" {
@@ -436,16 +441,16 @@ func (s *Server) handleVacation(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// POST - update vacation settings
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "Bad request", http.StatusBadRequest)
+	if err := parseFormWithLimit(w, r, maxUserPortalFormBody); err != nil {
+		http.Error(w, "Bad request", formErrorStatus(err))
 		return
 	}
 
-	newSubject := strings.TrimSpace(r.FormValue("subject"))
-	newMessage := strings.TrimSpace(r.FormValue("message"))
-	newStartDateStr := r.FormValue("start_date")
-	newEndDateStr := r.FormValue("end_date")
-	newIsActive := r.FormValue("is_active") == "on"
+	newSubject := strings.TrimSpace(r.PostForm.Get("subject"))
+	newMessage := strings.TrimSpace(r.PostForm.Get("message"))
+	newStartDateStr := r.PostForm.Get("start_date")
+	newEndDateStr := r.PostForm.Get("end_date")
+	newIsActive := r.PostForm.Get("is_active") == "on"
 
 	// Parse dates
 	var newStartDate, newEndDate sql.NullTime

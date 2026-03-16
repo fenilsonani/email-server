@@ -2,6 +2,7 @@ package userportal
 
 import (
 	"context"
+	"encoding/hex"
 	"net/http"
 	"strings"
 	"sync"
@@ -67,7 +68,7 @@ func (s *Server) withUserAuth(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		userID, valid := s.validateSession(cookie.Value)
+		userID, valid := s.validateSession(r, cookie.Value)
 		if !valid {
 			clearSessionCookie(w)
 			http.Redirect(w, r, "/account/login", http.StatusSeeOther)
@@ -111,9 +112,17 @@ func getUserID(r *http.Request) int64 {
 
 // CSRF token handling
 var (
-	csrfTokens   = make(map[string]time.Time)
+	csrfTokens   = make(map[string]csrfTokenState)
 	csrfTokensMu sync.RWMutex
 )
+
+const maxCSRFTokens = 10000
+const maxCSRFFormBody = 1 << 20
+
+type csrfTokenState struct {
+	Expiry  time.Time
+	Binding string
+}
 
 // withCSRF wraps a handler with CSRF protection
 func (s *Server) withCSRF(next http.HandlerFunc) http.HandlerFunc {
@@ -123,7 +132,21 @@ func (s *Server) withCSRF(next http.HandlerFunc) http.HandlerFunc {
 			// Generate token for forms
 			token := generateToken()
 			csrfTokensMu.Lock()
-			csrfTokens[token] = time.Now().Add(1 * time.Hour)
+			if len(csrfTokens) >= maxCSRFTokens {
+				now := time.Now()
+				for existingToken, state := range csrfTokens {
+					if now.After(state.Expiry) || len(csrfTokens) >= maxCSRFTokens {
+						delete(csrfTokens, existingToken)
+						if len(csrfTokens) < maxCSRFTokens*9/10 {
+							break
+						}
+					}
+				}
+			}
+			csrfTokens[token] = csrfTokenState{
+				Expiry:  time.Now().Add(1 * time.Hour),
+				Binding: s.csrfBinding(r),
+			}
 			csrfTokensMu.Unlock()
 
 			w.Header().Set("X-CSRF-Token", token)
@@ -131,22 +154,35 @@ func (s *Server) withCSRF(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		// Validate CSRF token for state-changing requests
-		token := r.FormValue("csrf_token")
+		// Validate CSRF token for state-changing requests.
+		token := r.Header.Get("X-CSRF-Token")
 		if token == "" {
-			token = r.Header.Get("X-CSRF-Token")
+			token = r.URL.Query().Get("csrf_token")
+		}
+		if token == "" && requestHasFormBody(r) {
+			if err := parseFormWithLimit(w, r, maxCSRFFormBody); err != nil {
+				status := formErrorStatus(err)
+				http.Error(w, "Invalid or expired CSRF token", status)
+				return
+			}
+			token = r.PostForm.Get("csrf_token")
 		}
 
-		if len(token) != 64 {
+		if !isValidCSRFToken(token) {
 			http.Error(w, "Invalid or expired CSRF token", http.StatusForbidden)
 			return
 		}
 
 		csrfTokensMu.RLock()
-		expiry, exists := csrfTokens[token]
+		state, exists := csrfTokens[token]
 		csrfTokensMu.RUnlock()
 
-		if !exists || time.Now().After(expiry) {
+		if !exists || time.Now().After(state.Expiry) {
+			http.Error(w, "Invalid or expired CSRF token", http.StatusForbidden)
+			return
+		}
+
+		if state.Binding != s.csrfBinding(r) {
 			http.Error(w, "Invalid or expired CSRF token", http.StatusForbidden)
 			return
 		}
@@ -156,6 +192,29 @@ func (s *Server) withCSRF(next http.HandlerFunc) http.HandlerFunc {
 
 		next(w, r)
 	}
+}
+
+func requestHasFormBody(r *http.Request) bool {
+	contentType := r.Header.Get("Content-Type")
+	return strings.HasPrefix(contentType, "application/x-www-form-urlencoded") ||
+		strings.HasPrefix(contentType, "multipart/form-data") ||
+		strings.HasPrefix(contentType, "text/plain")
+}
+
+func isValidCSRFToken(token string) bool {
+	if len(token) != 64 {
+		return false
+	}
+
+	_, err := hex.DecodeString(token)
+	return err == nil
+}
+
+func (s *Server) csrfBinding(r *http.Request) string {
+	if cookie, err := r.Cookie(sessionCookieName); err == nil && cookie.Value != "" {
+		return "session:" + cookie.Value
+	}
+	return "client:" + s.getClientIP(r)
 }
 
 // RateLimiter implements login rate limiting

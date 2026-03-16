@@ -61,12 +61,12 @@ type Message struct {
 type Status string
 
 const (
-	StatusPending   Status = "pending"
-	StatusSending   Status = "sending"
-	StatusSent      Status = "sent"
-	StatusFailed    Status = "failed"
-	StatusDeferred  Status = "deferred"
-	StatusBounced   Status = "bounced"
+	StatusPending  Status = "pending"
+	StatusSending  Status = "sending"
+	StatusSent     Status = "sent"
+	StatusFailed   Status = "failed"
+	StatusDeferred Status = "deferred"
+	StatusBounced  Status = "bounced"
 )
 
 // Config configures the Redis queue.
@@ -152,6 +152,9 @@ func NewRedisQueue(cfg Config) (*RedisQueue, error) {
 	}
 	if cfg.MinIdleConns == 0 {
 		cfg.MinIdleConns = 5
+	}
+	if cfg.RetryMaxAge == 0 {
+		cfg.RetryMaxAge = 7 * 24 * time.Hour
 	}
 	if cfg.DialTimeout == 0 {
 		cfg.DialTimeout = 5 * time.Second
@@ -265,22 +268,22 @@ func createSentinelClient(cfg Config) *redis.Client {
 	}
 
 	opts := &redis.FailoverOptions{
-		MasterName:       cfg.SentinelMaster,
-		SentinelAddrs:    cfg.SentinelAddrs,
-		Password:         cfg.Password,
-		DB:               cfg.DB,
-		MaxRetries:       3,
-		MinRetryBackoff:  100 * time.Millisecond,
-		MaxRetryBackoff:  1 * time.Second,
-		DialTimeout:      cfg.DialTimeout,
-		ReadTimeout:      cfg.ReadTimeout,
-		WriteTimeout:     cfg.WriteTimeout,
-		PoolSize:         cfg.PoolSize,
-		MinIdleConns:     cfg.MinIdleConns,
-		MaxIdleConns:     cfg.PoolSize,
-		ConnMaxIdleTime:  5 * time.Minute,
-		ConnMaxLifetime:  30 * time.Minute,
-		PoolTimeout:      cfg.DialTimeout,
+		MasterName:      cfg.SentinelMaster,
+		SentinelAddrs:   cfg.SentinelAddrs,
+		Password:        cfg.Password,
+		DB:              cfg.DB,
+		MaxRetries:      3,
+		MinRetryBackoff: 100 * time.Millisecond,
+		MaxRetryBackoff: 1 * time.Second,
+		DialTimeout:     cfg.DialTimeout,
+		ReadTimeout:     cfg.ReadTimeout,
+		WriteTimeout:    cfg.WriteTimeout,
+		PoolSize:        cfg.PoolSize,
+		MinIdleConns:    cfg.MinIdleConns,
+		MaxIdleConns:    cfg.PoolSize,
+		ConnMaxIdleTime: 5 * time.Minute,
+		ConnMaxLifetime: 30 * time.Minute,
+		PoolTimeout:     cfg.DialTimeout,
 	}
 
 	return redis.NewFailoverClient(opts)
@@ -659,7 +662,7 @@ func (q *RedisQueue) Retry(ctx context.Context, msgID string, lastError error) e
 
 	pipe := q.client.TxPipeline()
 	pipe.SRem(ctx, q.processingKey(), msgID)
-	pipe.ZAdd(ctx, q.pendingKey(), redis.Z{
+	pipe.ZAdd(ctx, q.pendingKeyForPriority(msg.Priority), redis.Z{
 		Score:  float64(msg.NextAttempt.UnixNano()),
 		Member: msgID,
 	})

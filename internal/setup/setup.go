@@ -8,12 +8,15 @@ import (
 	"encoding/pem"
 	"fmt"
 	"net"
+	"net/mail"
 	"os"
 	"os/exec"
 	"os/user"
+	"path/filepath"
 	"strconv"
 	"strings"
 
+	"github.com/fenilsonani/email-server/internal/validation"
 	"golang.org/x/crypto/bcrypt"
 	"gopkg.in/yaml.v3"
 )
@@ -123,6 +126,10 @@ func RunSetupWithOptions(force bool) error {
 	}
 	cfg.TLSEmail = tlsEmail
 
+	if err := validateSetupConfig(cfg); err != nil {
+		return err
+	}
+
 	fmt.Println("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	fmt.Println("Configuration Summary:")
 	fmt.Printf("  Domain:    %s\n", cfg.Domain)
@@ -183,7 +190,7 @@ func createSystemUser(cfg *SetupConfig) error {
 		return nil // User already exists
 	}
 
-	cmd := exec.Command("useradd", "--system", "--home-dir", cfg.DataDir, "--shell", "/usr/sbin/nologin", "mailserver")
+	cmd := exec.Command("useradd", "--system", "--home-dir", cfg.DataDir, "--shell", "/usr/sbin/nologin", "mailserver") // #nosec G204 -- arguments validated and exec.Command does not invoke a shell
 	return cmd.Run()
 }
 
@@ -336,7 +343,7 @@ func verifyDKIM(cfg *SetupConfig) error {
 
 func initDatabase(cfg *SetupConfig) error {
 	// Run migrations
-	cmd := exec.Command("mailserver", "migrate", "--config", cfg.ConfigDir+"/config.yaml")
+	cmd := exec.Command("mailserver", "migrate", "--config", cfg.ConfigDir+"/config.yaml") // #nosec G204 -- config path validated and exec.Command does not invoke a shell
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
@@ -357,11 +364,11 @@ func createAdminUser(cfg *SetupConfig) error {
 
 	// Use mailserver CLI to add domain and user
 	// First add domain
-	cmd := exec.Command("mailserver", "domain", "add", cfg.Domain, "--config", cfg.ConfigDir+"/config.yaml")
-	cmd.Run() // Ignore error if domain already exists
+	cmd := exec.Command("mailserver", "domain", "add", cfg.Domain, "--config", cfg.ConfigDir+"/config.yaml") // #nosec G204 -- setup inputs validated and exec.Command does not invoke a shell
+	cmd.Run()                                                                                                // Ignore error if domain already exists
 
 	// Add user
-	cmd = exec.Command("mailserver", "user", "add", cfg.AdminEmail, "--password-hash", string(hash), "--admin", "--config", cfg.ConfigDir+"/config.yaml")
+	cmd = exec.Command("mailserver", "user", "add", cfg.AdminEmail, "--password-hash", string(hash), "--admin", "--config", cfg.ConfigDir+"/config.yaml") // #nosec G204 -- setup inputs validated and exec.Command does not invoke a shell
 	return cmd.Run()
 }
 
@@ -403,12 +410,12 @@ WantedBy=multi-user.target
 		return err
 	}
 
-	cmd := exec.Command("systemctl", "daemon-reload")
+	cmd := exec.Command("systemctl", "daemon-reload") // #nosec G204 -- static command without shell
 	if err := cmd.Run(); err != nil {
 		return err
 	}
 
-	cmd = exec.Command("systemctl", "enable", "mailserver")
+	cmd = exec.Command("systemctl", "enable", "mailserver") // #nosec G204 -- static command without shell
 	return cmd.Run()
 }
 
@@ -418,7 +425,7 @@ func verifySystemd(cfg *SetupConfig) error {
 }
 
 func startService(cfg *SetupConfig) error {
-	cmd := exec.Command("systemctl", "start", "mailserver")
+	cmd := exec.Command("systemctl", "start", "mailserver") // #nosec G204 -- static command without shell
 	return cmd.Run()
 }
 
@@ -485,4 +492,40 @@ func getServerIP() string {
 
 	localAddr := conn.LocalAddr().(*net.UDPAddr)
 	return localAddr.IP.String()
+}
+
+func validateSetupConfig(cfg *SetupConfig) error {
+	if cfg == nil {
+		return fmt.Errorf("setup config is required")
+	}
+	if err := validation.Domain(cfg.Domain); err != nil {
+		return fmt.Errorf("invalid domain: %w", err)
+	}
+	if err := validation.Domain(cfg.Hostname); err != nil {
+		return fmt.Errorf("invalid hostname: %w", err)
+	}
+	if _, err := mail.ParseAddress(cfg.AdminEmail); err != nil {
+		return fmt.Errorf("invalid admin email: %w", err)
+	}
+	if _, err := mail.ParseAddress(cfg.TLSEmail); err != nil {
+		return fmt.Errorf("invalid TLS email: %w", err)
+	}
+	if _, err := validateSetupPath(cfg.DataDir, "data directory"); err != nil {
+		return err
+	}
+	if _, err := validateSetupPath(cfg.ConfigDir, "config directory"); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateSetupPath(pathValue, field string) (string, error) {
+	cleanPath := filepath.Clean(strings.TrimSpace(pathValue))
+	if cleanPath == "." || cleanPath == "" {
+		return "", fmt.Errorf("%s is required", field)
+	}
+	if !filepath.IsAbs(cleanPath) {
+		return "", fmt.Errorf("%s must be absolute", field)
+	}
+	return cleanPath, nil
 }

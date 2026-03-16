@@ -18,7 +18,7 @@ import (
 
 // Default connection limits and keepalive settings for IMAP
 const (
-	defaultIMAPMaxConnections = 2000
+	defaultIMAPMaxConnections      = 2000
 	defaultIMAPMaxConnectionsPerIP = 100
 )
 
@@ -142,7 +142,6 @@ func enableTCPKeepalive(conn net.Conn, period time.Duration) {
 		}
 	}
 }
-
 
 // Maximum number of mailbox trackers to cache (prevents unbounded memory growth)
 const maxTrackerCacheSize = 5000
@@ -363,7 +362,7 @@ func (s *Server) NotifyMailboxUpdate(mailboxID int64) {
 	}
 
 	log.Printf("IMAP v2: Notifying IDLE clients of mailbox update (messages: %d)", stats.Messages)
-	entry.tracker.QueueNumMessages(uint32(stats.Messages))
+	entry.tracker.QueueNumMessages(safeMessageCount(stats.Messages))
 }
 
 // NotifyMailboxUpdateByName notifies by username and mailbox name

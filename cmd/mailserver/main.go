@@ -22,16 +22,16 @@ import (
 	"github.com/fenilsonani/email-server/internal/config"
 	"github.com/fenilsonani/email-server/internal/dav"
 	"github.com/fenilsonani/email-server/internal/dns"
+	"github.com/fenilsonani/email-server/internal/doctor"
 	"github.com/fenilsonani/email-server/internal/features"
 	"github.com/fenilsonani/email-server/internal/health"
 	imapserver "github.com/fenilsonani/email-server/internal/imap"
 	"github.com/fenilsonani/email-server/internal/lists"
 	"github.com/fenilsonani/email-server/internal/logging"
 	"github.com/fenilsonani/email-server/internal/metrics"
-	"github.com/fenilsonani/email-server/internal/org"
 	"github.com/fenilsonani/email-server/internal/migration"
+	"github.com/fenilsonani/email-server/internal/org"
 	"github.com/fenilsonani/email-server/internal/queue"
-	"github.com/fenilsonani/email-server/internal/doctor"
 	"github.com/fenilsonani/email-server/internal/recovery"
 	"github.com/fenilsonani/email-server/internal/search"
 	searchbleve "github.com/fenilsonani/email-server/internal/search/bleve"
@@ -499,6 +499,9 @@ var serveCmd = &cobra.Command{
 			VerifyTLS:      cfg.Delivery.VerifyTLS,
 			RelayHost:      cfg.Delivery.RelayHost,
 			QueuePath:      queuePath,
+			MTASTSEnabled:  cfg.Delivery.MTASTSEnabled,
+			DANEEnabled:    cfg.Delivery.DANEEnabled,
+			DANEDNSServer:  cfg.Delivery.DANEDNSServer,
 		}, redisQueue, dkimPool, logger, db.RawDB(),
 			delivery.WithTracer(tracer),
 			delivery.WithDomainStats(domainStats),
@@ -2395,6 +2398,14 @@ Example:
 			return err
 		}
 
+		if err := validateRemoteServer(remoteServer); err != nil {
+			return err
+		}
+		remotePath, err := validateRemotePath(remotePath)
+		if err != nil {
+			return err
+		}
+
 		fmt.Println("=== Mail Server Export ===")
 		fmt.Printf("Destination: %s:%s\n\n", remoteServer, remotePath)
 
@@ -2448,7 +2459,7 @@ Example:
 
 		// Transfer to remote server
 		fmt.Println("Step 2: Transferring to remote server...")
-		scpCmd := exec.Command("scp", tempPath, fmt.Sprintf("%s:%s/backup.tar.gz", remoteServer, remotePath))
+		scpCmd := exec.Command("scp", tempPath, fmt.Sprintf("%s:%s/backup.tar.gz", remoteServer, remotePath)) // #nosec G204 -- remote host/path validated and no shell is used
 		scpCmd.Stdout = os.Stdout
 		scpCmd.Stderr = os.Stderr
 		if err := scpCmd.Run(); err != nil {
@@ -2458,8 +2469,11 @@ Example:
 
 		// Extract on remote server
 		fmt.Println("Step 3: Extracting on remote server...")
-		sshCmd := exec.Command("ssh", remoteServer,
-			fmt.Sprintf("cd %s && tar -xzf backup.tar.gz && rm backup.tar.gz && echo 'Extraction complete'", remotePath))
+		remoteCommand := fmt.Sprintf(
+			"cd %s && tar -xzf backup.tar.gz && rm backup.tar.gz && echo 'Extraction complete'",
+			shellQuote(remotePath),
+		)
+		sshCmd := exec.Command("ssh", remoteServer, remoteCommand) // #nosec G204 -- remote host/path validated and shell arguments quoted
 		sshCmd.Stdout = os.Stdout
 		sshCmd.Stderr = os.Stderr
 		if err := sshCmd.Run(); err != nil {
@@ -2595,11 +2609,22 @@ func extractTarGz(archivePath, destDir string) error {
 			return err
 		}
 
-		targetPath := filepath.Join(destDir, header.Name)
+		if header.Size < 0 {
+			return fmt.Errorf("invalid archive entry size for %q", header.Name)
+		}
+
+		targetPath, err := safeExtractPath(destDir, header.Name)
+		if err != nil {
+			return err
+		}
 
 		switch header.Typeflag {
 		case tar.TypeDir:
-			if err := os.MkdirAll(targetPath, os.FileMode(header.Mode)); err != nil {
+			mode, err := safeTarFileMode(header.Mode)
+			if err != nil {
+				return err
+			}
+			if err := os.MkdirAll(targetPath, mode); err != nil {
 				return err
 			}
 		case tar.TypeReg:
@@ -2610,16 +2635,50 @@ func extractTarGz(archivePath, destDir string) error {
 			if err != nil {
 				return err
 			}
-			if _, err := io.Copy(outFile, tarReader); err != nil {
+			if _, err := io.CopyN(outFile, tarReader, header.Size); err != nil {
 				outFile.Close()
 				return err
 			}
-			outFile.Close()
-			os.Chmod(targetPath, os.FileMode(header.Mode))
+			if err := outFile.Close(); err != nil {
+				return err
+			}
+			mode, err := safeTarFileMode(header.Mode)
+			if err != nil {
+				return err
+			}
+			if err := os.Chmod(targetPath, mode); err != nil {
+				return err
+			}
 		}
 	}
 
 	return nil
+}
+
+func safeExtractPath(destDir, headerName string) (string, error) {
+	cleanName := filepath.Clean(headerName)
+	if cleanName == "." || cleanName == "" {
+		return "", fmt.Errorf("invalid archive entry path %q", headerName)
+	}
+	if filepath.IsAbs(cleanName) {
+		return "", fmt.Errorf("archive entry %q uses absolute path", headerName)
+	}
+
+	destRoot, err := filepath.Abs(destDir)
+	if err != nil {
+		return "", err
+	}
+
+	targetPath := filepath.Join(destRoot, cleanName)
+	relPath, err := filepath.Rel(destRoot, targetPath)
+	if err != nil {
+		return "", err
+	}
+	if relPath == ".." || strings.HasPrefix(relPath, ".."+string(os.PathSeparator)) {
+		return "", fmt.Errorf("archive entry %q escapes destination", headerName)
+	}
+
+	return targetPath, nil
 }
 
 func formatBytes(b int64) string {
@@ -3638,5 +3697,5 @@ func splitEmail(email string) []string {
 
 func generateUIDValidity() uint32 {
 	// Use current unix timestamp as UID validity
-	return uint32(os.Getpid()) ^ uint32(0x12345678)
+	return generateProcessUIDValidity()
 }

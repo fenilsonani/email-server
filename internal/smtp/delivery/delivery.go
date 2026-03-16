@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
-	"crypto/x509"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -795,37 +794,7 @@ func (e *Engine) deliverToHostWithTLS(ctx context.Context, addr, hostname string
 			// If we have DANE/TLSA records, use custom certificate verification
 			if len(tlsaRecords) > 0 {
 				tlsConfig.InsecureSkipVerify = true // We'll verify manually with DANE
-				tlsConfig.VerifyPeerCertificate = func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
-					if len(rawCerts) == 0 {
-						return fmt.Errorf("no certificates presented")
-					}
-
-					// Parse the certificate chain
-					var chain []*x509.Certificate
-					for _, rawCert := range rawCerts {
-						cert, err := x509.ParseCertificate(rawCert)
-						if err != nil {
-							continue
-						}
-						chain = append(chain, cert)
-					}
-
-					if len(chain) == 0 {
-						return fmt.Errorf("failed to parse any certificates")
-					}
-
-					// Validate with DANE
-					result := ValidateCertificate(chain[0], chain[1:], tlsaRecords)
-					if !result.Valid {
-						return fmt.Errorf("DANE validation failed: %w", result.Error)
-					}
-
-					e.logger.DebugContext(ctx, "DANE validation passed",
-						"host", hostname,
-						"usage", result.UsedRecord.Usage.String(),
-					)
-					return nil
-				}
+				tlsConfig.VerifyConnection = e.daneVerifyConnection(ctx, hostname, tlsaRecords)
 			} else {
 				// No DANE, use standard verification
 				tlsConfig.InsecureSkipVerify = !e.config.VerifyTLS
@@ -914,6 +883,25 @@ func (e *Engine) deliverToHostWithTLS(ctx context.Context, addr, hostname string
 	}
 
 	return nil
+}
+
+func (e *Engine) daneVerifyConnection(ctx context.Context, hostname string, tlsaRecords []TLSARecord) func(tls.ConnectionState) error {
+	return func(cs tls.ConnectionState) error {
+		if len(cs.PeerCertificates) == 0 {
+			return fmt.Errorf("no certificates presented")
+		}
+
+		result := ValidateCertificate(cs.PeerCertificates[0], cs.PeerCertificates[1:], tlsaRecords)
+		if !result.Valid {
+			return fmt.Errorf("DANE validation failed: %w", result.Error)
+		}
+
+		e.logger.DebugContext(ctx, "DANE validation passed",
+			"host", hostname,
+			"usage", result.UsedRecord.Usage.String(),
+		)
+		return nil
+	}
 }
 
 // recoveryWorker periodically recovers stale messages.

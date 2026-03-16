@@ -623,14 +623,14 @@ func (s *Server) handleAPIListCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	list := &lists.MailingList{
-		DomainID:      domainID,
-		LocalPart:     localPart,
-		ListAddress:   localPart + "@" + domainName,
-		Name:          req.Name,
-		Description:   req.Description,
-		ListType:      lists.ListTypeDiscussion,
-		PostingPolicy: lists.PostingMembersOnly,
-		IsActive:      true,
+		DomainID:       domainID,
+		LocalPart:      localPart,
+		ListAddress:    localPart + "@" + domainName,
+		Name:           req.Name,
+		Description:    req.Description,
+		ListType:       lists.ListTypeDiscussion,
+		PostingPolicy:  lists.PostingMembersOnly,
+		IsActive:       true,
 		MaxMessageSize: 10 * 1024 * 1024,
 		MaxMembers:     10000,
 	}
@@ -1424,8 +1424,8 @@ func (s *Server) handleAPIRestore(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Parse multipart form (max 500MB)
-	if err := r.ParseMultipartForm(500 << 20); err != nil {
-		s.jsonError(w, http.StatusBadRequest, "Failed to parse form")
+	if err := parseMultipartFormWithLimit(w, r, maxAdminMultipartBody, maxAdminMultipartBody); err != nil {
+		s.jsonError(w, formErrorStatus(err), "Failed to parse form")
 		return
 	}
 
@@ -1950,8 +1950,8 @@ func (s *Server) handleAPIToolsDoctor(w http.ResponseWriter, r *http.Request) {
 		dbOK = false
 	}
 	checks = append(checks, map[string]interface{}{
-		"name":   "database",
-		"status": boolToStatus(dbOK),
+		"name":    "database",
+		"status":  boolToStatus(dbOK),
 		"message": boolToMessage(dbOK, "Database connection OK", "Database connection failed"),
 	})
 
@@ -1966,29 +1966,29 @@ func (s *Server) handleAPIToolsDoctor(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	checks = append(checks, map[string]interface{}{
-		"name":   "queue",
-		"status": boolToStatus(queueOK),
+		"name":    "queue",
+		"status":  boolToStatus(queueOK),
 		"message": boolToMessage(queueOK, "Queue connection OK", "Queue not available"),
 	})
 
 	// Check features store
 	checks = append(checks, map[string]interface{}{
-		"name":   "features",
-		"status": boolToStatus(s.featuresStore != nil),
+		"name":    "features",
+		"status":  boolToStatus(s.featuresStore != nil),
 		"message": boolToMessage(s.featuresStore != nil, "Features store initialized", "Features store not initialized"),
 	})
 
 	// Check lists store
 	checks = append(checks, map[string]interface{}{
-		"name":   "lists",
-		"status": boolToStatus(s.listsStore != nil),
+		"name":    "lists",
+		"status":  boolToStatus(s.listsStore != nil),
 		"message": boolToMessage(s.listsStore != nil, "Lists store initialized", "Lists store not initialized"),
 	})
 
 	// Check sieve store
 	checks = append(checks, map[string]interface{}{
-		"name":   "sieve",
-		"status": boolToStatus(s.sieveStore != nil),
+		"name":    "sieve",
+		"status":  boolToStatus(s.sieveStore != nil),
 		"message": boolToMessage(s.sieveStore != nil, "Sieve store initialized", "Sieve store not initialized"),
 	})
 

@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -24,23 +25,31 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 
 // getClientIP extracts the client IP address from the request
 func getClientIP(r *http.Request) string {
-	ip := r.Header.Get("X-Forwarded-For")
-	if ip != "" {
-		// Take the first IP if there are multiple
-		if idx := strings.Index(ip, ","); idx != -1 {
-			ip = ip[:idx]
+	directIP, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		directIP = r.RemoteAddr
+	}
+
+	if directIP == "127.0.0.1" || directIP == "::1" {
+		if ip := r.Header.Get("X-Forwarded-For"); ip != "" {
+			if idx := strings.Index(ip, ","); idx != -1 {
+				ip = ip[:idx]
+			}
+			if parsed := net.ParseIP(strings.TrimSpace(ip)); parsed != nil {
+				return parsed.String()
+			}
 		}
-		return strings.TrimSpace(ip)
+		if ip := r.Header.Get("X-Real-IP"); ip != "" {
+			if parsed := net.ParseIP(strings.TrimSpace(ip)); parsed != nil {
+				return parsed.String()
+			}
+		}
 	}
-	ip = r.Header.Get("X-Real-IP")
-	if ip != "" {
-		return strings.TrimSpace(ip)
+
+	if parsed := net.ParseIP(directIP); parsed != nil {
+		return parsed.String()
 	}
-	// Default to remote address
-	if idx := strings.LastIndex(r.RemoteAddr, ":"); idx != -1 {
-		return r.RemoteAddr[:idx]
-	}
-	return r.RemoteAddr
+	return directIP
 }
 
 // isAdmin checks if the user making the request is an admin
@@ -78,12 +87,12 @@ func (s *Server) getUsername(r *http.Request) string {
 
 // UpdateStatusResponse represents the current update status
 type UpdateStatusResponse struct {
-	Status          string    `json:"status"`
-	CurrentVersion  string    `json:"current_version"`
-	CurrentCommit   string    `json:"current_commit"`
+	Status          string               `json:"status"`
+	CurrentVersion  string               `json:"current_version"`
+	CurrentCommit   string               `json:"current_commit"`
 	AvailableUpdate *updater.ReleaseInfo `json:"available_update,omitempty"`
-	Mode            string    `json:"mode"`
-	LastCheckTime   *time.Time `json:"last_check_time,omitempty"`
+	Mode            string               `json:"mode"`
+	LastCheckTime   *time.Time           `json:"last_check_time,omitempty"`
 }
 
 // UpdateHistoryEntry represents a single update in history
@@ -104,11 +113,11 @@ type UpdateHistoryEntry struct {
 
 // UpdateProgressResponse represents the progress of an ongoing update
 type UpdateProgressResponse struct {
-	UpdateID  int64                          `json:"update_id"`
-	Status    string                         `json:"status"`
-	Progress  int                            `json:"progress"`
-	Steps     []UpdateProgressStep           `json:"steps"`
-	StartedAt time.Time                      `json:"started_at"`
+	UpdateID  int64                `json:"update_id"`
+	Status    string               `json:"status"`
+	Progress  int                  `json:"progress"`
+	Steps     []UpdateProgressStep `json:"steps"`
+	StartedAt time.Time            `json:"started_at"`
 }
 
 // UpdateProgressStep represents a single step in the update process
@@ -145,11 +154,11 @@ func (s *Server) HandleGetUpdateStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response := UpdateStatusResponse{
-		Status:         "idle",
-		CurrentVersion: currentVersion.Version,
-		CurrentCommit:  currentVersion.Commit,
+		Status:          "idle",
+		CurrentVersion:  currentVersion.Version,
+		CurrentCommit:   currentVersion.Commit,
 		AvailableUpdate: availableUpdate,
-		Mode:           s.config.Updater.Mode,
+		Mode:            s.config.Updater.Mode,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -183,8 +192,8 @@ func (s *Server) HandleStartUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "Invalid form data", http.StatusBadRequest)
+	if err := parseFormWithLimit(w, r, maxAdminFormBody); err != nil {
+		http.Error(w, "Invalid form data", formErrorStatus(err))
 		return
 	}
 
@@ -192,10 +201,10 @@ func (s *Server) HandleStartUpdate(w http.ResponseWriter, r *http.Request) {
 	username := s.getUsername(r)
 
 	// Parse update options
-	targetType := r.FormValue("target_type")
-	target := r.FormValue("target")
-	dryRun := r.FormValue("dry_run") == "true"
-	mode := r.FormValue("mode")
+	targetType := r.PostForm.Get("target_type")
+	target := r.PostForm.Get("target")
+	dryRun := r.PostForm.Get("dry_run") == "true"
+	mode := r.PostForm.Get("mode")
 
 	if mode == "" {
 		mode = s.config.Updater.Mode
@@ -240,13 +249,13 @@ func (s *Server) HandleStartUpdate(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success":           result.Success,
-		"update_id":         result.UpdateID,
-		"from_version":      result.FromVersion,
-		"to_version":        result.ToVersion,
-		"duration":          result.Duration.String(),
-		"steps_completed":   result.StepsCompleted,
-		"backup_path":       result.BackupPath,
+		"success":            result.Success,
+		"update_id":          result.UpdateID,
+		"from_version":       result.FromVersion,
+		"to_version":         result.ToVersion,
+		"duration":           result.Duration.String(),
+		"steps_completed":    result.StepsCompleted,
+		"backup_path":        result.BackupPath,
 		"rollback_available": result.RollbackAvailable,
 	})
 }
@@ -412,12 +421,12 @@ func (s *Server) HandleGetUpdateSettings(w http.ResponseWriter, r *http.Request)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"mode":                    s.config.Updater.Mode,
-		"auto_check_enabled":      s.config.Updater.AutoCheckEnabled,
-		"auto_check_interval":     s.config.Updater.AutoCheckInterval,
-		"backup_before_update":    s.config.Updater.BackupBeforeUpdate,
-		"max_backups":             s.config.Updater.MaxBackups,
-		"require_health_check":    s.config.Updater.RequireHealthCheck,
+		"mode":                     s.config.Updater.Mode,
+		"auto_check_enabled":       s.config.Updater.AutoCheckEnabled,
+		"auto_check_interval":      s.config.Updater.AutoCheckInterval,
+		"backup_before_update":     s.config.Updater.BackupBeforeUpdate,
+		"max_backups":              s.config.Updater.MaxBackups,
+		"require_health_check":     s.config.Updater.RequireHealthCheck,
 		"auto_rollback_on_failure": s.config.Updater.AutoRollbackOnFailure,
 	})
 }
@@ -429,15 +438,15 @@ func (s *Server) HandleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "Invalid form data", http.StatusBadRequest)
+	if err := parseFormWithLimit(w, r, maxAdminFormBody); err != nil {
+		http.Error(w, "Invalid form data", formErrorStatus(err))
 		return
 	}
 
 	username := s.getUsername(r)
 
 	// Update settings (in production, would save to database)
-	mode := r.FormValue("mode")
+	mode := r.PostForm.Get("mode")
 	if mode != "" && (mode == "normal" || mode == "power") {
 		s.config.Updater.Mode = mode
 		s.auditLogger.Log(r.Context(), username, audit.EventConfigChange, "system_update_settings", map[string]interface{}{

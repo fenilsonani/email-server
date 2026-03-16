@@ -28,6 +28,12 @@ func NewDeployManager(cfg *config.UpdaterConfig, logger *logging.Logger) *Deploy
 
 // Deploy replaces the existing binary and restarts the service
 func (dm *DeployManager) Deploy(ctx context.Context, newBinaryPath string) error {
+	if err := validateUpdaterConfig(dm.config); err != nil {
+		return err
+	}
+	if _, err := validateAbsolutePath(newBinaryPath, "new binary path"); err != nil {
+		return err
+	}
 	targetPath := dm.config.BinaryPath
 
 	// Verify the new binary is valid
@@ -77,13 +83,19 @@ func (dm *DeployManager) copyBinary(src, dst string) error {
 	}
 
 	// Read the new binary
-	srcData, err := os.ReadFile(src)
+	if _, err := validateAbsolutePath(src, "source binary"); err != nil {
+		return err
+	}
+	if _, err := validateAbsolutePath(dst, "target binary"); err != nil {
+		return err
+	}
+	srcData, err := os.ReadFile(src) // #nosec G304 -- source binary path validated as absolute
 	if err != nil {
 		return fmt.Errorf("failed to read source binary: %w", err)
 	}
 
 	// Write to the target location
-	if err := os.WriteFile(dst, srcData, 0755); err != nil {
+	if err := os.WriteFile(dst, srcData, 0750); err != nil {
 		return fmt.Errorf("failed to write target binary: %w", err)
 	}
 
@@ -95,7 +107,7 @@ func (dm *DeployManager) copyBinary(src, dst string) error {
 func (dm *DeployManager) restartService(ctx context.Context) error {
 	dm.logger.Info("Restarting service", "service", dm.config.SystemdService)
 
-	cmd := exec.CommandContext(ctx, "systemctl", "restart", dm.config.SystemdService)
+	cmd := exec.CommandContext(ctx, "systemctl", "restart", dm.config.SystemdService) // #nosec G204 -- service name validated and no shell is used
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("systemctl restart failed: %w, output: %s", err, string(output))
@@ -108,7 +120,7 @@ func (dm *DeployManager) restartService(ctx context.Context) error {
 func (dm *DeployManager) stopService(ctx context.Context) error {
 	dm.logger.Info("Stopping service", "service", dm.config.SystemdService)
 
-	cmd := exec.CommandContext(ctx, "systemctl", "stop", dm.config.SystemdService)
+	cmd := exec.CommandContext(ctx, "systemctl", "stop", dm.config.SystemdService) // #nosec G204 -- service name validated and no shell is used
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("systemctl stop failed: %w, output: %s", err, string(output))
@@ -121,7 +133,7 @@ func (dm *DeployManager) stopService(ctx context.Context) error {
 func (dm *DeployManager) verifyService(ctx context.Context) error {
 	dm.logger.Info("Verifying service status", "service", dm.config.SystemdService)
 
-	cmd := exec.CommandContext(ctx, "systemctl", "is-active", dm.config.SystemdService)
+	cmd := exec.CommandContext(ctx, "systemctl", "is-active", dm.config.SystemdService) // #nosec G204 -- service name validated and no shell is used
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("service is not active: %w, output: %s", err, string(output))
@@ -132,7 +144,10 @@ func (dm *DeployManager) verifyService(ctx context.Context) error {
 
 // GetServiceStatus returns the current service status
 func (dm *DeployManager) GetServiceStatus(ctx context.Context) (string, error) {
-	cmd := exec.CommandContext(ctx, "systemctl", "show", "-p", "ActiveState", "--value", dm.config.SystemdService)
+	if err := validateUpdaterConfig(dm.config); err != nil {
+		return "", err
+	}
+	cmd := exec.CommandContext(ctx, "systemctl", "show", "-p", "ActiveState", "--value", dm.config.SystemdService) // #nosec G204 -- service name validated and no shell is used
 	output, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("failed to get service status: %w", err)
@@ -159,12 +174,12 @@ func (dm *DeployManager) Rollback(ctx context.Context) error {
 	}
 
 	// Restore the backup
-	backupData, err := os.ReadFile(backupPath)
+	backupData, err := os.ReadFile(backupPath) // #nosec G304 -- backup path derived from validated binary path
 	if err != nil {
 		return fmt.Errorf("failed to read backup: %w", err)
 	}
 
-	if err := os.WriteFile(targetPath, backupData, 0755); err != nil {
+	if err := os.WriteFile(targetPath, backupData, 0750); err != nil {
 		return fmt.Errorf("failed to restore binary: %w", err)
 	}
 
@@ -182,18 +197,23 @@ func (dm *DeployManager) CopyBinaryForBackup(ctx context.Context, backupPath str
 	sourcePath := dm.config.BinaryPath
 
 	// Ensure backup directory exists
-	if err := os.MkdirAll(filepath.Dir(backupPath), 0755); err != nil {
+	buildPath := filepath.Clean(dm.config.BuildPath)
+	backupRoot := filepath.Join(buildPath, "backups")
+	if _, err := ensurePathWithinBase(backupRoot, backupPath, "backup path"); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(backupPath), 0750); err != nil {
 		return fmt.Errorf("failed to create backup directory: %w", err)
 	}
 
 	// Read the current binary
-	data, err := os.ReadFile(sourcePath)
+	data, err := os.ReadFile(sourcePath) // #nosec G304 -- source binary path validated by updater config
 	if err != nil {
 		return fmt.Errorf("failed to read source binary: %w", err)
 	}
 
 	// Write the backup
-	if err := os.WriteFile(backupPath, data, 0755); err != nil {
+	if err := os.WriteFile(backupPath, data, 0750); err != nil {
 		return fmt.Errorf("failed to write backup: %w", err)
 	}
 

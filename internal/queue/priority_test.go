@@ -277,11 +277,11 @@ func TestPriorityKeys(t *testing.T) {
 
 	// Create a minimal queue just to test key generation
 	q := &RedisQueue{
-		config:               cfg,
-		cachedPendingKey:     cfg.Prefix + ":queue:pending",
-		cachedPendingKeyHigh: cfg.Prefix + ":queue:pending:high",
+		config:                 cfg,
+		cachedPendingKey:       cfg.Prefix + ":queue:pending",
+		cachedPendingKeyHigh:   cfg.Prefix + ":queue:pending:high",
 		cachedPendingKeyNormal: cfg.Prefix + ":queue:pending:normal",
-		cachedPendingKeyLow: cfg.Prefix + ":queue:pending:low",
+		cachedPendingKeyLow:    cfg.Prefix + ":queue:pending:low",
 	}
 
 	if key := q.pendingKeyForPriority(PriorityHigh); key != "test:queue:pending:high" {
@@ -296,5 +296,65 @@ func TestPriorityKeys(t *testing.T) {
 	// Empty string should default to normal
 	if key := q.pendingKeyForPriority(""); key != "test:queue:pending:normal" {
 		t.Errorf("Empty priority key = %s, want test:queue:pending:normal", key)
+	}
+}
+
+func TestPriorityQueue_RetryPreservesPriority(t *testing.T) {
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("Failed to start miniredis: %v", err)
+	}
+	defer mr.Close()
+
+	cfg := Config{
+		RedisURL:   "redis://" + mr.Addr(),
+		Prefix:     "test",
+		MaxRetries: 3,
+	}
+
+	q, err := NewRedisQueue(cfg)
+	if err != nil {
+		t.Fatalf("Failed to create queue: %v", err)
+	}
+	defer q.Close()
+
+	ctx := context.Background()
+
+	msg := &Message{
+		ID:          "msg-high-retry",
+		Sender:      "sender@example.com",
+		Priority:    PriorityHigh,
+		NextAttempt: time.Now().Add(-time.Minute),
+	}
+	if err := q.Enqueue(ctx, msg); err != nil {
+		t.Fatalf("Failed to enqueue: %v", err)
+	}
+
+	dequeued, err := q.Dequeue(ctx)
+	if err != nil {
+		t.Fatalf("Dequeue failed: %v", err)
+	}
+
+	if err := q.Retry(ctx, dequeued.ID, context.DeadlineExceeded); err != nil {
+		t.Fatalf("Retry failed: %v", err)
+	}
+
+	stats, err := q.Stats(ctx)
+	if err != nil {
+		t.Fatalf("Stats failed: %v", err)
+	}
+
+	if stats.PendingHigh != 1 {
+		t.Fatalf("PendingHigh = %d, want 1", stats.PendingHigh)
+	}
+	if stats.Pending != 1 {
+		t.Fatalf("Pending = %d, want 1", stats.Pending)
+	}
+
+	if got := q.client.ZCard(ctx, "test:queue:pending:high").Val(); got != 1 {
+		t.Fatalf("high priority retry queue length = %d, want 1", got)
+	}
+	if got := q.client.ZCard(ctx, "test:queue:pending").Val(); got != 0 {
+		t.Fatalf("legacy retry queue length = %d, want 0", got)
 	}
 }
