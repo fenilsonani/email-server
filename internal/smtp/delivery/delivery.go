@@ -1065,7 +1065,7 @@ func (e *Engine) warmupCircuitBreakers() {
 		// Order by most recent first so we can count consecutive trailing failures.
 		rows, err := e.db.QueryContext(e.ctx, `
 			SELECT status FROM (
-				SELECT status, MAX(created_at) as latest
+				SELECT MAX(status) as status, MAX(created_at) as latest
 				FROM delivery_log
 				WHERE domain = ? AND created_at > ?
 				GROUP BY message_id, attempt_number
