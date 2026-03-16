@@ -1022,6 +1022,11 @@ func (e *Engine) recoveryWorker() {
 // warmupCircuitBreakers checks delivery_log for domains with recent consecutive
 // failures and pre-opens their circuit breakers. This prevents the server from
 // hammering known-broken MX servers immediately after a restart.
+//
+// The live breaker opens after 5 consecutive failures and resets its failure
+// count on any success. To reconstruct this, we look at the most recent
+// delivery attempts per domain (deduplicated by message_id+attempt_number to
+// avoid per-recipient row inflation) and count consecutive trailing failures.
 func (e *Engine) warmupCircuitBreakers() {
 	if e.db == nil {
 		return
@@ -1029,56 +1034,71 @@ func (e *Engine) warmupCircuitBreakers() {
 
 	oneHourAgo := time.Now().Add(-1 * time.Hour)
 
-	// Find domains where 5+ distinct delivery attempts failed within the last hour.
-	// Count by message_id to avoid inflating counts from per-recipient log rows.
-	// Include 'deferred' alongside 'rejected'/'bounced' since temporary failures
-	// (timeouts, 4xx) also trip the circuit breaker during normal operation.
-	rows, err := e.db.QueryContext(e.ctx, `
-		SELECT domain, COUNT(DISTINCT message_id) as fail_count
-		FROM delivery_log
+	// Get all domains with any recent failure activity
+	domainRows, err := e.db.QueryContext(e.ctx, `
+		SELECT DISTINCT domain FROM delivery_log
 		WHERE status IN ('rejected', 'bounced', 'deferred')
 		  AND domain IS NOT NULL
 		  AND created_at > ?
-		GROUP BY domain
-		HAVING COUNT(DISTINCT message_id) >= 5
 	`, oneHourAgo)
 	if err != nil {
 		e.logger.Warn("Failed to query delivery_log for circuit breaker warmup",
 			"error", err.Error())
 		return
 	}
-	defer rows.Close()
+
+	var domains []string
+	for domainRows.Next() {
+		var d string
+		if domainRows.Scan(&d) == nil {
+			domains = append(domains, d)
+		}
+	}
+	domainRows.Close()
 
 	warmed := 0
-	for rows.Next() {
-		var domain string
-		var failCount int
-		if err := rows.Scan(&domain, &failCount); err != nil {
+	for _, domain := range domains {
+		// Get the most recent delivery attempts for this domain, deduplicated
+		// by (message_id, attempt_number) to avoid per-recipient inflation.
+		// Order by most recent first so we can count consecutive trailing failures.
+		rows, err := e.db.QueryContext(e.ctx, `
+			SELECT status FROM (
+				SELECT status, MAX(created_at) as latest
+				FROM delivery_log
+				WHERE domain = ? AND created_at > ?
+				GROUP BY message_id, attempt_number
+				ORDER BY latest DESC
+				LIMIT 10
+			)
+		`, domain, oneHourAgo)
+		if err != nil {
+			e.logger.Debug("Failed to check recent attempts for domain",
+				"domain", domain, "error", err.Error())
 			continue
 		}
 
-		// Check that there are no recent successes that would indicate recovery
-		var successCount int
-		if err := e.db.QueryRowContext(e.ctx, `
-			SELECT COUNT(*) FROM delivery_log
-			WHERE domain = ? AND status = 'delivered'
-			  AND created_at > ?
-		`, domain, oneHourAgo).Scan(&successCount); err != nil {
-			e.logger.Debug("Failed to check recent successes for domain",
-				"domain", domain, "error", err.Error())
+		// Count consecutive trailing failures (stop at first success)
+		consecutiveFailures := 0
+		for rows.Next() {
+			var status string
+			if rows.Scan(&status) != nil {
+				break
+			}
+			if status == "delivered" {
+				break // Success resets the count, just like the live breaker
+			}
+			consecutiveFailures++
 		}
+		rows.Close()
 
-		if successCount > 0 {
-			continue // Domain recovered, don't pre-open
-		}
-
-		// Get the breaker (creates it) and trigger failures to open it
-		breaker := e.breakers.Get(domain)
-		if breaker != nil {
-			breaker.ForceOpen()
-			warmed++
-			e.logger.Info("Pre-opened circuit breaker for failing domain",
-				"domain", domain, "recent_failures", failCount)
+		if consecutiveFailures >= 5 {
+			breaker := e.breakers.Get(domain)
+			if breaker != nil {
+				breaker.ForceOpen()
+				warmed++
+				e.logger.Info("Pre-opened circuit breaker for failing domain",
+					"domain", domain, "consecutive_failures", consecutiveFailures)
+			}
 		}
 	}
 

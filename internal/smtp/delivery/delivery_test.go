@@ -427,35 +427,39 @@ func TestWarmupCircuitBreakers(t *testing.T) {
 		t.Fatalf("Failed to create delivery_log: %v", err)
 	}
 
-	// Insert 6 distinct failed messages for "broken.com" (above threshold of 5)
-	// Mix of rejected, bounced, and deferred statuses
-	for i := 0; i < 6; i++ {
-		status := "rejected"
-		if i%3 == 1 {
-			status = "deferred"
-		} else if i%3 == 2 {
-			status = "bounced"
+	// "broken.com": 5 retries of same message (same message_id, different attempt_number)
+	// Each retry is a separate circuit breaker execution, so all 5 should count.
+	for i := 1; i <= 5; i++ {
+		status := "deferred"
+		if i == 5 {
+			status = "rejected" // final attempt is permanent
 		}
-		_, err := db.Exec(`INSERT INTO delivery_log (message_id, sender, recipient, status, domain, created_at) VALUES (?, ?, ?, ?, 'broken.com', datetime('now'))`,
-			"msg"+string(rune('0'+i)), "sender@test.com", "user@broken.com", status)
-		if err != nil {
-			t.Fatalf("Failed to insert: %v", err)
-		}
+		db.Exec(`INSERT INTO delivery_log (message_id, sender, recipient, status, domain, attempt_number, created_at) VALUES ('retry-msg', 'sender@test.com', 'user@broken.com', ?, 'broken.com', ?, datetime('now'))`,
+			status, i)
 	}
 
-	// Insert 1 failed message to "inflated.com" with 5 recipients (5 rows, 1 message_id)
-	// This should NOT trip the threshold since it's only 1 distinct delivery attempt
+	// "inflated.com": 1 message to 5 recipients (5 rows, same message_id+attempt_number)
+	// Should be 1 delivery attempt, not 5 — must NOT trip the threshold.
 	for i := 0; i < 5; i++ {
-		db.Exec(`INSERT INTO delivery_log (message_id, sender, recipient, status, domain, created_at) VALUES ('same-msg', 'sender@test.com', ?, 'rejected', 'inflated.com', datetime('now'))`,
+		db.Exec(`INSERT INTO delivery_log (message_id, sender, recipient, status, domain, attempt_number, created_at) VALUES ('same-msg', 'sender@test.com', ?, 'rejected', 'inflated.com', 1, datetime('now'))`,
 			"user"+string(rune('0'+i))+"@inflated.com")
 	}
 
-	// Insert 2 failures for "ok.com" (below threshold) + 1 success
-	for i := 0; i < 2; i++ {
-		db.Exec(`INSERT INTO delivery_log (message_id, sender, recipient, status, domain, created_at) VALUES (?, ?, ?, 'rejected', 'ok.com', datetime('now'))`,
-			"ok"+string(rune('0'+i)), "sender@test.com", "user@ok.com")
+	// "recovered.com": 5 failures then 1 success (most recent is success)
+	// The success resets the consecutive count, so breaker should stay closed.
+	for i := 1; i <= 5; i++ {
+		db.Exec(`INSERT INTO delivery_log (message_id, sender, recipient, status, domain, attempt_number, created_at) VALUES (?, 'sender@test.com', 'user@recovered.com', 'rejected', 'recovered.com', 1, datetime('now', '-30 minutes'))`,
+			"rec-fail-"+string(rune('0'+i)))
 	}
-	db.Exec(`INSERT INTO delivery_log (message_id, sender, recipient, status, domain, created_at) VALUES ('ok-succ', 'sender@test.com', 'user@ok.com', 'delivered', 'ok.com', datetime('now'))`)
+	db.Exec(`INSERT INTO delivery_log (message_id, sender, recipient, status, domain, attempt_number, created_at) VALUES ('rec-succ', 'sender@test.com', 'user@recovered.com', 'delivered', 'recovered.com', 1, datetime('now'))`)
+
+	// "relapsed.com": 1 success 40min ago, then 5 consecutive failures in last 5min
+	// The live breaker would have opened after the 5 failures. Warmup should match.
+	db.Exec(`INSERT INTO delivery_log (message_id, sender, recipient, status, domain, attempt_number, created_at) VALUES ('rel-succ', 'sender@test.com', 'user@relapsed.com', 'delivered', 'relapsed.com', 1, datetime('now', '-40 minutes'))`)
+	for i := 1; i <= 5; i++ {
+		db.Exec(`INSERT INTO delivery_log (message_id, sender, recipient, status, domain, attempt_number, created_at) VALUES (?, 'sender@test.com', 'user@relapsed.com', 'rejected', 'relapsed.com', 1, datetime('now', '-1 minutes'))`,
+			"rel-fail-"+string(rune('0'+i)))
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -476,22 +480,28 @@ func TestWarmupCircuitBreakers(t *testing.T) {
 
 	e.warmupCircuitBreakers()
 
-	// "broken.com" should be pre-opened
+	// "broken.com" should be pre-opened (5 retries of same message = 5 consecutive failures)
 	brokenBreaker := e.breakers.Get("broken.com")
 	if brokenBreaker.State() != resilience.StateOpen {
 		t.Errorf("broken.com breaker state = %v, want Open", brokenBreaker.State())
 	}
 
-	// "ok.com" should NOT be pre-opened (has recent success)
-	okBreaker := e.breakers.Get("ok.com")
-	if okBreaker.State() != resilience.StateClosed {
-		t.Errorf("ok.com breaker state = %v, want Closed", okBreaker.State())
-	}
-
-	// "inflated.com" should NOT be pre-opened (1 message to 5 recipients = 1 distinct failure)
+	// "inflated.com" should NOT be pre-opened (1 message to 5 recipients = 1 delivery attempt)
 	inflatedBreaker := e.breakers.Get("inflated.com")
 	if inflatedBreaker.State() != resilience.StateClosed {
 		t.Errorf("inflated.com breaker state = %v, want Closed (per-recipient rows should not inflate count)", inflatedBreaker.State())
+	}
+
+	// "recovered.com" should NOT be pre-opened (most recent entry is a success)
+	recoveredBreaker := e.breakers.Get("recovered.com")
+	if recoveredBreaker.State() != resilience.StateClosed {
+		t.Errorf("recovered.com breaker state = %v, want Closed (success resets consecutive failures)", recoveredBreaker.State())
+	}
+
+	// "relapsed.com" should be pre-opened (success 40min ago, then 5 consecutive failures)
+	relapsedBreaker := e.breakers.Get("relapsed.com")
+	if relapsedBreaker.State() != resilience.StateOpen {
+		t.Errorf("relapsed.com breaker state = %v, want Open (5 consecutive failures after earlier success)", relapsedBreaker.State())
 	}
 }
 
