@@ -110,9 +110,12 @@ func (gm *GitManager) checkoutTarget(ctx context.Context, repoPath string, targe
 		// For commits, check out by SHA
 		checkoutRef = target
 	case TargetTypePR:
-		// For PRs, fetch the PR branch
-		// Format: PR #123 - we need to extract the number
-		checkoutRef = fmt.Sprintf("refs/pull/%s/head", target)
+		prRef := fmt.Sprintf("refs/pull/%s/head", target)
+		fetchCmd := exec.CommandContext(ctx, "git", "-C", repoPath, "fetch", "origin", prRef) // #nosec G204 -- git ref normalized and repo path validated
+		if output, err := fetchCmd.CombinedOutput(); err != nil {
+			return "", fmt.Errorf("git fetch PR failed: %w, output: %s", err, string(output))
+		}
+		checkoutRef = "FETCH_HEAD"
 	default:
 		return "", fmt.Errorf("unknown target type: %s", targetType)
 	}

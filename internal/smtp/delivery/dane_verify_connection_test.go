@@ -46,3 +46,22 @@ func TestDANEVerifyConnection(t *testing.T) {
 		t.Fatalf("expected DANE validation failure, got %v", err)
 	}
 }
+
+func TestShouldUseDANERequiresDNSSEC(t *testing.T) {
+	record := TLSARecord{
+		Usage:        TLSAUsageDANEEE,
+		Selector:     TLSASelectorCert,
+		MatchingType: TLSAMatchingSHA256,
+		CertData:     []byte("hash"),
+	}
+
+	if shouldUseDANE([]TLSARecord{record}, false) {
+		t.Fatal("shouldUseDANE() should reject TLSA records without DNSSEC validation")
+	}
+	if !shouldUseDANE([]TLSARecord{record}, true) {
+		t.Fatal("shouldUseDANE() should accept DNSSEC-validated TLSA records")
+	}
+	if shouldUseDANE(nil, true) {
+		t.Fatal("shouldUseDANE() should reject missing TLSA records")
+	}
+}

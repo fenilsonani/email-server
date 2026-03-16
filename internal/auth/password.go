@@ -115,9 +115,15 @@ func parseArgon2Hash(encoded string) (*argon2Params, []byte, []byte, error) {
 	if err != nil {
 		return nil, nil, nil, errInvalidSalt
 	}
+	if len(salt) == 0 {
+		return nil, nil, nil, errInvalidSalt
+	}
 
 	hash, err := base64.RawStdEncoding.DecodeString(parts[5])
 	if err != nil {
+		return nil, nil, nil, errInvalidHash
+	}
+	if len(hash) == 0 {
 		return nil, nil, nil, errInvalidHash
 	}
 

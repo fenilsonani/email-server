@@ -487,9 +487,10 @@ func (s *Server) withAPIAuth(next http.HandlerFunc) http.HandlerFunc {
 
 // CSRF token handling with bounded cache
 const (
-	maxCSRFTokens   = 10000 // Maximum CSRF tokens in cache
-	maxSessionCache = 10000 // Maximum sessions in cache
-	maxCSRFFormBody = maxAdminFormBody
+	maxCSRFTokens        = 10000 // Maximum CSRF tokens in cache
+	maxSessionCache      = 10000 // Maximum sessions in cache
+	maxCSRFFormBody      = maxAdminFormBody
+	maxCSRFMultipartBody = 32 << 20
 )
 
 var (
@@ -546,7 +547,7 @@ func (s *Server) withCSRF(next http.Handler) http.Handler {
 			token = r.URL.Query().Get("csrf_token")
 		}
 		if token == "" && requestHasFormBody(r) {
-			if err := parseFormWithLimit(w, r, maxCSRFFormBody); err != nil {
+			if err := parseCSRFBody(w, r); err != nil {
 				status := formErrorStatus(err)
 				http.Error(w, "Invalid or expired CSRF token", status)
 				return
@@ -588,6 +589,14 @@ func requestHasFormBody(r *http.Request) bool {
 	return strings.HasPrefix(contentType, "application/x-www-form-urlencoded") ||
 		strings.HasPrefix(contentType, "multipart/form-data") ||
 		strings.HasPrefix(contentType, "text/plain")
+}
+
+func parseCSRFBody(w http.ResponseWriter, r *http.Request) error {
+	contentType := r.Header.Get("Content-Type")
+	if strings.HasPrefix(contentType, "multipart/form-data") {
+		return parseMultipartFormWithLimit(w, r, maxCSRFMultipartBody, maxAdminMultipartBody)
+	}
+	return parseFormWithLimit(w, r, maxCSRFFormBody)
 }
 
 // generateToken generates a cryptographically secure token

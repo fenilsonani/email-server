@@ -31,7 +31,8 @@ func (dm *DeployManager) Deploy(ctx context.Context, newBinaryPath string) error
 	if err := validateUpdaterConfig(dm.config); err != nil {
 		return err
 	}
-	if _, err := validateAbsolutePath(newBinaryPath, "new binary path"); err != nil {
+	buildPath := filepath.Clean(dm.config.BuildPath)
+	if _, err := ensurePathWithinBase(buildPath, newBinaryPath, "new binary path"); err != nil {
 		return err
 	}
 	targetPath := dm.config.BinaryPath
@@ -83,7 +84,8 @@ func (dm *DeployManager) copyBinary(src, dst string) error {
 	}
 
 	// Read the new binary
-	if _, err := validateAbsolutePath(src, "source binary"); err != nil {
+	buildPath := filepath.Clean(dm.config.BuildPath)
+	if _, err := ensurePathWithinBase(buildPath, src, "source binary"); err != nil {
 		return err
 	}
 	if _, err := validateAbsolutePath(dst, "target binary"); err != nil {

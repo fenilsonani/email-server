@@ -177,7 +177,7 @@ func normalizeIP(value string) string {
 		if ip := net.ParseIP(host); ip != nil {
 			return ip.String()
 		}
-		return host
+		return ""
 	}
 
 	return ""

@@ -365,7 +365,12 @@ func createAdminUser(cfg *SetupConfig) error {
 	// Use mailserver CLI to add domain and user
 	// First add domain
 	cmd := exec.Command("mailserver", "domain", "add", cfg.Domain, "--config", cfg.ConfigDir+"/config.yaml") // #nosec G204 -- setup inputs validated and exec.Command does not invoke a shell
-	cmd.Run()                                                                                                // Ignore error if domain already exists
+	if output, err := cmd.CombinedOutput(); err != nil {
+		message := strings.ToLower(strings.TrimSpace(string(output)))
+		if !strings.Contains(message, "already exists") {
+			return fmt.Errorf("failed to add domain: %w: %s", err, strings.TrimSpace(string(output)))
+		}
+	}
 
 	// Add user
 	cmd = exec.Command("mailserver", "user", "add", cfg.AdminEmail, "--password-hash", string(hash), "--admin", "--config", cfg.ConfigDir+"/config.yaml") // #nosec G204 -- setup inputs validated and exec.Command does not invoke a shell
@@ -510,12 +515,17 @@ func validateSetupConfig(cfg *SetupConfig) error {
 	if _, err := mail.ParseAddress(cfg.TLSEmail); err != nil {
 		return fmt.Errorf("invalid TLS email: %w", err)
 	}
-	if _, err := validateSetupPath(cfg.DataDir, "data directory"); err != nil {
+	dataDir, err := validateSetupPath(cfg.DataDir, "data directory")
+	if err != nil {
 		return err
 	}
-	if _, err := validateSetupPath(cfg.ConfigDir, "config directory"); err != nil {
+	cfg.DataDir = dataDir
+
+	configDir, err := validateSetupPath(cfg.ConfigDir, "config directory")
+	if err != nil {
 		return err
 	}
+	cfg.ConfigDir = configDir
 	return nil
 }
 

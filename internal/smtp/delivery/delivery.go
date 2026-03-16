@@ -27,12 +27,12 @@ import (
 
 // Common errors
 var (
-	ErrPermanentFailure  = errors.New("permanent delivery failure")
-	ErrTemporaryFailure  = errors.New("temporary delivery failure")
-	ErrCircuitOpen       = errors.New("circuit breaker open for domain")
-	ErrAllMXFailed       = errors.New("all MX servers failed")
-	ErrMessageTooLarge   = errors.New("message too large")
-	ErrInvalidRecipient  = errors.New("invalid recipient")
+	ErrPermanentFailure = errors.New("permanent delivery failure")
+	ErrTemporaryFailure = errors.New("temporary delivery failure")
+	ErrCircuitOpen      = errors.New("circuit breaker open for domain")
+	ErrAllMXFailed      = errors.New("all MX servers failed")
+	ErrMessageTooLarge  = errors.New("message too large")
+	ErrInvalidRecipient = errors.New("invalid recipient")
 )
 
 // Config configures the delivery engine.
@@ -79,14 +79,14 @@ func DefaultConfig() Config {
 
 // Engine handles outbound email delivery.
 type Engine struct {
-	config         Config
-	queue          *queue.RedisQueue
-	mxResolver     *MXResolver
-	dkimPool       *security.DKIMSignerPool
-	breakers       *resilience.BreakerRegistry
-	logger         *logging.Logger
-	bounceGen      *BounceGenerator
-	db             *sql.DB
+	config     Config
+	queue      *queue.RedisQueue
+	mxResolver *MXResolver
+	dkimPool   *security.DKIMSignerPool
+	breakers   *resilience.BreakerRegistry
+	logger     *logging.Logger
+	bounceGen  *BounceGenerator
+	db         *sql.DB
 
 	// Security resolvers
 	stsResolver  *STSResolver  // MTA-STS policy resolver
@@ -104,11 +104,11 @@ type Engine struct {
 	wg     sync.WaitGroup
 
 	// Metrics
-	mu            sync.RWMutex
-	totalSent     int64
-	totalFailed   int64
-	totalRetried  int64
-	totalBounced  int64
+	mu           sync.RWMutex
+	totalSent    int64
+	totalFailed  int64
+	totalRetried int64
+	totalBounced int64
 }
 
 // EngineOption configures the delivery engine.
@@ -597,7 +597,6 @@ func (e *Engine) deliverToRelay(ctx context.Context, msg *queue.Message, data []
 		host = e.config.RelayHost
 		port = "25"
 	}
-
 	// Connect with timeout
 	dialer := &net.Dialer{
 		Timeout: e.config.ConnectTimeout,
@@ -749,6 +748,13 @@ func (e *Engine) deliverToHostWithTLS(ctx context.Context, addr, hostname string
 			)
 		}
 	}
+	if len(tlsaRecords) > 0 && !tlsaDNSSECValid {
+		e.logger.WarnContext(ctx, "Ignoring DANE TLSA records without DNSSEC validation",
+			"host", hostname,
+			"count", len(tlsaRecords),
+		)
+	}
+	useDANE := shouldUseDANE(tlsaRecords, tlsaDNSSECValid)
 
 	// Connect with timeout
 	dialer := &net.Dialer{
@@ -791,8 +797,8 @@ func (e *Engine) deliverToHostWithTLS(ctx context.Context, addr, hostname string
 				MinVersion: tls.VersionTLS12,
 			}
 
-			// If we have DANE/TLSA records, use custom certificate verification
-			if len(tlsaRecords) > 0 {
+			// If we have DNSSEC-validated DANE/TLSA records, use custom certificate verification.
+			if useDANE {
 				tlsConfig.InsecureSkipVerify = true // We'll verify manually with DANE
 				tlsConfig.VerifyConnection = e.daneVerifyConnection(ctx, hostname, tlsaRecords)
 			} else {
@@ -902,6 +908,10 @@ func (e *Engine) daneVerifyConnection(ctx context.Context, hostname string, tlsa
 		)
 		return nil
 	}
+}
+
+func shouldUseDANE(tlsaRecords []TLSARecord, dnssecValid bool) bool {
+	return len(tlsaRecords) > 0 && dnssecValid
 }
 
 // recoveryWorker periodically recovers stale messages.

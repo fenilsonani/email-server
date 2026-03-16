@@ -184,6 +184,8 @@ func openUserPortalRouteTestDB(t *testing.T) *sql.DB {
 	if err != nil {
 		t.Fatalf("failed to open sqlite db: %v", err)
 	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
 
 	schema := `
 		CREATE TABLE domains (

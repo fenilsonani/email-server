@@ -213,6 +213,12 @@ func TestCreateSession_IgnoresForwardedHeadersFromUntrustedSource(t *testing.T) 
 	}
 }
 
+func TestNormalizeIP_RejectsHostnamesWithPort(t *testing.T) {
+	if got := normalizeIP("mail.example.com:587"); got != "" {
+		t.Fatalf("normalizeIP() = %q, want empty string", got)
+	}
+}
+
 func newTestUserPortalServer(t *testing.T, db *sql.DB) *Server {
 	t.Helper()
 
@@ -238,6 +244,8 @@ func openUserPortalTestDB(t *testing.T) *sql.DB {
 	if err != nil {
 		t.Fatalf("failed to open sqlite db: %v", err)
 	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
 
 	schema := `
 		CREATE TABLE user_sessions (
