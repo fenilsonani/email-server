@@ -636,12 +636,12 @@ func base64Decode(dst, src []byte) int {
 		}
 
 		v := uint32(decode[src[0]])<<18 | uint32(decode[src[1]])<<12 | uint32(decode[src[2]])<<6 | uint32(decode[src[3]])
-		dst[di+0] = byte(v >> 16)
+		dst[di+0] = byte((v >> 16) & 0xFF)
 		if pad < 2 {
-			dst[di+1] = byte(v >> 8)
+			dst[di+1] = byte((v >> 8) & 0xFF)
 		}
 		if pad < 1 {
-			dst[di+2] = byte(v)
+			dst[di+2] = byte(v & 0xFF)
 		}
 		di += 3 - pad
 		src = src[4:]

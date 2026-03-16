@@ -6,25 +6,27 @@ import (
 	"runtime"
 	"strconv"
 	"time"
+
+	"github.com/fenilsonani/email-server/internal/safecast"
 )
 
 // Config holds auto-tuned performance configuration.
 // All values are automatically calculated if not explicitly set.
 type Config struct {
 	// Connection limits
-	SMTPMaxConnections int `json:"smtp_max_connections"`
-	IMAPMaxConnections int `json:"imap_max_connections"`
+	SMTPMaxConnections  int `json:"smtp_max_connections"`
+	IMAPMaxConnections  int `json:"imap_max_connections"`
 	MaxConnectionsPerIP int `json:"max_connections_per_ip"`
 
 	// Worker counts
-	DeliveryWorkers    int `json:"delivery_workers"`
-	VacationWorkers    int `json:"vacation_workers"`
+	DeliveryWorkers int `json:"delivery_workers"`
+	VacationWorkers int `json:"vacation_workers"`
 
 	// Pool sizes
-	DBMaxOpenConns  int `json:"db_max_open_conns"`
-	DBMaxIdleConns  int `json:"db_max_idle_conns"`
-	RedisPoolSize   int `json:"redis_pool_size"`
-	RedisMinIdle    int `json:"redis_min_idle"`
+	DBMaxOpenConns int `json:"db_max_open_conns"`
+	DBMaxIdleConns int `json:"db_max_idle_conns"`
+	RedisPoolSize  int `json:"redis_pool_size"`
+	RedisMinIdle   int `json:"redis_min_idle"`
 
 	// Timeouts
 	ConnectTimeout  time.Duration `json:"connect_timeout"`
@@ -37,9 +39,9 @@ type Config struct {
 	MaxMessageSize int64 `json:"max_message_size"`
 
 	// Detection info
-	NumCPU       int    `json:"num_cpu"`
-	TotalMemoryMB int64 `json:"total_memory_mb"`
-	Environment  string `json:"environment"` // development, production, container
+	NumCPU        int    `json:"num_cpu"`
+	TotalMemoryMB int64  `json:"total_memory_mb"`
+	Environment   string `json:"environment"` // development, production, container
 }
 
 // AutoTune detects system resources and returns optimal configuration.
@@ -135,7 +137,7 @@ func (c *Config) calculatePoolSizes() {
 func (c *Config) calculateTimeouts() {
 	// These are generally fixed, not resource-dependent
 	c.ConnectTimeout = 30 * time.Second
-	c.ReadTimeout = 5 * time.Minute  // SMTP/IMAP sessions can be slow
+	c.ReadTimeout = 5 * time.Minute // SMTP/IMAP sessions can be slow
 	c.WriteTimeout = 5 * time.Minute
 	c.IdleTimeout = 10 * time.Minute
 	c.ShutdownTimeout = 30 * time.Second
@@ -272,7 +274,11 @@ func getAvailableMemoryMB() int64 {
 	runtime.ReadMemStats(&memStats)
 
 	// Use system memory as approximation, defaulting to 2GB if unknown
-	sysMB := int64(memStats.Sys) / (1024 * 1024)
+	sysBytes, err := safecast.Uint64ToInt64(memStats.Sys)
+	if err != nil {
+		return 2048
+	}
+	sysMB := sysBytes / (1024 * 1024)
 	if sysMB < 100 {
 		// Too small, likely just current process memory - assume 2GB
 		return 2048

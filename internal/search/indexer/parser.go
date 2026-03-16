@@ -273,14 +273,40 @@ func decodeHTMLEntities(s string) string {
 	// Handle numeric entities
 	numericEntity := regexp.MustCompile(`&#(\d+);`)
 	s = numericEntity.ReplaceAllStringFunc(s, func(match string) string {
-		var code int
-		if _, err := parseEntityCode(match, &code); err == nil && code < 128 {
-			return string(rune(code))
+		if ch, ok := parseASCIIEntity(match); ok {
+			return string([]byte{ch})
 		}
 		return match
 	})
 
 	return s
+}
+
+func parseASCIIEntity(entity string) (byte, bool) {
+	value := byte(0)
+	digits := entity
+	if len(digits) > 2 && digits[0] == '&' && digits[1] == '#' {
+		digits = digits[2:]
+	}
+	if len(digits) > 0 && digits[len(digits)-1] == ';' {
+		digits = digits[:len(digits)-1]
+	}
+	if digits == "" {
+		return 0, false
+	}
+
+	for i := 0; i < len(digits); i++ {
+		d := digits[i]
+		if d < '0' || d > '9' {
+			return 0, false
+		}
+		digit := d - '0'
+		if value > 12 || (value == 12 && digit > 7) {
+			return 0, false
+		}
+		value = value*10 + digit
+	}
+	return value, true
 }
 
 // parseEntityCode extracts the numeric code from an HTML entity.

@@ -337,15 +337,13 @@ func TestMX_ConcurrentLookup(t *testing.T) {
 func TestMX_ContextTimeout(t *testing.T) {
 	resolver := NewMXResolver(DefaultMXResolverConfig())
 
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Nanosecond)
-	defer cancel()
-
-	// Wait for context to expire
-	time.Sleep(time.Millisecond)
+	// Cancel the context before calling Lookup to avoid leaking DNS goroutines
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
 
 	_, err := resolver.Lookup(ctx, "example.com")
 
-	// Should get context deadline exceeded (not from cache)
+	// Should get context canceled error (not from cache)
 	if err == nil {
 		// Might have been cached, that's OK
 		t.Log("lookup succeeded (likely cached)")
@@ -574,7 +572,10 @@ func TestMX_ConcurrentClearAndLookup(t *testing.T) {
 	}
 
 	var wg sync.WaitGroup
-	ctx := context.Background()
+	// Use a short-deadline context so cache misses (from concurrent clears)
+	// fail fast instead of making real DNS queries that leak goroutines.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
 
 	// Lookup goroutines
 	for i := 0; i < 10; i++ {

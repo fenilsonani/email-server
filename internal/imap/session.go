@@ -245,7 +245,7 @@ func (s *Session) Select(name string, options *imap.SelectOptions) (*imap.Select
 	return &imap.SelectData{
 		Flags:          []imap.Flag{imap.FlagSeen, imap.FlagAnswered, imap.FlagFlagged, imap.FlagDeleted, imap.FlagDraft},
 		PermanentFlags: []imap.Flag{imap.FlagSeen, imap.FlagAnswered, imap.FlagFlagged, imap.FlagDeleted, imap.FlagDraft, imap.FlagWildcard},
-		NumMessages:    uint32(stats.Messages),
+		NumMessages:    safeMessageCount(stats.Messages),
 		UIDValidity:    stats.UIDValidity,
 		UIDNext:        imap.UID(stats.UIDNext),
 	}, nil
@@ -436,8 +436,8 @@ func (s *Session) Status(name string, options *imap.StatusOptions) (*imap.Status
 		return nil, fmt.Errorf("failed to get mailbox stats: %w", err)
 	}
 
-	numMessages := uint32(stats.Messages)
-	numUnseen := uint32(stats.Unseen)
+	numMessages := safeMessageCount(stats.Messages)
+	numUnseen := safeMessageCount(stats.Unseen)
 
 	return &imap.StatusData{
 		Mailbox:     name,
@@ -586,7 +586,7 @@ func (s *Session) Idle(w *imapserver.UpdateWriter, stop <-chan struct{}) error {
 				if err == nil {
 					// Queue the current message count - this triggers an untagged response
 					// even if the count hasn't changed, keeping the connection alive
-					s.server.GetMailboxTracker(selected.ID).QueueNumMessages(uint32(stats.Messages))
+					s.server.GetMailboxTracker(selected.ID).QueueNumMessages(safeMessageCount(stats.Messages))
 					metrics.RecordIMAPKeepalive()
 					log.Printf("IMAP v2: Keepalive sent for %s (messages: %d)", userEmail, stats.Messages)
 				}

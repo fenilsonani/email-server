@@ -106,9 +106,9 @@ type Indexer struct {
 	stopped     atomic.Bool
 
 	// Stats
-	indexed   atomic.Int64
-	deleted   atomic.Int64
-	errors    atomic.Int64
+	indexed atomic.Int64
+	deleted atomic.Int64
+	errors  atomic.Int64
 }
 
 // NewIndexer creates a new background indexer.
@@ -409,7 +409,14 @@ func (i *Indexer) retryProcessor() {
 			return
 		case op := <-i.retryQueue:
 			// Calculate backoff delay
-			delay := initialRetryDelay * time.Duration(1<<uint(op.Retries))
+			retries := op.Retries
+			if retries < 0 {
+				retries = 0
+			}
+			if retries > 30 {
+				retries = 30
+			}
+			delay := initialRetryDelay * time.Duration(1<<retries)
 			if delay > maxRetryDelay {
 				delay = maxRetryDelay
 			}

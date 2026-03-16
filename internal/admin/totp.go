@@ -293,13 +293,13 @@ func (s *Server) handle2FASetup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// POST - enable or disable 2FA
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "Bad request", http.StatusBadRequest)
+	if err := parseFormWithLimit(w, r, maxAdminFormBody); err != nil {
+		http.Error(w, "Bad request", formErrorStatus(err))
 		return
 	}
 
-	action := r.FormValue("action")
-	code := r.FormValue("code")
+	action := r.PostForm.Get("action")
+	code := r.PostForm.Get("code")
 
 	if action == "disable" {
 		// Verify code before disabling
@@ -448,13 +448,13 @@ func (s *Server) handle2FAVerify(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// POST - verify code
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "Bad request", http.StatusBadRequest)
+	if err := parseFormWithLimit(w, r, maxAdminFormBody); err != nil {
+		http.Error(w, "Bad request", formErrorStatus(err))
 		return
 	}
 
-	code := r.FormValue("code")
-	remember := r.FormValue("remember") == "on"
+	code := r.PostForm.Get("code")
+	remember := r.PostForm.Get("remember") == "on"
 
 	// Get user's TOTP secret
 	status, err := s.getTwoFactorStatus(pending.UserID)

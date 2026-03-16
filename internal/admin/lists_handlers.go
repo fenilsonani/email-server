@@ -97,17 +97,17 @@ func (s *Server) handleListAdd(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Parse form
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "Invalid form data", http.StatusBadRequest)
+	if err := parseFormWithLimit(w, r, maxAdminFormBody); err != nil {
+		http.Error(w, "Invalid form data", formErrorStatus(err))
 		return
 	}
 
-	domainID, _ := strconv.ParseInt(r.FormValue("domain_id"), 10, 64)
-	localPart := strings.ToLower(strings.TrimSpace(r.FormValue("local_part")))
-	name := strings.TrimSpace(r.FormValue("name"))
-	description := strings.TrimSpace(r.FormValue("description"))
-	listType := lists.ListType(r.FormValue("list_type"))
-	postingPolicy := lists.PostingPolicy(r.FormValue("posting_policy"))
+	domainID, _ := strconv.ParseInt(r.PostForm.Get("domain_id"), 10, 64)
+	localPart := strings.ToLower(strings.TrimSpace(r.PostForm.Get("local_part")))
+	name := strings.TrimSpace(r.PostForm.Get("name"))
+	description := strings.TrimSpace(r.PostForm.Get("description"))
+	listType := lists.ListType(r.PostForm.Get("list_type"))
+	postingPolicy := lists.PostingPolicy(r.PostForm.Get("posting_policy"))
 
 	// Get domain name
 	var domainName string
@@ -129,12 +129,12 @@ func (s *Server) handleListAdd(w http.ResponseWriter, r *http.Request) {
 		Description:       description,
 		ListType:          listType,
 		PostingPolicy:     postingPolicy,
-		ModerationEnabled: r.FormValue("moderation_enabled") == "on",
-		SubjectPrefix:     r.FormValue("subject_prefix"),
-		ReplyToList:       r.FormValue("reply_to_list") == "on",
-		ArchiveEnabled:    r.FormValue("archive_enabled") != "off",
-		AllowSubscribe:    r.FormValue("allow_subscribe") != "off",
-		RequireConfirm:    r.FormValue("require_confirm") != "off",
+		ModerationEnabled: r.PostForm.Get("moderation_enabled") == "on",
+		SubjectPrefix:     r.PostForm.Get("subject_prefix"),
+		ReplyToList:       r.PostForm.Get("reply_to_list") == "on",
+		ArchiveEnabled:    r.PostForm.Get("archive_enabled") != "off",
+		AllowSubscribe:    r.PostForm.Get("allow_subscribe") != "off",
+		RequireConfirm:    r.PostForm.Get("require_confirm") != "off",
 		MaxMessageSize:    10 * 1024 * 1024, // 10MB default
 		MaxMembers:        10000,
 		IsActive:          true,
@@ -194,23 +194,23 @@ func (s *Server) handleListEdit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Parse form
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "Invalid form data", http.StatusBadRequest)
+	if err := parseFormWithLimit(w, r, maxAdminFormBody); err != nil {
+		http.Error(w, "Invalid form data", formErrorStatus(err))
 		return
 	}
 
 	// Update list fields
-	list.Name = strings.TrimSpace(r.FormValue("name"))
-	list.Description = strings.TrimSpace(r.FormValue("description"))
-	list.ListType = lists.ListType(r.FormValue("list_type"))
-	list.PostingPolicy = lists.PostingPolicy(r.FormValue("posting_policy"))
-	list.ModerationEnabled = r.FormValue("moderation_enabled") == "on"
-	list.SubjectPrefix = r.FormValue("subject_prefix")
-	list.ReplyToList = r.FormValue("reply_to_list") == "on"
-	list.ArchiveEnabled = r.FormValue("archive_enabled") == "on"
-	list.AllowSubscribe = r.FormValue("allow_subscribe") == "on"
-	list.RequireConfirm = r.FormValue("require_confirm") == "on"
-	list.IsActive = r.FormValue("is_active") == "on"
+	list.Name = strings.TrimSpace(r.PostForm.Get("name"))
+	list.Description = strings.TrimSpace(r.PostForm.Get("description"))
+	list.ListType = lists.ListType(r.PostForm.Get("list_type"))
+	list.PostingPolicy = lists.PostingPolicy(r.PostForm.Get("posting_policy"))
+	list.ModerationEnabled = r.PostForm.Get("moderation_enabled") == "on"
+	list.SubjectPrefix = r.PostForm.Get("subject_prefix")
+	list.ReplyToList = r.PostForm.Get("reply_to_list") == "on"
+	list.ArchiveEnabled = r.PostForm.Get("archive_enabled") == "on"
+	list.AllowSubscribe = r.PostForm.Get("allow_subscribe") == "on"
+	list.RequireConfirm = r.PostForm.Get("require_confirm") == "on"
+	list.IsActive = r.PostForm.Get("is_active") == "on"
 
 	if err := s.listsStore.UpdateList(r.Context(), list); err != nil {
 		s.logger.ErrorContext(r.Context(), "Failed to update mailing list", err)
@@ -315,14 +315,14 @@ func (s *Server) handleListMemberAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "Invalid form data", http.StatusBadRequest)
+	if err := parseFormWithLimit(w, r, maxAdminFormBody); err != nil {
+		http.Error(w, "Invalid form data", formErrorStatus(err))
 		return
 	}
 
-	email := strings.ToLower(strings.TrimSpace(r.FormValue("email")))
-	name := strings.TrimSpace(r.FormValue("name"))
-	role := lists.MemberRole(r.FormValue("role"))
+	email := strings.ToLower(strings.TrimSpace(r.PostForm.Get("email")))
+	name := strings.TrimSpace(r.PostForm.Get("name"))
+	role := lists.MemberRole(r.PostForm.Get("role"))
 	if role == "" {
 		role = lists.RoleMember
 	}
@@ -491,11 +491,16 @@ func (s *Server) handleListModerationAction(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	if err := parseFormWithLimit(w, r, maxAdminFormBody); err != nil {
+		http.Error(w, "Bad request", formErrorStatus(err))
+		return
+	}
+
 	switch action {
 	case "approve":
 		err = s.listsStore.ApproveMessage(r.Context(), msgID, userID)
 	case "reject":
-		reason := r.FormValue("reason")
+		reason := r.PostForm.Get("reason")
 		err = s.listsStore.RejectMessage(r.Context(), msgID, userID, reason)
 	}
 

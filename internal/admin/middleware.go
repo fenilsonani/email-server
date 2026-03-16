@@ -487,14 +487,21 @@ func (s *Server) withAPIAuth(next http.HandlerFunc) http.HandlerFunc {
 
 // CSRF token handling with bounded cache
 const (
-	maxCSRFTokens   = 10000 // Maximum CSRF tokens in cache
-	maxSessionCache = 10000 // Maximum sessions in cache
+	maxCSRFTokens        = 10000 // Maximum CSRF tokens in cache
+	maxSessionCache      = 10000 // Maximum sessions in cache
+	maxCSRFFormBody      = maxAdminFormBody
+	maxCSRFMultipartBody = 32 << 20
 )
 
 var (
-	csrfTokens   = make(map[string]time.Time)
+	csrfTokens   = make(map[string]csrfTokenState)
 	csrfTokensMu sync.RWMutex
 )
+
+type csrfTokenState struct {
+	Expiry  time.Time
+	Binding string
+}
 
 // withCSRF wraps a handler with CSRF protection
 func (s *Server) withCSRF(next http.Handler) http.Handler {
@@ -514,8 +521,8 @@ func (s *Server) withCSRF(next http.Handler) http.Handler {
 			if len(csrfTokens) >= maxCSRFTokens {
 				// Evict oldest tokens (simple eviction: remove expired first)
 				now := time.Now()
-				for t, exp := range csrfTokens {
-					if now.After(exp) || len(csrfTokens) >= maxCSRFTokens {
+				for t, state := range csrfTokens {
+					if now.After(state.Expiry) || len(csrfTokens) >= maxCSRFTokens {
 						delete(csrfTokens, t)
 						if len(csrfTokens) < maxCSRFTokens*9/10 { // Keep 90% capacity
 							break
@@ -523,7 +530,10 @@ func (s *Server) withCSRF(next http.Handler) http.Handler {
 					}
 				}
 			}
-			csrfTokens[token] = time.Now().Add(1 * time.Hour)
+			csrfTokens[token] = csrfTokenState{
+				Expiry:  time.Now().Add(1 * time.Hour),
+				Binding: s.csrfBinding(r),
+			}
 			csrfTokensMu.Unlock()
 
 			w.Header().Set("X-CSRF-Token", token)
@@ -531,10 +541,18 @@ func (s *Server) withCSRF(next http.Handler) http.Handler {
 			return
 		}
 
-		// Validate CSRF token for state-changing requests
-		token := r.FormValue("csrf_token")
+		// Validate CSRF token for state-changing requests.
+		token := r.Header.Get("X-CSRF-Token")
 		if token == "" {
-			token = r.Header.Get("X-CSRF-Token")
+			token = r.URL.Query().Get("csrf_token")
+		}
+		if token == "" && requestHasFormBody(r) {
+			if err := parseCSRFBody(w, r); err != nil {
+				status := formErrorStatus(err)
+				http.Error(w, "Invalid or expired CSRF token", status)
+				return
+			}
+			token = r.PostForm.Get("csrf_token")
 		}
 
 		// Validate token format
@@ -544,11 +562,16 @@ func (s *Server) withCSRF(next http.Handler) http.Handler {
 		}
 
 		csrfTokensMu.RLock()
-		expiry, exists := csrfTokens[token]
+		state, exists := csrfTokens[token]
 		csrfTokensMu.RUnlock()
 
 		now := time.Now()
-		if !exists || now.After(expiry) {
+		if !exists || now.After(state.Expiry) {
+			http.Error(w, "Invalid or expired CSRF token", http.StatusForbidden)
+			return
+		}
+
+		if state.Binding != s.csrfBinding(r) {
 			http.Error(w, "Invalid or expired CSRF token", http.StatusForbidden)
 			return
 		}
@@ -559,6 +582,21 @@ func (s *Server) withCSRF(next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+func requestHasFormBody(r *http.Request) bool {
+	contentType := r.Header.Get("Content-Type")
+	return strings.HasPrefix(contentType, "application/x-www-form-urlencoded") ||
+		strings.HasPrefix(contentType, "multipart/form-data") ||
+		strings.HasPrefix(contentType, "text/plain")
+}
+
+func parseCSRFBody(w http.ResponseWriter, r *http.Request) error {
+	contentType := r.Header.Get("Content-Type")
+	if strings.HasPrefix(contentType, "multipart/form-data") {
+		return parseMultipartFormWithLimit(w, r, maxCSRFMultipartBody, maxAdminMultipartBody)
+	}
+	return parseFormWithLimit(w, r, maxCSRFFormBody)
 }
 
 // generateToken generates a cryptographically secure token
@@ -615,8 +653,8 @@ func CleanupExpiredSessions(db *sql.DB) {
 
 				// Clean CSRF tokens
 				csrfTokensMu.Lock()
-				for token, expiry := range csrfTokens {
-					if now.After(expiry) {
+				for token, state := range csrfTokens {
+					if now.After(state.Expiry) {
 						delete(csrfTokens, token)
 					}
 				}
@@ -649,6 +687,21 @@ func isValidToken(token string) bool {
 	// Validate hex encoding
 	_, err := hex.DecodeString(token)
 	return err == nil
+}
+
+func (s *Server) csrfBinding(r *http.Request) string {
+	if cookie, err := r.Cookie("admin_session"); err == nil && cookie.Value != "" {
+		return "session:" + cookie.Value
+	}
+
+	if s != nil && s.rateLimiter != nil {
+		return "client:" + s.rateLimiter.GetClientIP(r)
+	}
+
+	if ip := normalizeRemoteIP(r.RemoteAddr); ip != "" {
+		return "client:" + ip
+	}
+	return "client:" + r.RemoteAddr
 }
 
 // withTimeout adds a timeout to requests

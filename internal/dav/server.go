@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/fenilsonani/email-server/internal/auth"
 	"github.com/fenilsonani/email-server/internal/config"
@@ -98,9 +99,13 @@ func (s *Server) Start(addr string, tlsConfig *tls.Config) error {
 	mux.HandleFunc("/principals/", s.handlePrincipal)
 
 	s.httpServer = &http.Server{
-		Addr:      addr,
-		Handler:   s.authMiddleware(mux),
-		TLSConfig: tlsConfig,
+		Addr:              addr,
+		Handler:           s.authMiddleware(mux),
+		TLSConfig:         tlsConfig,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		ReadHeaderTimeout: 10 * time.Second,
 	}
 
 	s.logger.Info("DAV server starting", "addr", addr)

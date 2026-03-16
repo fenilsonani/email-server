@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
-	"crypto/x509"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -28,12 +27,12 @@ import (
 
 // Common errors
 var (
-	ErrPermanentFailure  = errors.New("permanent delivery failure")
-	ErrTemporaryFailure  = errors.New("temporary delivery failure")
-	ErrCircuitOpen       = errors.New("circuit breaker open for domain")
-	ErrAllMXFailed       = errors.New("all MX servers failed")
-	ErrMessageTooLarge   = errors.New("message too large")
-	ErrInvalidRecipient  = errors.New("invalid recipient")
+	ErrPermanentFailure = errors.New("permanent delivery failure")
+	ErrTemporaryFailure = errors.New("temporary delivery failure")
+	ErrCircuitOpen      = errors.New("circuit breaker open for domain")
+	ErrAllMXFailed      = errors.New("all MX servers failed")
+	ErrMessageTooLarge  = errors.New("message too large")
+	ErrInvalidRecipient = errors.New("invalid recipient")
 )
 
 // Config configures the delivery engine.
@@ -80,14 +79,14 @@ func DefaultConfig() Config {
 
 // Engine handles outbound email delivery.
 type Engine struct {
-	config         Config
-	queue          *queue.RedisQueue
-	mxResolver     *MXResolver
-	dkimPool       *security.DKIMSignerPool
-	breakers       *resilience.BreakerRegistry
-	logger         *logging.Logger
-	bounceGen      *BounceGenerator
-	db             *sql.DB
+	config     Config
+	queue      *queue.RedisQueue
+	mxResolver *MXResolver
+	dkimPool   *security.DKIMSignerPool
+	breakers   *resilience.BreakerRegistry
+	logger     *logging.Logger
+	bounceGen  *BounceGenerator
+	db         *sql.DB
 
 	// Security resolvers
 	stsResolver  *STSResolver  // MTA-STS policy resolver
@@ -105,11 +104,11 @@ type Engine struct {
 	wg     sync.WaitGroup
 
 	// Metrics
-	mu            sync.RWMutex
-	totalSent     int64
-	totalFailed   int64
-	totalRetried  int64
-	totalBounced  int64
+	mu           sync.RWMutex
+	totalSent    int64
+	totalFailed  int64
+	totalRetried int64
+	totalBounced int64
 }
 
 // EngineOption configures the delivery engine.
@@ -598,7 +597,6 @@ func (e *Engine) deliverToRelay(ctx context.Context, msg *queue.Message, data []
 		host = e.config.RelayHost
 		port = "25"
 	}
-
 	// Connect with timeout
 	dialer := &net.Dialer{
 		Timeout: e.config.ConnectTimeout,
@@ -750,6 +748,13 @@ func (e *Engine) deliverToHostWithTLS(ctx context.Context, addr, hostname string
 			)
 		}
 	}
+	if len(tlsaRecords) > 0 && !tlsaDNSSECValid {
+		e.logger.WarnContext(ctx, "Ignoring DANE TLSA records without DNSSEC validation",
+			"host", hostname,
+			"count", len(tlsaRecords),
+		)
+	}
+	useDANE := shouldUseDANE(tlsaRecords, tlsaDNSSECValid)
 
 	// Connect with timeout
 	dialer := &net.Dialer{
@@ -792,52 +797,18 @@ func (e *Engine) deliverToHostWithTLS(ctx context.Context, addr, hostname string
 				MinVersion: tls.VersionTLS12,
 			}
 
-			// If we have DANE/TLSA records, use custom certificate verification
-			if len(tlsaRecords) > 0 {
+			// If we have DNSSEC-validated DANE/TLSA records, use custom certificate verification.
+			if useDANE {
 				tlsConfig.InsecureSkipVerify = true // We'll verify manually with DANE
-				tlsConfig.VerifyPeerCertificate = func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
-					if len(rawCerts) == 0 {
-						return fmt.Errorf("no certificates presented")
-					}
-
-					// Parse the certificate chain
-					var chain []*x509.Certificate
-					for _, rawCert := range rawCerts {
-						cert, err := x509.ParseCertificate(rawCert)
-						if err != nil {
-							continue
-						}
-						chain = append(chain, cert)
-					}
-
-					if len(chain) == 0 {
-						return fmt.Errorf("failed to parse any certificates")
-					}
-
-					// Validate with DANE
-					result := ValidateCertificate(chain[0], chain[1:], tlsaRecords)
-					if !result.Valid {
-						return fmt.Errorf("DANE validation failed: %w", result.Error)
-					}
-
-					e.logger.DebugContext(ctx, "DANE validation passed",
-						"host", hostname,
-						"usage", result.UsedRecord.Usage.String(),
-					)
-					return nil
-				}
+				tlsConfig.VerifyConnection = e.daneVerifyConnection(ctx, hostname, tlsaRecords)
 			} else {
 				// No DANE, use standard verification
 				tlsConfig.InsecureSkipVerify = !e.config.VerifyTLS
 			}
 
 			if err := client.StartTLS(tlsConfig); err != nil {
-				// Check MTA-STS policy - if enforcing, TLS failure is fatal
-				if stsPolicy != nil && stsPolicy.ShouldEnforceTLS() {
-					return fmt.Errorf("MTA-STS enforced TLS but STARTTLS failed: %w", err)
-				}
-				if e.config.RequireTLS {
-					return fmt.Errorf("STARTTLS required but failed: %w", err)
+				if reason := tlsRequirementReason(stsPolicy, useDANE, e.config.RequireTLS); reason != "" {
+					return fmt.Errorf("%s but STARTTLS failed: %w", reason, err)
 				}
 				// SECURITY WARNING: TLS downgrade attack possible here
 				e.logger.WarnContext(ctx, "SECURITY: STARTTLS failed, falling back to plaintext - potential downgrade attack",
@@ -860,11 +831,8 @@ func (e *Engine) deliverToHostWithTLS(ctx context.Context, addr, hostname string
 			}
 		} else {
 			// No STARTTLS support
-			if stsPolicy != nil && stsPolicy.ShouldEnforceTLS() {
-				return fmt.Errorf("MTA-STS enforces TLS but server doesn't support STARTTLS")
-			}
-			if e.config.RequireTLS {
-				return fmt.Errorf("STARTTLS required but not supported by server")
+			if reason := tlsRequirementReason(stsPolicy, useDANE, e.config.RequireTLS); reason != "" {
+				return fmt.Errorf("%s but server doesn't support STARTTLS", reason)
 			}
 		}
 	}
@@ -914,6 +882,42 @@ func (e *Engine) deliverToHostWithTLS(ctx context.Context, addr, hostname string
 	}
 
 	return nil
+}
+
+func (e *Engine) daneVerifyConnection(ctx context.Context, hostname string, tlsaRecords []TLSARecord) func(tls.ConnectionState) error {
+	return func(cs tls.ConnectionState) error {
+		if len(cs.PeerCertificates) == 0 {
+			return fmt.Errorf("no certificates presented")
+		}
+
+		result := ValidateCertificate(cs.PeerCertificates[0], cs.PeerCertificates[1:], tlsaRecords)
+		if !result.Valid {
+			return fmt.Errorf("DANE validation failed: %w", result.Error)
+		}
+
+		e.logger.DebugContext(ctx, "DANE validation passed",
+			"host", hostname,
+			"usage", result.UsedRecord.Usage.String(),
+		)
+		return nil
+	}
+}
+
+func shouldUseDANE(tlsaRecords []TLSARecord, dnssecValid bool) bool {
+	return len(tlsaRecords) > 0 && dnssecValid
+}
+
+func tlsRequirementReason(stsPolicy *STSPolicy, useDANE, requireTLS bool) string {
+	if useDANE {
+		return "DANE requires TLS"
+	}
+	if stsPolicy != nil && stsPolicy.ShouldEnforceTLS() {
+		return "MTA-STS enforces TLS"
+	}
+	if requireTLS {
+		return "STARTTLS required"
+	}
+	return ""
 }
 
 // recoveryWorker periodically recovers stale messages.

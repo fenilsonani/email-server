@@ -29,8 +29,12 @@ func NewBuildManager(cfg *config.UpdaterConfig, logger *logging.Logger) *BuildMa
 
 // Build compiles the mailserver binary with version information injected
 func (bm *BuildManager) Build(ctx context.Context, commitSHA string) (string, error) {
-	repoPath := filepath.Join(bm.config.BuildPath, "repo")
-	outputPath := filepath.Join(bm.config.BuildPath, "mailserver")
+	if err := validateUpdaterConfig(bm.config); err != nil {
+		return "", err
+	}
+	buildPath := filepath.Clean(bm.config.BuildPath)
+	repoPath := filepath.Join(buildPath, "repo")
+	outputPath := filepath.Join(buildPath, "mailserver")
 
 	// Get version information
 	version, buildTime := bm.getVersionInfo(commitSHA)
@@ -49,7 +53,7 @@ func (bm *BuildManager) Build(ctx context.Context, commitSHA string) (string, er
 		"version", version,
 		"commit", commitSHA[:8])
 
-	cmd := exec.CommandContext(ctx, "go", "build",
+	cmd := exec.CommandContext(ctx, "go", "build", // #nosec G204 -- command and working tree are validated managed paths
 		"-ldflags", ldflags,
 		"-o", outputPath,
 		filepath.Join(repoPath, "cmd/mailserver/"),
@@ -75,11 +79,14 @@ func (bm *BuildManager) Build(ctx context.Context, commitSHA string) (string, er
 
 // Test runs the Go tests
 func (bm *BuildManager) Test(ctx context.Context) error {
-	repoPath := filepath.Join(bm.config.BuildPath, "repo")
+	if err := validateUpdaterConfig(bm.config); err != nil {
+		return err
+	}
+	repoPath := filepath.Join(filepath.Clean(bm.config.BuildPath), "repo")
 
 	bm.logger.Info("Running tests", "repo_path", repoPath)
 
-	cmd := exec.CommandContext(ctx, "go", "test", "./...")
+	cmd := exec.CommandContext(ctx, "go", "test", "./...") // #nosec G204 -- static command executed in validated managed path
 	cmd.Dir = repoPath
 
 	output, err := cmd.CombinedOutput()
@@ -93,11 +100,14 @@ func (bm *BuildManager) Test(ctx context.Context) error {
 
 // Vet runs go vet for code quality
 func (bm *BuildManager) Vet(ctx context.Context) error {
-	repoPath := filepath.Join(bm.config.BuildPath, "repo")
+	if err := validateUpdaterConfig(bm.config); err != nil {
+		return err
+	}
+	repoPath := filepath.Join(filepath.Clean(bm.config.BuildPath), "repo")
 
 	bm.logger.Info("Running go vet", "repo_path", repoPath)
 
-	cmd := exec.CommandContext(ctx, "go", "vet", "./...")
+	cmd := exec.CommandContext(ctx, "go", "vet", "./...") // #nosec G204 -- static command executed in validated managed path
 	cmd.Dir = repoPath
 
 	output, err := cmd.CombinedOutput()
@@ -111,7 +121,11 @@ func (bm *BuildManager) Vet(ctx context.Context) error {
 
 // Cleanup removes temporary build files
 func (bm *BuildManager) Cleanup(ctx context.Context) {
-	buildPath := bm.config.BuildPath
+	if err := validateUpdaterConfig(bm.config); err != nil {
+		bm.logger.Warn("Skipping cleanup due to invalid updater config", "error", err)
+		return
+	}
+	buildPath := filepath.Clean(bm.config.BuildPath)
 	bm.logger.Info("Cleaning up build files", "path", buildPath)
 
 	// Keep the binary but remove the repo directory
@@ -135,6 +149,9 @@ func (bm *BuildManager) getVersionInfo(commitSHA string) (string, string) {
 
 // VerifyBinary checks if the compiled binary is valid
 func (bm *BuildManager) VerifyBinary(ctx context.Context, binPath string) error {
+	if _, err := validateAbsolutePath(binPath, "binary path"); err != nil {
+		return err
+	}
 	// Check if file exists and is executable
 	info, err := os.Stat(binPath)
 	if err != nil {
@@ -146,7 +163,7 @@ func (bm *BuildManager) VerifyBinary(ctx context.Context, binPath string) error 
 	}
 
 	// Try to run version command
-	cmd := exec.CommandContext(ctx, binPath, "version")
+	cmd := exec.CommandContext(ctx, binPath, "version") // #nosec G204 -- binary path validated as absolute executable path
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("binary verification failed: %w, output: %s", err, string(output))

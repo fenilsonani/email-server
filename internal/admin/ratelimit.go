@@ -67,8 +67,8 @@ func DefaultRateLimiter() *RateLimiter {
 // Only trusts X-Forwarded-For/X-Real-IP if request comes from a trusted proxy
 func (rl *RateLimiter) GetClientIP(r *http.Request) string {
 	// First get the direct connection IP
-	directIP, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
+	directIP := normalizeRemoteIP(r.RemoteAddr)
+	if directIP == "" {
 		directIP = r.RemoteAddr
 	}
 
@@ -76,13 +76,8 @@ func (rl *RateLimiter) GetClientIP(r *http.Request) string {
 	if len(rl.trustedProxies) > 0 && rl.trustedProxies[directIP] {
 		// Check X-Forwarded-For header (for reverse proxy)
 		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			// Take the first IP in the chain (original client)
-			ips := strings.Split(xff, ",")
-			if len(ips) > 0 {
-				clientIP := strings.TrimSpace(ips[0])
-				if net.ParseIP(clientIP) != nil {
-					return clientIP
-				}
+			if clientIP := forwardedIPFromHeader(xff); clientIP != "" {
+				return clientIP
 			}
 		}
 
@@ -96,6 +91,33 @@ func (rl *RateLimiter) GetClientIP(r *http.Request) string {
 
 	// Use direct connection IP (don't trust headers from untrusted sources)
 	return directIP
+}
+
+func normalizeRemoteIP(value string) string {
+	if value == "" {
+		return ""
+	}
+	if ip := net.ParseIP(value); ip != nil {
+		return ip.String()
+	}
+	host, _, err := net.SplitHostPort(value)
+	if err != nil {
+		return ""
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.String()
+	}
+	return ""
+}
+
+func forwardedIPFromHeader(header string) string {
+	ips := strings.Split(header, ",")
+	for i := len(ips) - 1; i >= 0; i-- {
+		if ip := normalizeRemoteIP(strings.TrimSpace(ips[i])); ip != "" {
+			return ip
+		}
+	}
+	return ""
 }
 
 // getIP is deprecated - use GetClientIP instead

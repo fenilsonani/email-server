@@ -134,6 +134,34 @@ func TestVerifyPassword(t *testing.T) {
 	}
 }
 
+func TestParseArgon2Hash_RejectsEmptyPayloads(t *testing.T) {
+	tests := []struct {
+		name    string
+		encoded string
+		wantErr error
+	}{
+		{
+			name:    "empty salt",
+			encoded: "$argon2id$v=19$m=65536,t=3,p=4$$c29tZWhhc2g",
+			wantErr: errInvalidSalt,
+		},
+		{
+			name:    "empty hash",
+			encoded: "$argon2id$v=19$m=65536,t=3,p=4$c29tZXNhbHQ$",
+			wantErr: errInvalidHash,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, _, _, err := parseArgon2Hash(tt.encoded)
+			if err != tt.wantErr {
+				t.Fatalf("parseArgon2Hash() error = %v, want %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestAuthenticator_Authenticate(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()

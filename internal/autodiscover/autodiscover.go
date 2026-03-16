@@ -486,8 +486,8 @@ max_age: 604800
 func generateUUID(input string) string {
 	// Simple hash-based UUID generation
 	hash := uint64(0)
-	for _, c := range input {
-		hash = hash*31 + uint64(c)
+	for i := 0; i < len(input); i++ {
+		hash = hash*31 + uint64(input[i])
 	}
 	return fmt.Sprintf("%08X-%04X-%04X-%04X-%012X",
 		hash&0xFFFFFFFF,

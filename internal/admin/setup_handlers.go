@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/fenilsonani/email-server/internal/auth"
@@ -165,7 +166,7 @@ func (s *Server) handleAPISetupPreflight(w http.ResponseWriter, r *http.Request)
 	checks := map[string]interface{}{}
 
 	// Check port 25 (SMTP)
-	if ln, err := net.Listen("tcp", ":25"); err == nil {
+	if ln, err := net.Listen("tcp4", loopbackListenAddr(25)); err == nil {
 		ln.Close()
 		checks["port_25"] = map[string]interface{}{"status": "available", "service": "SMTP"}
 	} else {
@@ -173,7 +174,7 @@ func (s *Server) handleAPISetupPreflight(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Check port 587 (Submission)
-	if ln, err := net.Listen("tcp", ":587"); err == nil {
+	if ln, err := net.Listen("tcp4", loopbackListenAddr(587)); err == nil {
 		ln.Close()
 		checks["port_587"] = map[string]interface{}{"status": "available", "service": "SMTP Submission"}
 	} else {
@@ -181,7 +182,7 @@ func (s *Server) handleAPISetupPreflight(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Check port 993 (IMAPS)
-	if ln, err := net.Listen("tcp", ":993"); err == nil {
+	if ln, err := net.Listen("tcp4", loopbackListenAddr(993)); err == nil {
 		ln.Close()
 		checks["port_993"] = map[string]interface{}{"status": "available", "service": "IMAPS"}
 	} else {
@@ -215,6 +216,10 @@ func (s *Server) setupAlreadyDone(w http.ResponseWriter, r *http.Request) bool {
 		return true
 	}
 	return false
+}
+
+func loopbackListenAddr(port int) string {
+	return net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
 }
 
 // handleAPISetupInstall executes the initial setup.

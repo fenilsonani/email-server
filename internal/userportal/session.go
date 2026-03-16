@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"net"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -18,11 +20,8 @@ func (s *Server) createSession(ctx context.Context, userID int64, r *http.Reques
 	token := generateToken()
 	expiresAt := time.Now().Add(sessionDuration)
 
-	ipAddress := getClientIP(r)
-	userAgent := r.UserAgent()
-	if len(userAgent) > 255 {
-		userAgent = userAgent[:255]
-	}
+	ipAddress := s.getClientIP(r)
+	userAgent := normalizeUserAgent(r.UserAgent())
 
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO user_sessions (token, user_id, expires_at, ip_address, user_agent)
@@ -37,13 +36,15 @@ func (s *Server) createSession(ctx context.Context, userID int64, r *http.Reques
 }
 
 // validateSession checks if a session token is valid and returns the user ID
-func (s *Server) validateSession(token string) (int64, bool) {
+func (s *Server) validateSession(r *http.Request, token string) (int64, bool) {
 	var userID int64
 	var expiresAt time.Time
+	var ipAddress, userAgent string
 
-	err := s.db.QueryRow(`
-		SELECT user_id, expires_at FROM user_sessions WHERE token = ?
-	`, token).Scan(&userID, &expiresAt)
+	err := s.db.QueryRowContext(r.Context(), `
+		SELECT user_id, expires_at, COALESCE(ip_address, ''), COALESCE(user_agent, '')
+		FROM user_sessions WHERE token = ?
+	`, token).Scan(&userID, &expiresAt, &ipAddress, &userAgent)
 
 	if err != nil {
 		return 0, false
@@ -51,6 +52,18 @@ func (s *Server) validateSession(token string) (int64, bool) {
 
 	if time.Now().After(expiresAt) {
 		// Session expired, clean it up
+		s.db.Exec(`DELETE FROM user_sessions WHERE token = ?`, token)
+		return 0, false
+	}
+
+	currentIP := s.getClientIP(r)
+	if !sessionIPMatches(ipAddress, currentIP) {
+		s.db.Exec(`DELETE FROM user_sessions WHERE token = ?`, token)
+		return 0, false
+	}
+
+	currentUserAgent := normalizeUserAgent(r.UserAgent())
+	if userAgent != "" && userAgent != currentUserAgent {
 		s.db.Exec(`DELETE FROM user_sessions WHERE token = ?`, token)
 		return 0, false
 	}
@@ -111,26 +124,74 @@ func generateToken() string {
 	return hex.EncodeToString(b)
 }
 
-// getClientIP extracts the client IP from the request
-func getClientIP(r *http.Request) string {
-	// Check X-Forwarded-For header first (for proxied requests)
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		// Take the first IP in the chain
-		if idx := len(xff); idx > 0 {
-			for i, c := range xff {
-				if c == ',' {
-					return xff[:i]
-				}
+// getClientIP extracts the client IP from the request.
+// Proxy headers are only trusted when the direct peer is a trusted proxy.
+func (s *Server) getClientIP(r *http.Request) string {
+	directIP := normalizeIP(r.RemoteAddr)
+
+	if s.trustedProxies[directIP] {
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			if clientIP := forwardedUserPortalIP(xff); clientIP != "" {
+				return clientIP
 			}
-			return xff
+		}
+
+		if xrip := r.Header.Get("X-Real-IP"); xrip != "" {
+			clientIP := normalizeIP(strings.TrimSpace(xrip))
+			if clientIP != "" {
+				return clientIP
+			}
 		}
 	}
 
-	// Check X-Real-IP header
-	if xrip := r.Header.Get("X-Real-IP"); xrip != "" {
-		return xrip
+	return directIP
+}
+
+func forwardedUserPortalIP(header string) string {
+	ips := strings.Split(header, ",")
+	for i := len(ips) - 1; i >= 0; i-- {
+		if clientIP := normalizeIP(strings.TrimSpace(ips[i])); clientIP != "" {
+			return clientIP
+		}
+	}
+	return ""
+}
+
+func sessionIPMatches(storedIP, currentIP string) bool {
+	if storedIP == "" || currentIP == "" {
+		return true
 	}
 
-	// Fall back to RemoteAddr
-	return r.RemoteAddr
+	if storedIP == currentIP {
+		return true
+	}
+
+	return normalizeIP(storedIP) == currentIP
+}
+
+func normalizeIP(value string) string {
+	if value == "" {
+		return ""
+	}
+
+	if ip := net.ParseIP(value); ip != nil {
+		return ip.String()
+	}
+
+	host, _, err := net.SplitHostPort(value)
+	if err == nil {
+		if ip := net.ParseIP(host); ip != nil {
+			return ip.String()
+		}
+		return ""
+	}
+
+	return ""
+}
+
+func normalizeUserAgent(userAgent string) string {
+	if len(userAgent) > 255 {
+		return userAgent[:255]
+	}
+	return userAgent
 }

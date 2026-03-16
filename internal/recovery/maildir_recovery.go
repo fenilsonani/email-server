@@ -2,12 +2,16 @@ package recovery
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
+
+	"github.com/fenilsonani/email-server/internal/safecast"
 )
 
 // RecoverMaildirEmails scans the maildir directory and rebuilds the email index in the database.
@@ -232,5 +236,20 @@ func parseMaildirFlags(flagStr string) string {
 
 // generateUIDValidity generates a UID validity value for a new mailbox
 func generateUIDValidity() uint32 {
-	return uint32(os.Getpid())
+	var randomBytes [4]byte
+	if _, err := rand.Read(randomBytes[:]); err != nil {
+		randomBytes = [4]byte{}
+	}
+
+	timestamp, err := safecast.Int64ToUint32(time.Now().Unix())
+	if err != nil {
+		timestamp = 1
+	}
+
+	randomMask := uint32(randomBytes[0])<<24 | uint32(randomBytes[1])<<16 | uint32(randomBytes[2])<<8 | uint32(randomBytes[3])
+	uidValidity := timestamp ^ randomMask
+	if uidValidity == 0 {
+		return 1
+	}
+	return uidValidity
 }

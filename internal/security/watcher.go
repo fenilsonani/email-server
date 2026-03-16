@@ -2,7 +2,7 @@ package security
 
 import (
 	"context"
-	"crypto/md5"
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"os"
@@ -14,16 +14,16 @@ import (
 
 // CertificateWatcher watches certificate files for changes and triggers reloads
 type CertificateWatcher struct {
-	certPath      string
-	keyPath       string
-	debounceDelay time.Duration
-	tlsManager    *TLSManager
-	watcher       *fsnotify.Watcher
-	mu            sync.RWMutex
-	running       bool
+	certPath       string
+	keyPath        string
+	debounceDelay  time.Duration
+	tlsManager     *TLSManager
+	watcher        *fsnotify.Watcher
+	mu             sync.RWMutex
+	running        bool
 	lastReloadTime time.Time
-	lastCertHash  string
-	lastKeyHash   string
+	lastCertHash   string
+	lastKeyHash    string
 }
 
 // NewCertificateWatcher creates a new certificate file watcher
@@ -178,7 +178,7 @@ func (c *CertificateWatcher) reloadCertificates() {
 	}
 }
 
-// hashFile calculates MD5 hash of a file for change detection
+// hashFile calculates a SHA-256 hash of a file for change detection
 func (c *CertificateWatcher) hashFile(path string) (string, error) {
 	file, err := os.Open(path)
 	if err != nil {
@@ -186,7 +186,7 @@ func (c *CertificateWatcher) hashFile(path string) (string, error) {
 	}
 	defer file.Close()
 
-	hash := md5.New()
+	hash := sha256.New()
 	if _, err := io.Copy(hash, file); err != nil {
 		return "", err
 	}

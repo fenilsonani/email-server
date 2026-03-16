@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -21,11 +22,11 @@ type CheckResult struct {
 
 // PreflightResults contains all preflight check results
 type PreflightResults struct {
-	Checks  []CheckResult
-	Passed  int
-	Failed  int
-	Warned  int
-	Ready   bool
+	Checks []CheckResult
+	Passed int
+	Failed int
+	Warned int
+	Ready  bool
 }
 
 // RunPreflight runs all preflight checks
@@ -321,7 +322,7 @@ func checkDiskSpace() CheckResult {
 }
 
 func checkPortAvailable(port int, name string) CheckResult {
-	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+	ln, err := net.Listen("tcp4", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
 	if err != nil {
 		// Check if it's already in use by our service
 		if strings.Contains(err.Error(), "address already in use") {

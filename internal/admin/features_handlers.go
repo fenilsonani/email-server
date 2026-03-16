@@ -238,14 +238,14 @@ func (s *Server) handleAliasAdd(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// POST: Create alias
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "Bad request", http.StatusBadRequest)
+	if err := parseFormWithLimit(w, r, maxAdminFormBody); err != nil {
+		http.Error(w, "Bad request", formErrorStatus(err))
 		return
 	}
 
-	domainID, _ := strconv.ParseInt(r.FormValue("domain_id"), 10, 64)
-	description := r.FormValue("description")
-	customLocal := r.FormValue("local_part")
+	domainID, _ := strconv.ParseInt(r.PostForm.Get("domain_id"), 10, 64)
+	description := r.PostForm.Get("description")
+	customLocal := r.PostForm.Get("local_part")
 
 	// Get domain name
 	var domainName string
@@ -402,15 +402,15 @@ func (s *Server) handleVIPAdd(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// POST: Add VIP
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "Bad request", http.StatusBadRequest)
+	if err := parseFormWithLimit(w, r, maxAdminFormBody); err != nil {
+		http.Error(w, "Bad request", formErrorStatus(err))
 		return
 	}
 
 	vip := &features.VIPContact{
 		UserID: userID,
-		Email:  r.FormValue("email"),
-		Name:   r.FormValue("name"),
+		Email:  r.PostForm.Get("email"),
+		Name:   r.PostForm.Get("name"),
 	}
 
 	if err := s.featuresStore.AddVIP(r.Context(), vip); err != nil {
@@ -487,18 +487,18 @@ func (s *Server) handlePreferences(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// POST: Update preferences
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "Bad request", http.StatusBadRequest)
+	if err := parseFormWithLimit(w, r, maxAdminFormBody); err != nil {
+		http.Error(w, "Bad request", formErrorStatus(err))
 		return
 	}
 
 	// Parse form values
-	undoDelay, _ := strconv.Atoi(r.FormValue("undo_send_delay"))
+	undoDelay, _ := strconv.Atoi(r.PostForm.Get("undo_send_delay"))
 	prefs.UndoSendDelay = undoDelay
-	prefs.ScreenerEnabled = r.FormValue("screener_enabled") == "on"
-	prefs.TrackerBlocking = r.FormValue("tracker_blocking")
-	prefs.ZonesEnabled = r.FormValue("zones_enabled") == "on"
-	prefs.SnoozeMarkUnread = r.FormValue("snooze_mark_unread") == "on"
+	prefs.ScreenerEnabled = r.PostForm.Get("screener_enabled") == "on"
+	prefs.TrackerBlocking = r.PostForm.Get("tracker_blocking")
+	prefs.ZonesEnabled = r.PostForm.Get("zones_enabled") == "on"
+	prefs.SnoozeMarkUnread = r.PostForm.Get("snooze_mark_unread") == "on"
 
 	if err := s.featuresStore.SavePreferences(r.Context(), prefs); err != nil {
 		data := map[string]interface{}{
@@ -611,13 +611,13 @@ func (s *Server) handleScheduledAdd(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// POST: Create scheduled email
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "Bad request", http.StatusBadRequest)
+	if err := parseFormWithLimit(w, r, maxAdminFormBody); err != nil {
+		http.Error(w, "Bad request", formErrorStatus(err))
 		return
 	}
 
 	// Parse send time
-	sendAtStr := r.FormValue("send_at")
+	sendAtStr := r.PostForm.Get("send_at")
 	sendAt, err := time.Parse("2006-01-02T15:04", sendAtStr)
 	if err != nil {
 		data := map[string]interface{}{
@@ -630,7 +630,7 @@ func (s *Server) handleScheduledAdd(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Parse recipients
-	recipientsStr := r.FormValue("recipients")
+	recipientsStr := r.PostForm.Get("recipients")
 	recipients := strings.Split(recipientsStr, ",")
 	for i, r := range recipients {
 		recipients[i] = strings.TrimSpace(r)
@@ -639,10 +639,10 @@ func (s *Server) handleScheduledAdd(w http.ResponseWriter, r *http.Request) {
 	email := &features.ScheduledEmail{
 		UserID:      userID,
 		SendAt:      sendAt,
-		FromAddress: r.FormValue("from_address"),
+		FromAddress: r.PostForm.Get("from_address"),
 		Recipients:  recipients,
-		Subject:     r.FormValue("subject"),
-		Body:        r.FormValue("body"),
+		Subject:     r.PostForm.Get("subject"),
+		Body:        r.PostForm.Get("body"),
 	}
 
 	if err := s.featuresStore.CreateScheduledEmail(r.Context(), email); err != nil {

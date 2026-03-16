@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/fenilsonani/email-server/internal/safecast"
 	"golang.org/x/crypto/argon2"
 )
 
@@ -114,13 +115,23 @@ func parseArgon2Hash(encoded string) (*argon2Params, []byte, []byte, error) {
 	if err != nil {
 		return nil, nil, nil, errInvalidSalt
 	}
+	if len(salt) == 0 {
+		return nil, nil, nil, errInvalidSalt
+	}
 
 	hash, err := base64.RawStdEncoding.DecodeString(parts[5])
 	if err != nil {
 		return nil, nil, nil, errInvalidHash
 	}
+	if len(hash) == 0 {
+		return nil, nil, nil, errInvalidHash
+	}
 
-	params.keyLen = uint32(len(hash))
+	keyLen, err := safecast.IntToUint32(len(hash))
+	if err != nil {
+		return nil, nil, nil, errInvalidHash
+	}
+	params.keyLen = keyLen
 
 	return params, salt, hash, nil
 }
@@ -153,7 +164,11 @@ func parseArgon2Params(s string) (*argon2Params, error) {
 		case "t":
 			params.time = uint32(val)
 		case "p":
-			params.threads = uint8(val)
+			threads, err := safecast.Uint64ToUint8(val)
+			if err != nil {
+				return nil, errInvalidParams
+			}
+			params.threads = threads
 		default:
 			return nil, errInvalidParams
 		}
