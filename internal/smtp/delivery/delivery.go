@@ -354,6 +354,7 @@ func (e *Engine) deliverMessage(msg *queue.Message) {
 		if e.dedupTracker != nil && smtpMessageID != "" {
 			e.dedupTracker.MarkFailed(ctx, smtpMessageID, err.Error())
 		}
+		e.updateSentEmailStatus(ctx, smtpMessageID, "failed", "", err.Error(), msg.Attempts)
 		if span != nil {
 			span.SetError(err)
 		}
@@ -421,6 +422,9 @@ func (e *Engine) deliverMessage(msg *queue.Message) {
 				}
 			}
 
+			// Update sent_emails status for API send logs
+			e.updateSentEmailStatus(ctx, smtpMessageID, "bounced", "", err.Error(), msg.Attempts)
+
 			// Clean up the original message file
 			if err := e.cleanupMessageFile(msg.MessagePath); err != nil {
 				logger.WarnContext(ctx, "Failed to cleanup message file after failure",
@@ -441,6 +445,10 @@ func (e *Engine) deliverMessage(msg *queue.Message) {
 			// Log deferred status for each recipient
 			for _, rcpt := range msg.Recipients {
 				e.logDeliveryWithTrace(ctx, msg.ID, msg.Sender, rcpt, "deferred", smtpCode, err.Error(), msg.Domain, msg.Attempts, startTime, cbState.String())
+			}
+			// Record deferred attempt in delivery timeline (don't change sent_emails status)
+			if smtpMessageID != "" {
+				e.recordDeliveryAttempt(ctx, "<"+smtpMessageID+">", "deferred", "", err.Error(), msg.Attempts)
 			}
 			if span != nil {
 				span.SetTag("result", "temporary_failure")
@@ -466,6 +474,9 @@ func (e *Engine) deliverMessage(msg *queue.Message) {
 	for _, rcpt := range msg.Recipients {
 		e.logDeliveryWithTrace(ctx, msg.ID, msg.Sender, rcpt, "delivered", 250, "", msg.Domain, msg.Attempts, startTime, cbState.String())
 	}
+
+	// Update sent_emails status for API send logs
+	e.updateSentEmailStatus(ctx, smtpMessageID, "delivered", "250 OK", "", msg.Attempts)
 
 	// Clean up the message file from disk
 	if err := e.cleanupMessageFile(msg.MessagePath); err != nil {
@@ -1094,6 +1105,117 @@ func (e *Engine) extractMessageID(messagePath string) string {
 	messageID = strings.TrimPrefix(messageID, "<")
 	messageID = strings.TrimSuffix(messageID, ">")
 	return messageID
+}
+
+// maxBounceReasonLen limits stored bounce reasons to prevent storage abuse
+// from malicious SMTP servers sending excessively long error responses.
+const maxBounceReasonLen = 1024
+
+// truncateString safely truncates a string to maxLen bytes.
+func truncateString(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen]
+}
+
+// updateSentEmailStatus syncs the delivery result back to the sent_emails table
+// and records a delivery attempt. This ensures the transactional API's send logs
+// reflect actual delivery status instead of staying permanently "queued".
+func (e *Engine) updateSentEmailStatus(ctx context.Context, smtpMessageID, status, smtpResponse, bounceReason string, attempt int) {
+	if e.db == nil || smtpMessageID == "" {
+		return
+	}
+
+	// Truncate externally-sourced strings to prevent storage abuse
+	bounceReason = truncateString(bounceReason, maxBounceReasonLen)
+	smtpResponse = truncateString(smtpResponse, maxBounceReasonLen)
+
+	// sent_emails.message_id stores the full angle-bracket form: <id@domain>
+	// extractMessageID strips them, so we re-add for matching
+	fullMessageID := "<" + smtpMessageID + ">"
+	now := time.Now()
+
+	var err error
+	switch status {
+	case "delivered":
+		_, err = e.db.ExecContext(ctx,
+			`UPDATE sent_emails SET status = 'delivered', delivered_at = ?, smtp_response = ? WHERE message_id = ? AND status IN ('queued', 'sending')`,
+			now, smtpResponse, fullMessageID,
+		)
+	case "bounced":
+		_, err = e.db.ExecContext(ctx,
+			`UPDATE sent_emails SET status = 'bounced', bounced_at = ?, bounce_reason = ? WHERE message_id = ? AND status IN ('queued', 'sending')`,
+			now, bounceReason, fullMessageID,
+		)
+	case "failed":
+		_, err = e.db.ExecContext(ctx,
+			`UPDATE sent_emails SET status = 'failed', bounce_reason = ? WHERE message_id = ? AND status IN ('queued', 'sending')`,
+			bounceReason, fullMessageID,
+		)
+	}
+
+	if err != nil {
+		e.logger.WarnContext(ctx, "Failed to update sent_emails status",
+			"error", err.Error(),
+			"smtp_message_id", smtpMessageID,
+			"status", status,
+		)
+	}
+
+	// Record delivery attempt for the timeline view
+	e.recordDeliveryAttempt(ctx, fullMessageID, status, smtpResponse, bounceReason, attempt)
+}
+
+// recordDeliveryAttempt inserts a row into delivery_attempts linked to the sent_email.
+func (e *Engine) recordDeliveryAttempt(ctx context.Context, fullMessageID, status, smtpResponse, errorMessage string, attempt int) {
+	if e.db == nil || fullMessageID == "" || fullMessageID == "<>" {
+		return
+	}
+
+	// Map delivery status to the delivery_attempts CHECK constraint:
+	// ('pending', 'sent', 'deferred', 'failed', 'bounced')
+	var attemptStatus string
+	switch status {
+	case "delivered":
+		attemptStatus = "sent"
+	case "bounced":
+		attemptStatus = "bounced"
+	case "failed":
+		attemptStatus = "failed"
+	case "deferred":
+		attemptStatus = "deferred"
+	default:
+		// Unknown status — skip to avoid CHECK constraint violation
+		e.logger.WarnContext(ctx, "Unknown delivery status for attempt recording",
+			"status", status, "message_id", fullMessageID)
+		return
+	}
+
+	// Truncate externally-sourced strings
+	smtpResponse = truncateString(smtpResponse, maxBounceReasonLen)
+	errorMessage = truncateString(errorMessage, maxBounceReasonLen)
+
+	var smtpResp, errMsg *string
+	if smtpResponse != "" {
+		smtpResp = &smtpResponse
+	}
+	if errorMessage != "" {
+		errMsg = &errorMessage
+	}
+
+	_, err := e.db.ExecContext(ctx,
+		`INSERT INTO delivery_attempts (sent_email_id, attempt_number, attempted_at, status, smtp_response, error_message)
+		 SELECT id, ?, ?, ?, ?, ? FROM sent_emails WHERE message_id = ?`,
+		attempt, time.Now(), attemptStatus, smtpResp, errMsg, fullMessageID,
+	)
+	if err != nil {
+		e.logger.WarnContext(ctx, "Failed to record delivery attempt",
+			"error", err.Error(),
+			"message_id", fullMessageID,
+			"attempt", attempt,
+		)
+	}
 }
 
 // logDeliveryWithTrace logs a delivery event with tracing and observability data.
