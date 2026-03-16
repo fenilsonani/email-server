@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/fenilsonani/email-server/internal/logging"
@@ -101,7 +102,9 @@ type Engine struct {
 	dedupTracker *queue.DeliveryTracker
 
 	// External event handler for webhooks, suppression, etc.
-	eventHandler DeliveryEventHandler
+	// Stored as atomic.Value for safe concurrent access since Start()
+	// may be called before SetEventHandler().
+	eventHandler atomic.Value // stores DeliveryEventHandler
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -166,15 +169,14 @@ func WithDedupTracker(dt *queue.DeliveryTracker) EngineOption {
 // WithEventHandler sets a callback for delivery events (delivered, bounced, failed).
 func WithEventHandler(h DeliveryEventHandler) EngineOption {
 	return func(e *Engine) {
-		e.eventHandler = h
+		e.eventHandler.Store(h)
 	}
 }
 
-// SetEventHandler sets the delivery event handler after engine creation.
-// This must be called before Start() since workers read eventHandler without
-// synchronization. It is safe to call between NewEngine() and Start().
+// SetEventHandler sets the delivery event handler. Safe to call concurrently
+// with running workers (e.g., when the API server initializes after Start()).
 func (e *Engine) SetEventHandler(h DeliveryEventHandler) {
-	e.eventHandler = h
+	e.eventHandler.Store(h)
 }
 
 // NewEngine creates a new delivery engine.
@@ -1069,7 +1071,7 @@ func (e *Engine) warmupCircuitBreakers() {
 				GROUP BY message_id, attempt_number
 				ORDER BY latest DESC
 				LIMIT 10
-			)
+			) sub ORDER BY latest DESC
 		`, domain, oneHourAgo)
 		if err != nil {
 			e.logger.Debug("Failed to check recent attempts for domain",
@@ -1330,7 +1332,8 @@ func (e *Engine) extractMessageID(messagePath string) string {
 // fireEvent dispatches a delivery event to the registered handler asynchronously.
 // The event is passed by value so the handler is not tied to the caller's lifetime.
 func (e *Engine) fireEvent(ctx context.Context, event DeliveryEvent) {
-	if e.eventHandler != nil {
+	h, _ := e.eventHandler.Load().(DeliveryEventHandler)
+	if h != nil {
 		go func(ev DeliveryEvent) {
 			defer func() {
 				if r := recover(); r != nil {
@@ -1339,7 +1342,7 @@ func (e *Engine) fireEvent(ctx context.Context, event DeliveryEvent) {
 						"message_id", ev.SMTPMessageID)
 				}
 			}()
-			e.eventHandler(context.Background(), ev)
+			h(context.Background(), ev)
 		}(event)
 	}
 }

@@ -280,9 +280,9 @@ func (s *Server) registerDeliveryEventHandler(engine *delivery.Engine) {
 			if s.suppression != nil {
 				if suppressErr := s.suppression.AddFromBounce(ctx, domainID, recipient); suppressErr != nil {
 					s.logger.Warn("Failed to auto-suppress bounced address",
-						"email", recipient, "error", suppressErr.Error())
+						"message_id", fullMessageID, "error", suppressErr.Error())
 				} else {
-					s.logger.Info("Auto-suppressed bounced address", "email", recipient)
+					s.logger.Info("Auto-suppressed bounced address", "message_id", fullMessageID)
 				}
 			}
 

@@ -325,13 +325,13 @@ func TestFireEvent_CallsHandler(t *testing.T) {
 
 	e := &Engine{
 		logger: logger.Delivery(),
-		eventHandler: func(ctx context.Context, event DeliveryEvent) {
-			mu.Lock()
-			received = append(received, event)
-			mu.Unlock()
-			done <- struct{}{}
-		},
 	}
+	e.SetEventHandler(func(ctx context.Context, event DeliveryEvent) {
+		mu.Lock()
+		received = append(received, event)
+		mu.Unlock()
+		done <- struct{}{}
+	})
 
 	e.fireEvent(context.Background(), DeliveryEvent{
 		SMTPMessageID: "test@example.com",
@@ -364,8 +364,8 @@ func TestFireEvent_NilHandler(t *testing.T) {
 	logger := logging.Default()
 
 	e := &Engine{
-		logger:       logger.Delivery(),
-		eventHandler: nil,
+		logger: logger.Delivery(),
+		// eventHandler left unset (zero value atomic.Value)
 	}
 
 	// Should not panic
