@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/fenilsonani/email-server/internal/logging"
+	"github.com/fenilsonani/email-server/internal/resilience"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -366,6 +367,157 @@ func TestFireEvent_NilHandler(t *testing.T) {
 		SMTPMessageID: "test@example.com",
 		Status:        "delivered",
 	})
+}
+
+func TestCleanupOrphanedFiles(t *testing.T) {
+	tmpDir := t.TempDir()
+	logger := logging.Default()
+
+	e := &Engine{
+		config: Config{QueuePath: tmpDir},
+		logger: logger.Delivery(),
+	}
+
+	// Create an old .eml file (orphaned)
+	oldFile := filepath.Join(tmpDir, "old-message.eml")
+	if err := os.WriteFile(oldFile, []byte("old email"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// Set modification time to 8 days ago
+	oldTime := time.Now().Add(-8 * 24 * time.Hour)
+	os.Chtimes(oldFile, oldTime, oldTime)
+
+	// Create a recent .eml file (still active)
+	recentFile := filepath.Join(tmpDir, "recent-message.eml")
+	if err := os.WriteFile(recentFile, []byte("recent email"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a non-.eml file (should be ignored)
+	otherFile := filepath.Join(tmpDir, "config.txt")
+	if err := os.WriteFile(otherFile, []byte("config"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	os.Chtimes(otherFile, oldTime, oldTime)
+
+	cleaned := e.cleanupOrphanedFiles()
+
+	if cleaned != 1 {
+		t.Errorf("cleanupOrphanedFiles() = %d, want 1", cleaned)
+	}
+
+	// Old .eml should be deleted
+	if _, err := os.Stat(oldFile); !os.IsNotExist(err) {
+		t.Error("old .eml file should have been deleted")
+	}
+
+	// Recent .eml should still exist
+	if _, err := os.Stat(recentFile); os.IsNotExist(err) {
+		t.Error("recent .eml file should NOT have been deleted")
+	}
+
+	// Non-.eml file should still exist
+	if _, err := os.Stat(otherFile); os.IsNotExist(err) {
+		t.Error("non-.eml file should NOT have been deleted")
+	}
+}
+
+func TestWarmupCircuitBreakers(t *testing.T) {
+	db := setupTestDB(t)
+	logger := logging.Default()
+
+	// Add delivery_log table
+	_, err := db.Exec(`
+		CREATE TABLE delivery_log (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			message_id TEXT,
+			sender TEXT,
+			recipient TEXT,
+			status TEXT,
+			smtp_code INTEGER,
+			error_message TEXT,
+			domain TEXT,
+			attempt_number INTEGER DEFAULT 1,
+			delivery_duration_ms INTEGER,
+			circuit_breaker_state TEXT,
+			trace_id TEXT,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)
+	`)
+	if err != nil {
+		t.Fatalf("Failed to create delivery_log: %v", err)
+	}
+
+	// Insert 6 recent failures for "broken.com" (above threshold of 5)
+	for i := 0; i < 6; i++ {
+		_, err := db.Exec(`INSERT INTO delivery_log (message_id, sender, recipient, status, domain, created_at) VALUES (?, ?, ?, 'rejected', 'broken.com', datetime('now'))`,
+			"msg"+string(rune('0'+i)), "sender@test.com", "user@broken.com")
+		if err != nil {
+			t.Fatalf("Failed to insert: %v", err)
+		}
+	}
+
+	// Insert 2 failures for "ok.com" (below threshold) + 1 success
+	for i := 0; i < 2; i++ {
+		db.Exec(`INSERT INTO delivery_log (message_id, sender, recipient, status, domain, created_at) VALUES (?, ?, ?, 'rejected', 'ok.com', datetime('now'))`,
+			"ok"+string(rune('0'+i)), "sender@test.com", "user@ok.com")
+	}
+	db.Exec(`INSERT INTO delivery_log (message_id, sender, recipient, status, domain, created_at) VALUES ('ok-succ', 'sender@test.com', 'user@ok.com', 'delivered', 'ok.com', datetime('now'))`)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	e := &Engine{
+		db:     db,
+		logger: logger.Delivery(),
+		ctx:    ctx,
+		breakers: resilience.NewBreakerRegistry(func(key string) resilience.Config {
+			return resilience.Config{
+				Name:             "smtp:" + key,
+				FailureThreshold: 5,
+				SuccessThreshold: 2,
+				Timeout:          5 * time.Minute,
+			}
+		}),
+	}
+
+	e.warmupCircuitBreakers()
+
+	// "broken.com" should be pre-opened
+	brokenBreaker := e.breakers.Get("broken.com")
+	if brokenBreaker.State() != resilience.StateOpen {
+		t.Errorf("broken.com breaker state = %v, want Open", brokenBreaker.State())
+	}
+
+	// "ok.com" should NOT be pre-opened (has recent success)
+	okBreaker := e.breakers.Get("ok.com")
+	if okBreaker.State() != resilience.StateClosed {
+		t.Errorf("ok.com breaker state = %v, want Closed", okBreaker.State())
+	}
+}
+
+func TestWarmupCircuitBreakers_NilDB(t *testing.T) {
+	logger := logging.Default()
+	e := &Engine{
+		db:     nil,
+		logger: logger.Delivery(),
+	}
+	// Should not panic
+	e.warmupCircuitBreakers()
+}
+
+func TestCleanupOrphanedFiles_EmptyQueuePath(t *testing.T) {
+	logger := logging.Default()
+	e := &Engine{
+		config: Config{QueuePath: ""},
+		logger: logger.Delivery(),
+	}
+
+	// Should return 0 without error
+	cleaned := e.cleanupOrphanedFiles()
+	if cleaned != 0 {
+		t.Errorf("cleanupOrphanedFiles() with empty path = %d, want 0", cleaned)
+	}
 }
 
 func TestSetEventHandler(t *testing.T) {

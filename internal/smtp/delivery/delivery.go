@@ -13,6 +13,7 @@ import (
 	"net/smtp"
 	"net/textproto"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -226,6 +227,10 @@ func NewEngine(cfg Config, q *queue.RedisQueue, dkim *security.DKIMSignerPool, l
 // Start starts the delivery workers.
 func (e *Engine) Start() {
 	e.logger.Info("Starting delivery engine", "workers", e.config.Workers)
+
+	// Pre-open circuit breakers for domains with recent consecutive failures
+	// to avoid hammering known-broken servers on restart
+	e.warmupCircuitBreakers()
 
 	for i := 0; i < e.config.Workers; i++ {
 		e.wg.Add(1)
@@ -984,7 +989,7 @@ func tlsRequirementReason(stsPolicy *STSPolicy, useDANE, requireTLS bool) string
 	return ""
 }
 
-// recoveryWorker periodically recovers stale messages.
+// recoveryWorker periodically recovers stale messages and cleans up orphaned files.
 func (e *Engine) recoveryWorker() {
 	defer e.wg.Done()
 
@@ -1002,8 +1007,123 @@ func (e *Engine) recoveryWorker() {
 			} else if recovered > 0 {
 				e.logger.Info("Recovered stale messages", "count", recovered)
 			}
+
+			// Clean up orphaned .eml files older than retry_max_age (7 days).
+			// Files this old have either been delivered (file should have been
+			// deleted) or aged out of the retry window. Safe to remove.
+			if cleaned := e.cleanupOrphanedFiles(); cleaned > 0 {
+				e.logger.Info("Cleaned up orphaned message files", "count", cleaned)
+			}
 		}
 	}
+}
+
+// warmupCircuitBreakers checks delivery_log for domains with recent consecutive
+// failures and pre-opens their circuit breakers. This prevents the server from
+// hammering known-broken MX servers immediately after a restart.
+func (e *Engine) warmupCircuitBreakers() {
+	if e.db == nil {
+		return
+	}
+
+	// Find domains where the last N deliveries within the breaker timeout window
+	// were all failures (matching the failure threshold of 5).
+	// We look at the last hour to catch domains that were recently broken.
+	rows, err := e.db.QueryContext(e.ctx, `
+		SELECT domain, COUNT(*) as fail_count
+		FROM delivery_log
+		WHERE status IN ('rejected', 'bounced')
+		  AND domain IS NOT NULL
+		  AND created_at > datetime('now', '-1 hour')
+		GROUP BY domain
+		HAVING fail_count >= 5
+	`)
+	if err != nil {
+		e.logger.Warn("Failed to query delivery_log for circuit breaker warmup",
+			"error", err.Error())
+		return
+	}
+	defer rows.Close()
+
+	warmed := 0
+	for rows.Next() {
+		var domain string
+		var failCount int
+		if err := rows.Scan(&domain, &failCount); err != nil {
+			continue
+		}
+
+		// Check that there are no recent successes that would indicate recovery
+		var successCount int
+		e.db.QueryRowContext(e.ctx, `
+			SELECT COUNT(*) FROM delivery_log
+			WHERE domain = ? AND status = 'delivered'
+			  AND created_at > datetime('now', '-1 hour')
+		`, domain).Scan(&successCount)
+
+		if successCount > 0 {
+			continue // Domain recovered, don't pre-open
+		}
+
+		// Get the breaker (creates it) and trigger failures to open it
+		breaker := e.breakers.Get(domain)
+		if breaker != nil {
+			breaker.ForceOpen()
+			warmed++
+			e.logger.Info("Pre-opened circuit breaker for failing domain",
+				"domain", domain, "recent_failures", failCount)
+		}
+	}
+
+	if warmed > 0 {
+		e.logger.Info("Circuit breaker warmup complete", "pre_opened", warmed)
+	}
+}
+
+// orphanFileMaxAge is the age after which an .eml file is considered orphaned.
+// Matches the queue's retry_max_age default of 7 days.
+const orphanFileMaxAge = 7 * 24 * time.Hour
+
+// cleanupOrphanedFiles removes .eml files from the queue directory that are
+// older than orphanFileMaxAge. These are leftovers from completed or expired
+// deliveries where the cleanup step failed or the process crashed.
+func (e *Engine) cleanupOrphanedFiles() int {
+	if e.config.QueuePath == "" {
+		return 0
+	}
+
+	entries, err := os.ReadDir(e.config.QueuePath)
+	if err != nil {
+		e.logger.Warn("Failed to read queue directory for orphan cleanup",
+			"error", err.Error(), "path", e.config.QueuePath)
+		return 0
+	}
+
+	cutoff := time.Now().Add(-orphanFileMaxAge)
+	cleaned := 0
+
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".eml") {
+			continue
+		}
+
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+
+		if info.ModTime().Before(cutoff) {
+			path := filepath.Join(e.config.QueuePath, entry.Name())
+			if err := os.Remove(path); err != nil {
+				e.logger.Warn("Failed to remove orphaned file",
+					"path", path, "error", err.Error())
+			} else {
+				cleaned++
+			}
+		}
+	}
+
+	return cleaned
 }
 
 // Stats returns delivery statistics.
