@@ -2506,7 +2506,7 @@ func copyFile(src, dst string) error {
 	}
 	defer srcFile.Close()
 
-	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(dst), 0750); err != nil {
 		return err
 	}
 
@@ -2635,7 +2635,7 @@ func extractTarGz(archivePath, destDir string) error {
 				return err
 			}
 		case tar.TypeReg:
-			if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
+			if err := os.MkdirAll(filepath.Dir(targetPath), 0750); err != nil {
 				return err
 			}
 			outFile, err := os.Create(targetPath)
