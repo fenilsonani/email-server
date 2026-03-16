@@ -441,21 +441,30 @@ func (w *WebhookRetryWorker) Stop() {
 func (w *WebhookRetryWorker) run() {
 	defer w.wg.Done()
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Cancel context when stop signal received
+	go func() {
+		<-w.stopCh
+		cancel()
+	}()
+
 	ticker := time.NewTicker(webhookRetryInterval)
 	defer ticker.Stop()
 
 	for {
 		select {
-		case <-w.stopCh:
+		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			w.retryFailedDeliveries()
+			w.retryFailedDeliveries(ctx)
 		}
 	}
 }
 
-// webhookRetryBackoff returns the minimum age a failed delivery must have
-// before the next retry attempt. Backoff schedule:
+// webhookRetryBackoff returns the minimum wait time before the next retry attempt.
+// Backoff schedule (from last attempt):
 // attempt 4: 1 min, attempt 5: 5 min, attempt 6: 30 min, attempt 7: 2 hours, attempt 8: 8 hours
 func webhookRetryBackoff(attemptCount int) time.Duration {
 	switch {
@@ -472,17 +481,15 @@ func webhookRetryBackoff(attemptCount int) time.Duration {
 	}
 }
 
-func (w *WebhookRetryWorker) retryFailedDeliveries() {
-	ctx := context.Background()
+func (w *WebhookRetryWorker) retryFailedDeliveries(ctx context.Context) {
 	cutoff := time.Now().Add(-webhookRetryMaxAge)
 
-	// Find failed deliveries that are eligible for retry:
-	// - failed (success = FALSE)
-	// - not yet exhausted (attempt_count < max)
-	// - not too old (created_at > cutoff)
+	// Find failed deliveries that are eligible for retry.
+	// Use created_at as proxy for last attempt time — the worker only processes
+	// one batch per minute, so backoff is computed from creation + cumulative delay.
 	rows, err := w.db.QueryContext(ctx, `
 		SELECT wd.id, wd.webhook_id, wd.event_type, wd.payload, wd.attempt_count, wd.created_at,
-		       wh.url, wh.secret, wh.is_active
+		       wh.url, wh.secret
 		FROM webhook_deliveries wd
 		JOIN webhooks wh ON wd.webhook_id = wh.id
 		WHERE wd.success = FALSE
@@ -513,29 +520,40 @@ func (w *WebhookRetryWorker) retryFailedDeliveries() {
 	var deliveries []failedDelivery
 	for rows.Next() {
 		var d failedDelivery
-		var isActive bool
-		if err := rows.Scan(&d.ID, &d.WebhookID, &d.EventType, &d.Payload, &d.AttemptCount, &d.CreatedAt, &d.URL, &d.Secret, &isActive); err != nil {
+		if err := rows.Scan(&d.ID, &d.WebhookID, &d.EventType, &d.Payload, &d.AttemptCount, &d.CreatedAt, &d.URL, &d.Secret); err != nil {
 			continue
 		}
-		// Check backoff: only retry if enough time has passed since creation
-		backoff := webhookRetryBackoff(d.AttemptCount)
-		if time.Since(d.CreatedAt) < backoff {
+		// Compute cumulative backoff from creation time to space out retries
+		var cumulative time.Duration
+		for i := 3; i < d.AttemptCount; i++ {
+			cumulative += webhookRetryBackoff(i)
+		}
+		cumulative += webhookRetryBackoff(d.AttemptCount)
+		if time.Since(d.CreatedAt) < cumulative {
 			continue
 		}
 		deliveries = append(deliveries, d)
 	}
 
 	for _, d := range deliveries {
+		// Respect shutdown
+		if ctx.Err() != nil {
+			return
+		}
+
 		signature := generateWebhookSignature([]byte(d.Payload), d.Secret)
 		respCode, respBody, err := w.server.sendWebhookRequest(d.URL, []byte(d.Payload), signature)
 
 		if err == nil && respCode >= 200 && respCode < 300 {
 			// Success — mark delivery as successful
-			w.db.ExecContext(ctx, `UPDATE webhook_deliveries SET success = TRUE, response_code = ?, response_body = ?, attempt_count = ? WHERE id = ?`,
-				respCode, truncateString(respBody, 1000), d.AttemptCount+1, d.ID)
-			// Reset webhook failure count
-			w.db.ExecContext(ctx, `UPDATE webhooks SET failure_count = 0, last_success_at = ?, last_triggered_at = ? WHERE id = ?`,
-				time.Now(), time.Now(), d.WebhookID)
+			if _, dbErr := w.db.ExecContext(ctx, `UPDATE webhook_deliveries SET success = TRUE, response_code = ?, response_body = ?, attempt_count = ? WHERE id = ?`,
+				respCode, truncateString(respBody, 1000), d.AttemptCount+1, d.ID); dbErr != nil {
+				w.server.logger.Error("Failed to update delivery success", "delivery_id", d.ID, "error", dbErr.Error())
+			}
+			if _, dbErr := w.db.ExecContext(ctx, `UPDATE webhooks SET failure_count = 0, last_success_at = ?, last_triggered_at = ? WHERE id = ?`,
+				time.Now(), time.Now(), d.WebhookID); dbErr != nil {
+				w.server.logger.Error("Failed to reset webhook failure count", "webhook_id", d.WebhookID, "error", dbErr.Error())
+			}
 			w.server.logger.Info("Webhook retry succeeded",
 				"delivery_id", d.ID, "webhook_id", d.WebhookID, "attempt", d.AttemptCount+1)
 		} else {
@@ -544,8 +562,13 @@ func (w *WebhookRetryWorker) retryFailedDeliveries() {
 			if err != nil {
 				errMsg = err.Error()
 			}
-			w.db.ExecContext(ctx, `UPDATE webhook_deliveries SET attempt_count = ?, response_code = ?, response_body = ? WHERE id = ?`,
-				d.AttemptCount+1, respCode, truncateString(errMsg, 1000), d.ID)
+			if respBody != "" && errMsg == "" {
+				errMsg = respBody
+			}
+			if _, dbErr := w.db.ExecContext(ctx, `UPDATE webhook_deliveries SET attempt_count = ?, response_code = ?, response_body = ? WHERE id = ?`,
+				d.AttemptCount+1, respCode, truncateString(errMsg, 1000), d.ID); dbErr != nil {
+				w.server.logger.Error("Failed to update delivery attempt", "delivery_id", d.ID, "error", dbErr.Error())
+			}
 
 			if d.AttemptCount+1 >= webhookMaxRetryAttempts {
 				w.server.logger.Warn("Webhook delivery exhausted all retries",

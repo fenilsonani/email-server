@@ -79,6 +79,11 @@ func New(cfg Config) (*Logger, error) {
 		if err != nil {
 			return nil, err
 		}
+		// Enforce permissions on existing files too (OpenFile only sets mode on create)
+		if chmodErr := f.Chmod(0640); chmodErr != nil {
+			f.Close()
+			return nil, chmodErr
+		}
 		output = f
 	}
 
