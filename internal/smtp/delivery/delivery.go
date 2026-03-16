@@ -13,8 +13,10 @@ import (
 	"net/smtp"
 	"net/textproto"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/fenilsonani/email-server/internal/logging"
@@ -99,6 +101,11 @@ type Engine struct {
 	// Deduplication
 	dedupTracker *queue.DeliveryTracker
 
+	// External event handler for webhooks, suppression, etc.
+	// Stored as atomic.Value for safe concurrent access since Start()
+	// may be called before SetEventHandler().
+	eventHandler atomic.Value // stores DeliveryEventHandler
+
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -110,6 +117,30 @@ type Engine struct {
 	totalRetried int64
 	totalBounced int64
 }
+
+// DeliveryEvent contains information about a delivery outcome for external consumers.
+type DeliveryEvent struct {
+	// SMTPMessageID is the Message-ID header value (without angle brackets).
+	SMTPMessageID string
+	// Recipients is the list of recipient addresses.
+	Recipients []string
+	// Sender is the envelope sender.
+	Sender string
+	// Status is "delivered", "bounced", or "failed".
+	Status string
+	// SMTPCode is the SMTP response code (e.g., 250, 550).
+	SMTPCode int
+	// ErrorMessage is the error/bounce reason (empty on success).
+	ErrorMessage string
+	// Domain is the recipient domain.
+	Domain string
+	// Attempt is the delivery attempt number.
+	Attempt int
+}
+
+// DeliveryEventHandler is called by the delivery engine when a message
+// reaches a terminal state. Implementations must be safe for concurrent use.
+type DeliveryEventHandler func(ctx context.Context, event DeliveryEvent)
 
 // EngineOption configures the delivery engine.
 type EngineOption func(*Engine)
@@ -133,6 +164,19 @@ func WithDedupTracker(dt *queue.DeliveryTracker) EngineOption {
 	return func(e *Engine) {
 		e.dedupTracker = dt
 	}
+}
+
+// WithEventHandler sets a callback for delivery events (delivered, bounced, failed).
+func WithEventHandler(h DeliveryEventHandler) EngineOption {
+	return func(e *Engine) {
+		e.eventHandler.Store(h)
+	}
+}
+
+// SetEventHandler sets the delivery event handler. Safe to call concurrently
+// with running workers (e.g., when the API server initializes after Start()).
+func (e *Engine) SetEventHandler(h DeliveryEventHandler) {
+	e.eventHandler.Store(h)
 }
 
 // NewEngine creates a new delivery engine.
@@ -186,6 +230,10 @@ func NewEngine(cfg Config, q *queue.RedisQueue, dkim *security.DKIMSignerPool, l
 // Start starts the delivery workers.
 func (e *Engine) Start() {
 	e.logger.Info("Starting delivery engine", "workers", e.config.Workers)
+
+	// Pre-open circuit breakers for domains with recent consecutive failures
+	// to avoid hammering known-broken servers on restart
+	e.warmupCircuitBreakers()
 
 	for i := 0; i < e.config.Workers; i++ {
 		e.wg.Add(1)
@@ -354,6 +402,11 @@ func (e *Engine) deliverMessage(msg *queue.Message) {
 		if e.dedupTracker != nil && smtpMessageID != "" {
 			e.dedupTracker.MarkFailed(ctx, smtpMessageID, err.Error())
 		}
+		e.updateSentEmailStatus(ctx, smtpMessageID, "failed", "", err.Error(), msg.Attempts)
+		e.fireEvent(ctx, DeliveryEvent{
+			SMTPMessageID: smtpMessageID, Recipients: msg.Recipients, Sender: msg.Sender,
+			Status: "failed", ErrorMessage: err.Error(), Domain: msg.Domain, Attempt: msg.Attempts,
+		})
 		if span != nil {
 			span.SetError(err)
 		}
@@ -421,6 +474,14 @@ func (e *Engine) deliverMessage(msg *queue.Message) {
 				}
 			}
 
+			// Update sent_emails status for API send logs
+			e.updateSentEmailStatus(ctx, smtpMessageID, "bounced", "", err.Error(), msg.Attempts)
+			e.fireEvent(ctx, DeliveryEvent{
+				SMTPMessageID: smtpMessageID, Recipients: msg.Recipients, Sender: msg.Sender,
+				Status: "bounced", SMTPCode: smtpCode, ErrorMessage: err.Error(),
+				Domain: msg.Domain, Attempt: msg.Attempts,
+			})
+
 			// Clean up the original message file
 			if err := e.cleanupMessageFile(msg.MessagePath); err != nil {
 				logger.WarnContext(ctx, "Failed to cleanup message file after failure",
@@ -441,6 +502,10 @@ func (e *Engine) deliverMessage(msg *queue.Message) {
 			// Log deferred status for each recipient
 			for _, rcpt := range msg.Recipients {
 				e.logDeliveryWithTrace(ctx, msg.ID, msg.Sender, rcpt, "deferred", smtpCode, err.Error(), msg.Domain, msg.Attempts, startTime, cbState.String())
+			}
+			// Record deferred attempt in delivery timeline (don't change sent_emails status)
+			if smtpMessageID != "" {
+				e.recordDeliveryAttempt(ctx, "<"+smtpMessageID+">", "deferred", "", err.Error(), msg.Attempts)
 			}
 			if span != nil {
 				span.SetTag("result", "temporary_failure")
@@ -466,6 +531,13 @@ func (e *Engine) deliverMessage(msg *queue.Message) {
 	for _, rcpt := range msg.Recipients {
 		e.logDeliveryWithTrace(ctx, msg.ID, msg.Sender, rcpt, "delivered", 250, "", msg.Domain, msg.Attempts, startTime, cbState.String())
 	}
+
+	// Update sent_emails status for API send logs
+	e.updateSentEmailStatus(ctx, smtpMessageID, "delivered", "250 OK", "", msg.Attempts)
+	e.fireEvent(ctx, DeliveryEvent{
+		SMTPMessageID: smtpMessageID, Recipients: msg.Recipients, Sender: msg.Sender,
+		Status: "delivered", SMTPCode: 250, Domain: msg.Domain, Attempt: msg.Attempts,
+	})
 
 	// Clean up the message file from disk
 	if err := e.cleanupMessageFile(msg.MessagePath); err != nil {
@@ -920,7 +992,7 @@ func tlsRequirementReason(stsPolicy *STSPolicy, useDANE, requireTLS bool) string
 	return ""
 }
 
-// recoveryWorker periodically recovers stale messages.
+// recoveryWorker periodically recovers stale messages and cleans up orphaned files.
 func (e *Engine) recoveryWorker() {
 	defer e.wg.Done()
 
@@ -938,8 +1010,169 @@ func (e *Engine) recoveryWorker() {
 			} else if recovered > 0 {
 				e.logger.Info("Recovered stale messages", "count", recovered)
 			}
+
+			// Clean up orphaned .eml files older than retry_max_age (7 days).
+			// Files this old have either been delivered (file should have been
+			// deleted) or aged out of the retry window. Safe to remove.
+			if cleaned := e.cleanupOrphanedFiles(); cleaned > 0 {
+				e.logger.Info("Cleaned up orphaned message files", "count", cleaned)
+			}
 		}
 	}
+}
+
+// warmupCircuitBreakers checks delivery_log for domains with recent consecutive
+// failures and pre-opens their circuit breakers. This prevents the server from
+// hammering known-broken MX servers immediately after a restart.
+//
+// The live breaker opens after 5 consecutive failures and resets its failure
+// count on any success. To reconstruct this, we look at the most recent
+// delivery attempts per domain (deduplicated by message_id+attempt_number to
+// avoid per-recipient row inflation) and count consecutive trailing failures.
+func (e *Engine) warmupCircuitBreakers() {
+	if e.db == nil {
+		return
+	}
+
+	oneHourAgo := time.Now().Add(-1 * time.Hour)
+
+	// Get all domains with any recent failure activity
+	domainRows, err := e.db.QueryContext(e.ctx, `
+		SELECT DISTINCT domain FROM delivery_log
+		WHERE status IN ('rejected', 'bounced', 'deferred')
+		  AND domain IS NOT NULL
+		  AND created_at > ?
+	`, oneHourAgo)
+	if err != nil {
+		e.logger.Warn("Failed to query delivery_log for circuit breaker warmup",
+			"error", err.Error())
+		return
+	}
+
+	var domains []string
+	for domainRows.Next() {
+		var d string
+		if domainRows.Scan(&d) == nil {
+			domains = append(domains, d)
+		}
+	}
+	domainRows.Close()
+
+	warmed := 0
+	for _, domain := range domains {
+		// Get the most recent delivery attempts for this domain, deduplicated
+		// by (message_id, attempt_number) to avoid per-recipient inflation.
+		// Order by most recent first so we can count consecutive trailing failures.
+		rows, err := e.db.QueryContext(e.ctx, `
+			SELECT status FROM (
+				SELECT MAX(status) as status, MAX(created_at) as latest
+				FROM delivery_log
+				WHERE domain = ? AND created_at > ?
+				GROUP BY message_id, attempt_number
+				ORDER BY latest DESC
+				LIMIT 10
+			) sub ORDER BY latest DESC
+		`, domain, oneHourAgo)
+		if err != nil {
+			e.logger.Debug("Failed to check recent attempts for domain",
+				"domain", domain, "error", err.Error())
+			continue
+		}
+
+		// Count consecutive trailing failures (stop at first success)
+		consecutiveFailures := 0
+		for rows.Next() {
+			var status string
+			if rows.Scan(&status) != nil {
+				break
+			}
+			if status == "delivered" {
+				break // Success resets the count, just like the live breaker
+			}
+			consecutiveFailures++
+		}
+		rows.Close()
+
+		if consecutiveFailures >= 5 {
+			breaker := e.breakers.Get(domain)
+			if breaker != nil {
+				breaker.ForceOpen()
+				warmed++
+				e.logger.Info("Pre-opened circuit breaker for failing domain",
+					"domain", domain, "consecutive_failures", consecutiveFailures)
+			}
+		}
+	}
+
+	if warmed > 0 {
+		e.logger.Info("Circuit breaker warmup complete", "pre_opened", warmed)
+	}
+}
+
+// orphanFileMinAge is the minimum age before a file is considered for orphan
+// cleanup. Files younger than this are likely still being processed.
+const orphanFileMinAge = 1 * time.Hour
+
+// cleanupOrphanedFiles removes .eml files from the queue directory that are
+// not referenced by any active queue entry in Redis. Only files older than
+// orphanFileMinAge are considered, to avoid racing with in-flight enqueues.
+func (e *Engine) cleanupOrphanedFiles() int {
+	if e.config.QueuePath == "" {
+		return 0
+	}
+
+	// Get all file paths still referenced by pending/processing messages
+	if e.queue == nil {
+		return 0
+	}
+	activePaths, err := e.queue.ActiveMessagePaths(e.ctx)
+	if err != nil {
+		e.logger.Warn("Failed to query active message paths for orphan cleanup",
+			"error", err.Error())
+		return 0
+	}
+
+	entries, err := os.ReadDir(e.config.QueuePath)
+	if err != nil {
+		e.logger.Warn("Failed to read queue directory for orphan cleanup",
+			"error", err.Error(), "path", e.config.QueuePath)
+		return 0
+	}
+
+	cutoff := time.Now().Add(-orphanFileMinAge)
+	cleaned := 0
+
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".eml") {
+			continue
+		}
+
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+
+		// Skip recent files to avoid racing with in-flight enqueues
+		if !info.ModTime().Before(cutoff) {
+			continue
+		}
+
+		path := filepath.Join(e.config.QueuePath, entry.Name())
+
+		// Only delete if NOT referenced by any active queue entry
+		if activePaths[path] {
+			continue
+		}
+
+		if err := os.Remove(path); err != nil {
+			e.logger.Warn("Failed to remove orphaned file",
+				"path", path, "error", err.Error())
+		} else {
+			cleaned++
+		}
+	}
+
+	return cleaned
 }
 
 // Stats returns delivery statistics.
@@ -1094,6 +1327,135 @@ func (e *Engine) extractMessageID(messagePath string) string {
 	messageID = strings.TrimPrefix(messageID, "<")
 	messageID = strings.TrimSuffix(messageID, ">")
 	return messageID
+}
+
+// fireEvent dispatches a delivery event to the registered handler asynchronously.
+// The event is passed by value so the handler is not tied to the caller's lifetime.
+func (e *Engine) fireEvent(ctx context.Context, event DeliveryEvent) {
+	h, _ := e.eventHandler.Load().(DeliveryEventHandler)
+	if h != nil {
+		go func(ev DeliveryEvent) {
+			defer func() {
+				if r := recover(); r != nil {
+					e.logger.Error("Panic in delivery event handler",
+						"error", fmt.Sprintf("%v", r),
+						"message_id", ev.SMTPMessageID)
+				}
+			}()
+			h(context.Background(), ev)
+		}(event)
+	}
+}
+
+// maxBounceReasonLen limits stored bounce reasons to prevent storage abuse
+// from malicious SMTP servers sending excessively long error responses.
+const maxBounceReasonLen = 1024
+
+// truncateString safely truncates a string to maxLen bytes.
+func truncateString(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen]
+}
+
+// updateSentEmailStatus syncs the delivery result back to the sent_emails table
+// and records a delivery attempt. This ensures the transactional API's send logs
+// reflect actual delivery status instead of staying permanently "queued".
+func (e *Engine) updateSentEmailStatus(ctx context.Context, smtpMessageID, status, smtpResponse, bounceReason string, attempt int) {
+	if e.db == nil || smtpMessageID == "" {
+		return
+	}
+
+	// Truncate externally-sourced strings to prevent storage abuse
+	bounceReason = truncateString(bounceReason, maxBounceReasonLen)
+	smtpResponse = truncateString(smtpResponse, maxBounceReasonLen)
+
+	// sent_emails.message_id stores the full angle-bracket form: <id@domain>
+	// extractMessageID strips them, so we re-add for matching
+	fullMessageID := "<" + smtpMessageID + ">"
+	now := time.Now()
+
+	var err error
+	switch status {
+	case "delivered":
+		_, err = e.db.ExecContext(ctx,
+			`UPDATE sent_emails SET status = 'delivered', delivered_at = ?, smtp_response = ? WHERE message_id = ? AND status IN ('queued', 'sending')`,
+			now, smtpResponse, fullMessageID,
+		)
+	case "bounced":
+		_, err = e.db.ExecContext(ctx,
+			`UPDATE sent_emails SET status = 'bounced', bounced_at = ?, bounce_reason = ? WHERE message_id = ? AND status IN ('queued', 'sending')`,
+			now, bounceReason, fullMessageID,
+		)
+	case "failed":
+		_, err = e.db.ExecContext(ctx,
+			`UPDATE sent_emails SET status = 'failed', bounce_reason = ? WHERE message_id = ? AND status IN ('queued', 'sending')`,
+			bounceReason, fullMessageID,
+		)
+	}
+
+	if err != nil {
+		e.logger.WarnContext(ctx, "Failed to update sent_emails status",
+			"error", err.Error(),
+			"smtp_message_id", smtpMessageID,
+			"status", status,
+		)
+	}
+
+	// Record delivery attempt for the timeline view
+	e.recordDeliveryAttempt(ctx, fullMessageID, status, smtpResponse, bounceReason, attempt)
+}
+
+// recordDeliveryAttempt inserts a row into delivery_attempts linked to the sent_email.
+func (e *Engine) recordDeliveryAttempt(ctx context.Context, fullMessageID, status, smtpResponse, errorMessage string, attempt int) {
+	if e.db == nil || fullMessageID == "" || fullMessageID == "<>" {
+		return
+	}
+
+	// Map delivery status to the delivery_attempts CHECK constraint:
+	// ('pending', 'sent', 'deferred', 'failed', 'bounced')
+	var attemptStatus string
+	switch status {
+	case "delivered":
+		attemptStatus = "sent"
+	case "bounced":
+		attemptStatus = "bounced"
+	case "failed":
+		attemptStatus = "failed"
+	case "deferred":
+		attemptStatus = "deferred"
+	default:
+		// Unknown status — skip to avoid CHECK constraint violation
+		e.logger.WarnContext(ctx, "Unknown delivery status for attempt recording",
+			"status", status, "message_id", fullMessageID)
+		return
+	}
+
+	// Truncate externally-sourced strings
+	smtpResponse = truncateString(smtpResponse, maxBounceReasonLen)
+	errorMessage = truncateString(errorMessage, maxBounceReasonLen)
+
+	var smtpResp, errMsg *string
+	if smtpResponse != "" {
+		smtpResp = &smtpResponse
+	}
+	if errorMessage != "" {
+		errMsg = &errorMessage
+	}
+
+	_, err := e.db.ExecContext(ctx,
+		`INSERT INTO delivery_attempts (sent_email_id, attempt_number, attempted_at, status, smtp_response, error_message)
+		 SELECT id, ?, ?, ?, ?, ? FROM sent_emails WHERE message_id = ?`,
+		attempt, time.Now(), attemptStatus, smtpResp, errMsg, fullMessageID,
+	)
+	if err != nil {
+		e.logger.WarnContext(ctx, "Failed to record delivery attempt",
+			"error", err.Error(),
+			"message_id", fullMessageID,
+			"attempt", attempt,
+		)
+	}
 }
 
 // logDeliveryWithTrace logs a delivery event with tracing and observability data.

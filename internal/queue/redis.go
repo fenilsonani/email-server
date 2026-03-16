@@ -871,6 +871,60 @@ func (q *RedisQueue) ListFailed(ctx context.Context, limit int64) ([]*Message, e
 	return messages, nil
 }
 
+// ActiveMessagePaths returns the set of MessagePath values for all messages
+// currently in pending or processing state. Used by the orphan file cleanup
+// to avoid deleting files still referenced by active queue entries.
+//
+// This method fails closed: if any Redis operation fails, it returns an error
+// so the caller can skip cleanup rather than risk deleting live message files.
+func (q *RedisQueue) ActiveMessagePaths(ctx context.Context) (map[string]bool, error) {
+	if err := q.validateContext(ctx); err != nil {
+		return nil, err
+	}
+
+	paths := make(map[string]bool)
+
+	// Collect message IDs from all pending priority queues
+	var msgIDs []string
+	for _, key := range q.allPendingKeys() {
+		members, err := q.client.ZRange(ctx, key, 0, -1).Result()
+		if err != nil {
+			return nil, fmt.Errorf("failed to enumerate pending queue %s: %w", key, err)
+		}
+		msgIDs = append(msgIDs, members...)
+	}
+
+	// Legacy pending queue
+	legacyMembers, err := q.client.ZRange(ctx, q.pendingKey(), 0, -1).Result()
+	if err != nil {
+		return nil, fmt.Errorf("failed to enumerate legacy pending queue: %w", err)
+	}
+	msgIDs = append(msgIDs, legacyMembers...)
+
+	// Processing set
+	procMembers, err := q.client.SMembers(ctx, q.processingKey()).Result()
+	if err != nil {
+		return nil, fmt.Errorf("failed to enumerate processing set: %w", err)
+	}
+	msgIDs = append(msgIDs, procMembers...)
+
+	// Resolve each message ID to its MessagePath.
+	// GetMessage failures for individual messages are non-fatal (the message
+	// data may have expired from Redis while the queue entry remains), but we
+	// still include all successfully resolved paths.
+	for _, id := range msgIDs {
+		msg, err := q.GetMessage(ctx, id)
+		if err != nil {
+			continue
+		}
+		if msg.MessagePath != "" {
+			paths[msg.MessagePath] = true
+		}
+	}
+
+	return paths, nil
+}
+
 // ListSent returns recently sent messages up to limit.
 func (q *RedisQueue) ListSent(ctx context.Context, limit int64) ([]*Message, error) {
 	if err := q.validateContext(ctx); err != nil {

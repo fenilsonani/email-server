@@ -337,6 +337,14 @@ func (cb *CircuitBreaker) Reset() {
 	cb.transitionTo(StateClosed)
 }
 
+// ForceOpen forces the circuit breaker into open state.
+// Used to pre-open breakers for domains known to be failing (e.g., on startup
+// from delivery_log history) to avoid hammering broken servers.
+func (cb *CircuitBreaker) ForceOpen() {
+	atomic.StoreInt64(&cb.lastFailureTime, time.Now().UnixNano())
+	cb.transitionTo(StateOpen)
+}
+
 // Validate checks if the circuit breaker configuration is valid.
 func (cfg Config) Validate() error {
 	if cfg.Name == "" {

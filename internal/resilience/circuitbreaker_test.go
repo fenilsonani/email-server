@@ -1237,3 +1237,30 @@ func TestCircuitBreaker_CompleteLifecycle(t *testing.T) {
 
 	t.Log("Complete lifecycle test passed")
 }
+
+func TestForceOpen(t *testing.T) {
+	cb := NewCircuitBreaker(Config{
+		Name:             "test-force-open",
+		FailureThreshold: 5,
+		SuccessThreshold: 2,
+		Timeout:          10 * time.Second,
+	})
+
+	if cb.State() != StateClosed {
+		t.Fatalf("initial state should be closed, got %v", cb.State())
+	}
+
+	cb.ForceOpen()
+
+	if cb.State() != StateOpen {
+		t.Errorf("state after ForceOpen should be open, got %v", cb.State())
+	}
+
+	// Requests should be rejected
+	err := cb.Execute(context.Background(), func(ctx context.Context) error {
+		return nil
+	})
+	if !errors.Is(err, ErrCircuitOpen) {
+		t.Errorf("expected ErrCircuitOpen after ForceOpen, got %v", err)
+	}
+}

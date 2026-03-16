@@ -1,14 +1,20 @@
 package delivery
 
 import (
+	"context"
+	"database/sql"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/fenilsonani/email-server/internal/logging"
+	"github.com/fenilsonani/email-server/internal/resilience"
+
+	_ "github.com/mattn/go-sqlite3"
 )
 
 func TestConfig_Defaults(t *testing.T) {
@@ -308,4 +314,588 @@ func BenchmarkIsPermanentError(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		isPermanentError(err)
 	}
+}
+
+func TestFireEvent_CallsHandler(t *testing.T) {
+	logger := logging.Default()
+
+	var mu sync.Mutex
+	var received []DeliveryEvent
+	done := make(chan struct{}, 2)
+
+	e := &Engine{
+		logger: logger.Delivery(),
+	}
+	e.SetEventHandler(func(ctx context.Context, event DeliveryEvent) {
+		mu.Lock()
+		received = append(received, event)
+		mu.Unlock()
+		done <- struct{}{}
+	})
+
+	e.fireEvent(context.Background(), DeliveryEvent{
+		SMTPMessageID: "test@example.com",
+		Recipients:    []string{"rcpt@example.com"},
+		Status:        "delivered",
+		SMTPCode:      250,
+	})
+
+	e.fireEvent(context.Background(), DeliveryEvent{
+		SMTPMessageID: "bounce@example.com",
+		Recipients:    []string{"bad@example.com"},
+		Status:        "bounced",
+		SMTPCode:      550,
+		ErrorMessage:  "User not found",
+	})
+
+	// Wait for both async handlers to complete
+	<-done
+	<-done
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if len(received) != 2 {
+		t.Fatalf("got %d events, want 2", len(received))
+	}
+}
+
+func TestFireEvent_NilHandler(t *testing.T) {
+	logger := logging.Default()
+
+	e := &Engine{
+		logger: logger.Delivery(),
+		// eventHandler left unset (zero value atomic.Value)
+	}
+
+	// Should not panic
+	e.fireEvent(context.Background(), DeliveryEvent{
+		SMTPMessageID: "test@example.com",
+		Status:        "delivered",
+	})
+}
+
+func TestCleanupOrphanedFiles_NilQueue(t *testing.T) {
+	tmpDir := t.TempDir()
+	logger := logging.Default()
+
+	e := &Engine{
+		config: Config{QueuePath: tmpDir},
+		logger: logger.Delivery(),
+		// queue is nil — cleanup should return 0 safely
+	}
+
+	oldFile := filepath.Join(tmpDir, "old-message.eml")
+	if err := os.WriteFile(oldFile, []byte("old email"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	cleaned := e.cleanupOrphanedFiles()
+	if cleaned != 0 {
+		t.Errorf("cleanupOrphanedFiles() with nil queue = %d, want 0", cleaned)
+	}
+
+	// File should NOT be deleted when queue is unavailable (can't verify active paths)
+	if _, err := os.Stat(oldFile); os.IsNotExist(err) {
+		t.Error("file should NOT have been deleted when queue is nil")
+	}
+}
+
+func TestWarmupCircuitBreakers(t *testing.T) {
+	db := setupTestDB(t)
+	logger := logging.Default()
+
+	// Add delivery_log table
+	_, err := db.Exec(`
+		CREATE TABLE delivery_log (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			message_id TEXT,
+			sender TEXT,
+			recipient TEXT,
+			status TEXT,
+			smtp_code INTEGER,
+			error_message TEXT,
+			domain TEXT,
+			attempt_number INTEGER DEFAULT 1,
+			delivery_duration_ms INTEGER,
+			circuit_breaker_state TEXT,
+			trace_id TEXT,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)
+	`)
+	if err != nil {
+		t.Fatalf("Failed to create delivery_log: %v", err)
+	}
+
+	// "broken.com": 5 retries of same message (same message_id, different attempt_number)
+	// Each retry is a separate circuit breaker execution, so all 5 should count.
+	for i := 1; i <= 5; i++ {
+		status := "deferred"
+		if i == 5 {
+			status = "rejected" // final attempt is permanent
+		}
+		db.Exec(`INSERT INTO delivery_log (message_id, sender, recipient, status, domain, attempt_number, created_at) VALUES ('retry-msg', 'sender@test.com', 'user@broken.com', ?, 'broken.com', ?, datetime('now'))`,
+			status, i)
+	}
+
+	// "inflated.com": 1 message to 5 recipients (5 rows, same message_id+attempt_number)
+	// Should be 1 delivery attempt, not 5 — must NOT trip the threshold.
+	for i := 0; i < 5; i++ {
+		db.Exec(`INSERT INTO delivery_log (message_id, sender, recipient, status, domain, attempt_number, created_at) VALUES ('same-msg', 'sender@test.com', ?, 'rejected', 'inflated.com', 1, datetime('now'))`,
+			"user"+string(rune('0'+i))+"@inflated.com")
+	}
+
+	// "recovered.com": 5 failures then 1 success (most recent is success)
+	// The success resets the consecutive count, so breaker should stay closed.
+	for i := 1; i <= 5; i++ {
+		db.Exec(`INSERT INTO delivery_log (message_id, sender, recipient, status, domain, attempt_number, created_at) VALUES (?, 'sender@test.com', 'user@recovered.com', 'rejected', 'recovered.com', 1, datetime('now', '-30 minutes'))`,
+			"rec-fail-"+string(rune('0'+i)))
+	}
+	db.Exec(`INSERT INTO delivery_log (message_id, sender, recipient, status, domain, attempt_number, created_at) VALUES ('rec-succ', 'sender@test.com', 'user@recovered.com', 'delivered', 'recovered.com', 1, datetime('now'))`)
+
+	// "relapsed.com": 1 success 40min ago, then 5 consecutive failures in last 5min
+	// The live breaker would have opened after the 5 failures. Warmup should match.
+	db.Exec(`INSERT INTO delivery_log (message_id, sender, recipient, status, domain, attempt_number, created_at) VALUES ('rel-succ', 'sender@test.com', 'user@relapsed.com', 'delivered', 'relapsed.com', 1, datetime('now', '-40 minutes'))`)
+	for i := 1; i <= 5; i++ {
+		db.Exec(`INSERT INTO delivery_log (message_id, sender, recipient, status, domain, attempt_number, created_at) VALUES (?, 'sender@test.com', 'user@relapsed.com', 'rejected', 'relapsed.com', 1, datetime('now', '-1 minutes'))`,
+			"rel-fail-"+string(rune('0'+i)))
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	e := &Engine{
+		db:     db,
+		logger: logger.Delivery(),
+		ctx:    ctx,
+		breakers: resilience.NewBreakerRegistry(func(key string) resilience.Config {
+			return resilience.Config{
+				Name:             "smtp:" + key,
+				FailureThreshold: 5,
+				SuccessThreshold: 2,
+				Timeout:          5 * time.Minute,
+			}
+		}),
+	}
+
+	e.warmupCircuitBreakers()
+
+	// "broken.com" should be pre-opened (5 retries of same message = 5 consecutive failures)
+	brokenBreaker := e.breakers.Get("broken.com")
+	if brokenBreaker.State() != resilience.StateOpen {
+		t.Errorf("broken.com breaker state = %v, want Open", brokenBreaker.State())
+	}
+
+	// "inflated.com" should NOT be pre-opened (1 message to 5 recipients = 1 delivery attempt)
+	inflatedBreaker := e.breakers.Get("inflated.com")
+	if inflatedBreaker.State() != resilience.StateClosed {
+		t.Errorf("inflated.com breaker state = %v, want Closed (per-recipient rows should not inflate count)", inflatedBreaker.State())
+	}
+
+	// "recovered.com" should NOT be pre-opened (most recent entry is a success)
+	recoveredBreaker := e.breakers.Get("recovered.com")
+	if recoveredBreaker.State() != resilience.StateClosed {
+		t.Errorf("recovered.com breaker state = %v, want Closed (success resets consecutive failures)", recoveredBreaker.State())
+	}
+
+	// "relapsed.com" should be pre-opened (success 40min ago, then 5 consecutive failures)
+	relapsedBreaker := e.breakers.Get("relapsed.com")
+	if relapsedBreaker.State() != resilience.StateOpen {
+		t.Errorf("relapsed.com breaker state = %v, want Open (5 consecutive failures after earlier success)", relapsedBreaker.State())
+	}
+}
+
+func TestWarmupCircuitBreakers_NilDB(t *testing.T) {
+	logger := logging.Default()
+	e := &Engine{
+		db:     nil,
+		logger: logger.Delivery(),
+	}
+	// Should not panic
+	e.warmupCircuitBreakers()
+}
+
+func TestCleanupOrphanedFiles_EmptyQueuePath(t *testing.T) {
+	logger := logging.Default()
+	e := &Engine{
+		config: Config{QueuePath: ""},
+		logger: logger.Delivery(),
+	}
+
+	// Should return 0 without error
+	cleaned := e.cleanupOrphanedFiles()
+	if cleaned != 0 {
+		t.Errorf("cleanupOrphanedFiles() with empty path = %d, want 0", cleaned)
+	}
+}
+
+func TestSetEventHandler(t *testing.T) {
+	logger := logging.Default()
+
+	e := &Engine{
+		logger: logger.Delivery(),
+	}
+
+	done := make(chan struct{})
+	e.SetEventHandler(func(ctx context.Context, event DeliveryEvent) {
+		close(done)
+	})
+
+	e.fireEvent(context.Background(), DeliveryEvent{Status: "delivered"})
+
+	select {
+	case <-done:
+		// handler was called
+	case <-time.After(2 * time.Second):
+		t.Error("SetEventHandler should register a handler that gets called")
+	}
+}
+
+// setupTestDB creates an in-memory SQLite database with the sent_emails table.
+func setupTestDB(t *testing.T) *sql.DB {
+	t.Helper()
+	db, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatalf("Failed to open test database: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	_, err = db.Exec(`
+		CREATE TABLE sent_emails (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			domain_id INTEGER,
+			api_key_id INTEGER,
+			message_id TEXT NOT NULL,
+			tracking_id TEXT,
+			from_email TEXT,
+			to_email TEXT,
+			subject TEXT,
+			template_slug TEXT,
+			tags TEXT,
+			status TEXT DEFAULT 'queued',
+			smtp_response TEXT,
+			opened_at DATETIME,
+			opened_count INTEGER DEFAULT 0,
+			clicked_at DATETIME,
+			clicked_count INTEGER DEFAULT 0,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			delivered_at DATETIME,
+			bounced_at DATETIME,
+			bounce_reason TEXT
+		);
+		CREATE TABLE delivery_attempts (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			sent_email_id INTEGER NOT NULL REFERENCES sent_emails(id) ON DELETE CASCADE,
+			attempt_number INTEGER NOT NULL,
+			attempted_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			status TEXT NOT NULL CHECK(status IN ('pending', 'sent', 'deferred', 'failed', 'bounced')),
+			smtp_response TEXT,
+			error_message TEXT
+		);
+	`)
+	if err != nil {
+		t.Fatalf("Failed to create tables: %v", err)
+	}
+	return db
+}
+
+func TestUpdateSentEmailStatus_Delivered(t *testing.T) {
+	db := setupTestDB(t)
+	logger := logging.Default()
+
+	e := &Engine{
+		db:     db,
+		logger: logger.Delivery(),
+	}
+
+	// Insert a queued email
+	messageID := "abc123@example.com"
+	_, err := db.Exec(`INSERT INTO sent_emails (message_id, from_email, to_email, subject, status) VALUES (?, ?, ?, ?, ?)`,
+		"<"+messageID+">", "sender@example.com", "rcpt@example.com", "Test Subject", "queued")
+	if err != nil {
+		t.Fatalf("Failed to insert test email: %v", err)
+	}
+
+	// Simulate successful delivery
+	e.updateSentEmailStatus(context.Background(), messageID, "delivered", "250 OK", "", 1)
+
+	// Verify status updated
+	var status, smtpResponse string
+	var deliveredAt sql.NullTime
+	err = db.QueryRow(`SELECT status, smtp_response, delivered_at FROM sent_emails WHERE message_id = ?`, "<"+messageID+">").
+		Scan(&status, &smtpResponse, &deliveredAt)
+	if err != nil {
+		t.Fatalf("Failed to query: %v", err)
+	}
+
+	if status != "delivered" {
+		t.Errorf("status = %q, want %q", status, "delivered")
+	}
+	if smtpResponse != "250 OK" {
+		t.Errorf("smtp_response = %q, want %q", smtpResponse, "250 OK")
+	}
+	if !deliveredAt.Valid {
+		t.Error("delivered_at should be set")
+	}
+}
+
+func TestUpdateSentEmailStatus_Bounced(t *testing.T) {
+	db := setupTestDB(t)
+	logger := logging.Default()
+
+	e := &Engine{
+		db:     db,
+		logger: logger.Delivery(),
+	}
+
+	messageID := "bounce123@example.com"
+	_, err := db.Exec(`INSERT INTO sent_emails (message_id, from_email, to_email, subject, status) VALUES (?, ?, ?, ?, ?)`,
+		"<"+messageID+">", "sender@example.com", "rcpt@example.com", "Test", "queued")
+	if err != nil {
+		t.Fatalf("Failed to insert: %v", err)
+	}
+
+	e.updateSentEmailStatus(context.Background(), messageID, "bounced", "", "550 User not found", 1)
+
+	var status string
+	var bounceReason sql.NullString
+	var bouncedAt sql.NullTime
+	err = db.QueryRow(`SELECT status, bounce_reason, bounced_at FROM sent_emails WHERE message_id = ?`, "<"+messageID+">").
+		Scan(&status, &bounceReason, &bouncedAt)
+	if err != nil {
+		t.Fatalf("Failed to query: %v", err)
+	}
+
+	if status != "bounced" {
+		t.Errorf("status = %q, want %q", status, "bounced")
+	}
+	if !bounceReason.Valid || bounceReason.String != "550 User not found" {
+		t.Errorf("bounce_reason = %v, want %q", bounceReason, "550 User not found")
+	}
+	if !bouncedAt.Valid {
+		t.Error("bounced_at should be set")
+	}
+}
+
+func TestUpdateSentEmailStatus_Failed(t *testing.T) {
+	db := setupTestDB(t)
+	logger := logging.Default()
+
+	e := &Engine{
+		db:     db,
+		logger: logger.Delivery(),
+	}
+
+	messageID := "fail123@example.com"
+	_, err := db.Exec(`INSERT INTO sent_emails (message_id, from_email, to_email, subject, status) VALUES (?, ?, ?, ?, ?)`,
+		"<"+messageID+">", "sender@example.com", "rcpt@example.com", "Test", "queued")
+	if err != nil {
+		t.Fatalf("Failed to insert: %v", err)
+	}
+
+	e.updateSentEmailStatus(context.Background(), messageID, "failed", "", "invalid domain", 1)
+
+	var status string
+	var bounceReason sql.NullString
+	err = db.QueryRow(`SELECT status, bounce_reason FROM sent_emails WHERE message_id = ?`, "<"+messageID+">").
+		Scan(&status, &bounceReason)
+	if err != nil {
+		t.Fatalf("Failed to query: %v", err)
+	}
+
+	if status != "failed" {
+		t.Errorf("status = %q, want %q", status, "failed")
+	}
+	if !bounceReason.Valid || bounceReason.String != "invalid domain" {
+		t.Errorf("bounce_reason = %v, want %q", bounceReason, "invalid domain")
+	}
+}
+
+func TestUpdateSentEmailStatus_NoDoubleUpdate(t *testing.T) {
+	db := setupTestDB(t)
+	logger := logging.Default()
+
+	e := &Engine{
+		db:     db,
+		logger: logger.Delivery(),
+	}
+
+	messageID := "nodedup@example.com"
+	_, err := db.Exec(`INSERT INTO sent_emails (message_id, from_email, to_email, subject, status) VALUES (?, ?, ?, ?, ?)`,
+		"<"+messageID+">", "sender@example.com", "rcpt@example.com", "Test", "queued")
+	if err != nil {
+		t.Fatalf("Failed to insert: %v", err)
+	}
+
+	// First update: delivered
+	e.updateSentEmailStatus(context.Background(), messageID, "delivered", "250 OK", "", 1)
+
+	// Second update: try to bounce (should NOT overwrite delivered)
+	e.updateSentEmailStatus(context.Background(), messageID, "bounced", "", "550 error", 2)
+
+	var status string
+	err = db.QueryRow(`SELECT status FROM sent_emails WHERE message_id = ?`, "<"+messageID+">").Scan(&status)
+	if err != nil {
+		t.Fatalf("Failed to query: %v", err)
+	}
+
+	if status != "delivered" {
+		t.Errorf("status = %q, want %q (should not overwrite delivered)", status, "delivered")
+	}
+}
+
+func TestUpdateSentEmailStatus_NilDB(t *testing.T) {
+	logger := logging.Default()
+
+	e := &Engine{
+		db:     nil,
+		logger: logger.Delivery(),
+	}
+
+	// Should not panic
+	e.updateSentEmailStatus(context.Background(), "test@example.com", "delivered", "250 OK", "", 1)
+}
+
+func TestUpdateSentEmailStatus_EmptyMessageID(t *testing.T) {
+	db := setupTestDB(t)
+	logger := logging.Default()
+
+	e := &Engine{
+		db:     db,
+		logger: logger.Delivery(),
+	}
+
+	// Should not panic or error with empty message ID
+	e.updateSentEmailStatus(context.Background(), "", "delivered", "250 OK", "", 1)
+}
+
+func TestDeliveryAttempts_Recorded(t *testing.T) {
+	db := setupTestDB(t)
+	logger := logging.Default()
+
+	e := &Engine{
+		db:     db,
+		logger: logger.Delivery(),
+	}
+
+	messageID := "timeline@example.com"
+	_, err := db.Exec(`INSERT INTO sent_emails (message_id, from_email, to_email, subject, status) VALUES (?, ?, ?, ?, ?)`,
+		"<"+messageID+">", "sender@example.com", "rcpt@example.com", "Test", "queued")
+	if err != nil {
+		t.Fatalf("Failed to insert: %v", err)
+	}
+
+	// Simulate: attempt 1 deferred, attempt 2 delivered
+	e.recordDeliveryAttempt(context.Background(), "<"+messageID+">", "deferred", "", "421 Try again", 1)
+	e.updateSentEmailStatus(context.Background(), messageID, "delivered", "250 OK", "", 2)
+
+	// Verify delivery attempts were recorded
+	rows, err := db.Query(`SELECT attempt_number, status, smtp_response, error_message FROM delivery_attempts WHERE sent_email_id = 1 ORDER BY attempt_number`)
+	if err != nil {
+		t.Fatalf("Failed to query attempts: %v", err)
+	}
+	defer rows.Close()
+
+	type attempt struct {
+		Number       int
+		Status       string
+		SMTPResponse *string
+		ErrorMessage *string
+	}
+	var attempts []attempt
+	for rows.Next() {
+		var a attempt
+		if err := rows.Scan(&a.Number, &a.Status, &a.SMTPResponse, &a.ErrorMessage); err != nil {
+			t.Fatalf("Failed to scan: %v", err)
+		}
+		attempts = append(attempts, a)
+	}
+
+	if len(attempts) != 2 {
+		t.Fatalf("got %d attempts, want 2", len(attempts))
+	}
+
+	if attempts[0].Number != 1 || attempts[0].Status != "deferred" {
+		t.Errorf("attempt 1: number=%d status=%s, want 1/deferred", attempts[0].Number, attempts[0].Status)
+	}
+	if attempts[0].ErrorMessage == nil || *attempts[0].ErrorMessage != "421 Try again" {
+		t.Errorf("attempt 1: error_message = %v, want '421 Try again'", attempts[0].ErrorMessage)
+	}
+
+	if attempts[1].Number != 2 || attempts[1].Status != "sent" {
+		t.Errorf("attempt 2: number=%d status=%s, want 2/sent", attempts[1].Number, attempts[1].Status)
+	}
+	if attempts[1].SMTPResponse == nil || *attempts[1].SMTPResponse != "250 OK" {
+		t.Errorf("attempt 2: smtp_response = %v, want '250 OK'", attempts[1].SMTPResponse)
+	}
+}
+
+func TestUpdateSentEmailStatus_TruncatesLongBounceReason(t *testing.T) {
+	db := setupTestDB(t)
+	logger := logging.Default()
+
+	e := &Engine{
+		db:     db,
+		logger: logger.Delivery(),
+	}
+
+	messageID := "trunc@example.com"
+	_, err := db.Exec(`INSERT INTO sent_emails (message_id, from_email, to_email, subject, status) VALUES (?, ?, ?, ?, ?)`,
+		"<"+messageID+">", "sender@example.com", "rcpt@example.com", "Test", "queued")
+	if err != nil {
+		t.Fatalf("Failed to insert: %v", err)
+	}
+
+	// Simulate a malicious SMTP server returning a very long error
+	longError := strings.Repeat("A", 5000)
+	e.updateSentEmailStatus(context.Background(), messageID, "bounced", "", longError, 1)
+
+	var bounceReason sql.NullString
+	err = db.QueryRow(`SELECT bounce_reason FROM sent_emails WHERE message_id = ?`, "<"+messageID+">").Scan(&bounceReason)
+	if err != nil {
+		t.Fatalf("Failed to query: %v", err)
+	}
+
+	if !bounceReason.Valid {
+		t.Fatal("bounce_reason should be set")
+	}
+	if len(bounceReason.String) > maxBounceReasonLen {
+		t.Errorf("bounce_reason length = %d, should be truncated to %d", len(bounceReason.String), maxBounceReasonLen)
+	}
+	if len(bounceReason.String) != maxBounceReasonLen {
+		t.Errorf("bounce_reason length = %d, want %d", len(bounceReason.String), maxBounceReasonLen)
+	}
+}
+
+func TestTruncateString(t *testing.T) {
+	tests := []struct {
+		input  string
+		max    int
+		want   string
+	}{
+		{"hello", 10, "hello"},
+		{"hello", 5, "hello"},
+		{"hello", 3, "hel"},
+		{"", 10, ""},
+		{"abc", 0, ""},
+	}
+	for _, tt := range tests {
+		got := truncateString(tt.input, tt.max)
+		if got != tt.want {
+			t.Errorf("truncateString(%q, %d) = %q, want %q", tt.input, tt.max, got, tt.want)
+		}
+	}
+}
+
+func TestUpdateSentEmailStatus_NoMatchingEmail(t *testing.T) {
+	db := setupTestDB(t)
+	logger := logging.Default()
+
+	e := &Engine{
+		db:     db,
+		logger: logger.Delivery(),
+	}
+
+	// No rows to update - should not error (e.g., inbound emails not in sent_emails)
+	e.updateSentEmailStatus(context.Background(), "nonexistent@example.com", "delivered", "250 OK", "", 1)
 }
