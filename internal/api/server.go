@@ -32,9 +32,10 @@ type Server struct {
 	queuePath    string
 
 	// New services for production features
-	idempotency *IdempotencyStore   // Redis-backed idempotency store
-	suppression *SuppressionService // Email suppression list
-	scheduler   *Scheduler          // Scheduled email processor
+	idempotency    *IdempotencyStore   // Redis-backed idempotency store
+	suppression    *SuppressionService // Email suppression list
+	scheduler      *Scheduler          // Scheduled email processor
+	webhookRetrier *WebhookRetryWorker // Background webhook retry worker
 }
 
 // NewServer creates a new API server
@@ -71,6 +72,9 @@ func NewServer(
 
 	// Initialize scheduler for scheduled emails
 	s.scheduler = NewScheduler(db, s, 30*time.Second)
+
+	// Initialize webhook retry worker for extended retry of failed deliveries
+	s.webhookRetrier = NewWebhookRetryWorker(db, s)
 
 	// Register delivery event handler for webhooks and auto-suppression
 	if deliveryEngine != nil {
@@ -142,6 +146,12 @@ func (s *Server) Start(listen string) error {
 		s.logger.Info("Email scheduler started")
 	}
 
+	// Start the webhook retry worker
+	if s.webhookRetrier != nil {
+		s.webhookRetrier.Start()
+		s.logger.Info("Webhook retry worker started")
+	}
+
 	// Start server in goroutine
 	serverErr := make(chan error, 1)
 	go func() {
@@ -179,6 +189,12 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		if s.scheduler != nil {
 			s.scheduler.Stop()
 			s.logger.Info("Email scheduler stopped")
+		}
+
+		// Stop the webhook retry worker
+		if s.webhookRetrier != nil {
+			s.webhookRetrier.Stop()
+			s.logger.Info("Webhook retry worker stopped")
 		}
 
 		if s.httpServer != nil {

@@ -13,6 +13,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -21,6 +23,11 @@ const (
 	maxWebhookRetries     = 3
 	webhookMaxFailures    = 5
 	maxConcurrentWebhooks = 50 // Maximum concurrent webhook deliveries
+
+	// Extended retry settings for the background retry worker
+	webhookMaxRetryAttempts = 8              // Total attempts including initial 3
+	webhookRetryMaxAge      = 24 * time.Hour // Stop retrying after 24 hours
+	webhookRetryInterval    = 1 * time.Minute // How often the retry worker runs
 )
 
 // webhookSemaphore limits concurrent webhook deliveries to prevent goroutine explosion
@@ -389,4 +396,161 @@ func generateWebhookSecret() string {
 		return "whsec_" + fmt.Sprintf("%d", time.Now().UnixNano())
 	}
 	return "whsec_" + hex.EncodeToString(b)
+}
+
+// =============================================================================
+// Webhook Retry Worker
+// =============================================================================
+
+// WebhookRetryWorker retries failed webhook deliveries with extended backoff.
+type WebhookRetryWorker struct {
+	db      *sql.DB
+	server  *Server
+	running int32
+	stopCh  chan struct{}
+	wg      sync.WaitGroup
+}
+
+// NewWebhookRetryWorker creates a new webhook retry worker.
+func NewWebhookRetryWorker(db *sql.DB, server *Server) *WebhookRetryWorker {
+	return &WebhookRetryWorker{
+		db:     db,
+		server: server,
+		stopCh: make(chan struct{}),
+	}
+}
+
+// Start begins the retry worker.
+func (w *WebhookRetryWorker) Start() {
+	if !atomic.CompareAndSwapInt32(&w.running, 0, 1) {
+		return
+	}
+	w.wg.Add(1)
+	go w.run()
+}
+
+// Stop stops the retry worker.
+func (w *WebhookRetryWorker) Stop() {
+	if !atomic.CompareAndSwapInt32(&w.running, 1, 0) {
+		return
+	}
+	close(w.stopCh)
+	w.wg.Wait()
+}
+
+func (w *WebhookRetryWorker) run() {
+	defer w.wg.Done()
+
+	ticker := time.NewTicker(webhookRetryInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-w.stopCh:
+			return
+		case <-ticker.C:
+			w.retryFailedDeliveries()
+		}
+	}
+}
+
+// webhookRetryBackoff returns the minimum age a failed delivery must have
+// before the next retry attempt. Backoff schedule:
+// attempt 4: 1 min, attempt 5: 5 min, attempt 6: 30 min, attempt 7: 2 hours, attempt 8: 8 hours
+func webhookRetryBackoff(attemptCount int) time.Duration {
+	switch {
+	case attemptCount <= 3:
+		return 1 * time.Minute
+	case attemptCount == 4:
+		return 5 * time.Minute
+	case attemptCount == 5:
+		return 30 * time.Minute
+	case attemptCount == 6:
+		return 2 * time.Hour
+	default:
+		return 8 * time.Hour
+	}
+}
+
+func (w *WebhookRetryWorker) retryFailedDeliveries() {
+	ctx := context.Background()
+	cutoff := time.Now().Add(-webhookRetryMaxAge)
+
+	// Find failed deliveries that are eligible for retry:
+	// - failed (success = FALSE)
+	// - not yet exhausted (attempt_count < max)
+	// - not too old (created_at > cutoff)
+	rows, err := w.db.QueryContext(ctx, `
+		SELECT wd.id, wd.webhook_id, wd.event_type, wd.payload, wd.attempt_count, wd.created_at,
+		       wh.url, wh.secret, wh.is_active
+		FROM webhook_deliveries wd
+		JOIN webhooks wh ON wd.webhook_id = wh.id
+		WHERE wd.success = FALSE
+		  AND wd.attempt_count < ?
+		  AND wd.created_at > ?
+		  AND wh.is_active = TRUE
+		  AND wh.failure_count < ?
+		ORDER BY wd.created_at ASC
+		LIMIT 50
+	`, webhookMaxRetryAttempts, cutoff, webhookMaxFailures)
+	if err != nil {
+		w.server.logger.Error("Failed to query failed webhook deliveries", "error", err.Error())
+		return
+	}
+	defer rows.Close()
+
+	type failedDelivery struct {
+		ID           int64
+		WebhookID    int64
+		EventType    string
+		Payload      string
+		AttemptCount int
+		CreatedAt    time.Time
+		URL          string
+		Secret       string
+	}
+
+	var deliveries []failedDelivery
+	for rows.Next() {
+		var d failedDelivery
+		var isActive bool
+		if err := rows.Scan(&d.ID, &d.WebhookID, &d.EventType, &d.Payload, &d.AttemptCount, &d.CreatedAt, &d.URL, &d.Secret, &isActive); err != nil {
+			continue
+		}
+		// Check backoff: only retry if enough time has passed since creation
+		backoff := webhookRetryBackoff(d.AttemptCount)
+		if time.Since(d.CreatedAt) < backoff {
+			continue
+		}
+		deliveries = append(deliveries, d)
+	}
+
+	for _, d := range deliveries {
+		signature := generateWebhookSignature([]byte(d.Payload), d.Secret)
+		respCode, respBody, err := w.server.sendWebhookRequest(d.URL, []byte(d.Payload), signature)
+
+		if err == nil && respCode >= 200 && respCode < 300 {
+			// Success — mark delivery as successful
+			w.db.ExecContext(ctx, `UPDATE webhook_deliveries SET success = TRUE, response_code = ?, response_body = ?, attempt_count = ? WHERE id = ?`,
+				respCode, truncateString(respBody, 1000), d.AttemptCount+1, d.ID)
+			// Reset webhook failure count
+			w.db.ExecContext(ctx, `UPDATE webhooks SET failure_count = 0, last_success_at = ?, last_triggered_at = ? WHERE id = ?`,
+				time.Now(), time.Now(), d.WebhookID)
+			w.server.logger.Info("Webhook retry succeeded",
+				"delivery_id", d.ID, "webhook_id", d.WebhookID, "attempt", d.AttemptCount+1)
+		} else {
+			// Still failing — increment attempt count
+			errMsg := ""
+			if err != nil {
+				errMsg = err.Error()
+			}
+			w.db.ExecContext(ctx, `UPDATE webhook_deliveries SET attempt_count = ?, response_code = ?, response_body = ? WHERE id = ?`,
+				d.AttemptCount+1, respCode, truncateString(errMsg, 1000), d.ID)
+
+			if d.AttemptCount+1 >= webhookMaxRetryAttempts {
+				w.server.logger.Warn("Webhook delivery exhausted all retries",
+					"delivery_id", d.ID, "webhook_id", d.WebhookID, "attempts", d.AttemptCount+1)
+			}
+		}
+	}
 }
