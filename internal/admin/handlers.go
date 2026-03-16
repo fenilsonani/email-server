@@ -2961,6 +2961,11 @@ func (s *Server) handleDKIMAutoRotate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := parseFormWithLimit(w, r, maxAdminFormBody); err != nil {
+		http.Error(w, "Bad request", formErrorStatus(err))
+		return
+	}
+
 	// Parse days parameter
 	days := 90 // default
 	if d := r.PostForm.Get("days"); d != "" {

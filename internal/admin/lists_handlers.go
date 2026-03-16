@@ -491,6 +491,11 @@ func (s *Server) handleListModerationAction(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	if err := parseFormWithLimit(w, r, maxAdminFormBody); err != nil {
+		http.Error(w, "Bad request", formErrorStatus(err))
+		return
+	}
+
 	switch action {
 	case "approve":
 		err = s.listsStore.ApproveMessage(r.Context(), msgID, userID)
