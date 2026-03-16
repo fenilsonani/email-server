@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { PageShell } from "@/components/shared/page-shell";
 import { api } from "@/lib/api";
-import { Mail, Eye, MousePointer, Loader2, ChevronLeft, ChevronRight } from "lucide-react";
+import { Mail, Eye, MousePointer, Loader2, ChevronLeft, ChevronRight, RotateCcw } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 
 interface SentEmail {
@@ -53,6 +53,8 @@ function SendLogsContent() {
   const [statusFilter, setStatusFilter] = useState("");
   const [detail, setDetail] = useState<EmailDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [resending, setResending] = useState(false);
+  const [resendResult, setResendResult] = useState<{ success: boolean; message: string } | null>(null);
 
   const load = (p: number = page) => {
     setLoading(true);
@@ -77,8 +79,25 @@ function SendLogsContent() {
     setDetailLoading(false);
   };
 
+  const handleResend = async (emailId: number) => {
+    setResending(true);
+    setResendResult(null);
+    try {
+      const res = await api.post<{ message_id: string }>(`/v1/emails/${emailId}/resend`, {});
+      if (res.success && res.data) {
+        setResendResult({ success: true, message: `Resent! New Message ID: ${res.data.message_id}` });
+      } else {
+        setResendResult({ success: false, message: res.error || "Failed to resend" });
+      }
+    } catch {
+      setResendResult({ success: false, message: "Failed to resend email" });
+    }
+    setResending(false);
+  };
+
   if (detail) {
     const e = detail.email;
+    const canResend = ["bounced", "failed", "delivered", "sent"].includes(e.status);
     return (
       <PageShell
         title={
@@ -100,6 +119,23 @@ function SendLogsContent() {
               {e.template_slug && <div className="flex justify-between"><span className="text-muted-foreground">Template</span><span className="font-mono text-[12px]">{e.template_slug}</span></div>}
               {e.message_id && <div className="flex justify-between"><span className="text-muted-foreground">Message-ID</span><span className="font-mono text-[11px] truncate max-w-[200px]">{e.message_id}</span></div>}
             </div>
+            {canResend && (
+              <div className="pt-2 border-t border-border">
+                <button
+                  onClick={() => handleResend(e.id)}
+                  disabled={resending}
+                  className="flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-[12px] font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                >
+                  {resending ? <Loader2 className="h-3 w-3 animate-spin" /> : <RotateCcw className="h-3 w-3" />}
+                  Resend
+                </button>
+                {resendResult && (
+                  <p className={`mt-2 text-[12px] ${resendResult.success ? "text-emerald-400" : "text-red-400"}`}>
+                    {resendResult.message}
+                  </p>
+                )}
+              </div>
+            )}
           </div>
           <div className="rounded-lg border border-border bg-card p-4 space-y-3">
             <h3 className="text-[12px] font-medium text-muted-foreground uppercase">Tracking</h3>

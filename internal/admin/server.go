@@ -24,6 +24,7 @@ import (
 	"github.com/fenilsonani/email-server/internal/org"
 	"github.com/fenilsonani/email-server/internal/queue"
 	"github.com/fenilsonani/email-server/internal/sieve"
+	"github.com/fenilsonani/email-server/internal/smtp/delivery"
 	"github.com/fenilsonani/email-server/internal/storage/maildir"
 	"github.com/fenilsonani/email-server/internal/userportal"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -45,8 +46,10 @@ type Server struct {
 	featuresStore *features.Store
 	listsStore    *lists.Store
 	orgStore      *org.Store
-	queue         *queue.RedisQueue
-	logger        *logging.Logger
+	queue          *queue.RedisQueue
+	deliveryEngine *delivery.Engine
+	queuePath      string
+	logger         *logging.Logger
 	auditLogger   *audit.Logger
 	templates     map[string]*template.Template
 	httpServer         *http.Server
@@ -207,6 +210,12 @@ func (s *Server) SetListsStore(store *lists.Store) {
 // SetOrgStore sets the org store for multi-organization management
 func (s *Server) SetOrgStore(store *org.Store) {
 	s.orgStore = store
+}
+
+// SetDeliveryEngine sets the delivery engine for email resend functionality
+func (s *Server) SetDeliveryEngine(engine *delivery.Engine, queuePath string) {
+	s.deliveryEngine = engine
+	s.queuePath = queuePath
 }
 
 // Start starts the admin server
