@@ -75,7 +75,7 @@ func New(cfg Config) (*Logger, error) {
 	case "stderr":
 		output = os.Stderr
 	default:
-		f, err := os.OpenFile(cfg.Output, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		f, err := os.OpenFile(cfg.Output, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0640)
 		if err != nil {
 			return nil, err
 		}

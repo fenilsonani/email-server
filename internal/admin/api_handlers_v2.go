@@ -1320,7 +1320,7 @@ func (s *Server) handleAPIBackupTrigger(w http.ResponseWriter, r *http.Request) 
 	// Create backup to the backups directory
 	dataDir := s.config.Storage.DataDir
 	backupDir := filepath.Join(dataDir, "backups")
-	os.MkdirAll(backupDir, 0755)
+	os.MkdirAll(backupDir, 0750)
 
 	filename := fmt.Sprintf("mailserver-backup-%s.tar.gz", time.Now().Format("2006-01-02-150405"))
 	backupPath := filepath.Join(backupDir, filename)
@@ -1496,12 +1496,12 @@ func (s *Server) handleAPIRestore(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if hdr.Typeflag == tar.TypeDir {
-			os.MkdirAll(targetPath, 0755)
+			os.MkdirAll(targetPath, 0750)
 			continue
 		}
 
 		// Ensure parent dir exists
-		os.MkdirAll(filepath.Dir(targetPath), 0755)
+		os.MkdirAll(filepath.Dir(targetPath), 0750)
 
 		outFile, err := os.Create(targetPath)
 		if err != nil {

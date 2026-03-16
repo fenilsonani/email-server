@@ -52,7 +52,7 @@ func (dm *DeployManager) Deploy(ctx context.Context, newBinaryPath string) error
 	}
 
 	// Make the binary executable
-	if err := os.Chmod(targetPath, 0755); err != nil {
+	if err := os.Chmod(targetPath, 0750); err != nil {
 		return fmt.Errorf("failed to chmod binary: %w", err)
 	}
 
