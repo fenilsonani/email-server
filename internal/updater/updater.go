@@ -472,7 +472,7 @@ func (um *UpdateManager) getRollbackBackupPath(ctx context.Context, updateID int
 	if err := um.db.QueryRowContext(ctx, `SELECT backup_path FROM update_history WHERE id = ?`, updateID).Scan(&historyBackup); err != nil {
 		return "", err
 	}
-	if historyBackup.Valid {
+	if historyBackup.Valid && strings.TrimSpace(historyBackup.String) != "" {
 		return historyBackup.String, nil
 	}
 	return "", nil

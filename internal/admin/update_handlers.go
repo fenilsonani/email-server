@@ -374,24 +374,24 @@ func (s *Server) HandleGetUpdateHistory(w http.ResponseWriter, r *http.Request) 
 	json.NewEncoder(w).Encode(history)
 }
 
-// HandleRollbackUpdate rolls back to a previous version
+// HandleRollbackUpdate rolls back to a previous version.
+//
+// Authentication and admin-check are handled by the withAPIAuth middleware
+// wrapping this handler at the mux level (see server.go). Error responses
+// are JSON to match the rest of the /admin/api/v1 contract.
 func (s *Server) HandleRollbackUpdate(w http.ResponseWriter, r *http.Request) {
-	if !s.isAdmin(r) {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
-		return
-	}
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
 
 	ctx := r.Context()
 	username := s.getUsername(r)
 
-	updateIDStr := strings.TrimPrefix(r.URL.Path, "/admin/system/update/rollback/")
+	updateIDStr := strings.TrimPrefix(r.URL.Path, "/admin/api/v1/system/update/rollback/")
 	updateID, err := strconv.ParseInt(updateIDStr, 10, 64)
 	if err != nil {
-		http.Error(w, "Invalid update ID", http.StatusBadRequest)
+		s.jsonError(w, http.StatusBadRequest, "Invalid update ID")
 		return
 	}
 
@@ -403,12 +403,7 @@ func (s *Server) HandleRollbackUpdate(w http.ResponseWriter, r *http.Request) {
 			"status":    "failed",
 			"error":     err.Error(),
 		}, getClientIP(r))
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"success": false,
-			"message": fmt.Sprintf("Rollback failed: %v", err),
-		})
+		s.jsonError(w, http.StatusInternalServerError, fmt.Sprintf("Rollback failed: %v", err))
 		return
 	}
 

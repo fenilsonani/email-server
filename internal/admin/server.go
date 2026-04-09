@@ -301,7 +301,7 @@ func (s *Server) Start(listen string) error {
 	mux.HandleFunc("/admin/api/v1/system/2fa/disable", s.withAPIAuth(s.handleAPI2FADisable))
 	// System: Updates
 	mux.HandleFunc("/admin/api/v1/system/check-update", s.withAPIAuth(s.handleAPICheckUpdate))
-	mux.HandleFunc("/admin/system/update/rollback/", s.HandleRollbackUpdate)
+	mux.HandleFunc("/admin/api/v1/system/update/rollback/", s.withAPIAuth(s.HandleRollbackUpdate))
 	// System: DKIM Auto-Rotate
 	mux.HandleFunc("/admin/api/v1/system/dkim-autorotate", s.withAPIAuth(s.handleAPIDKIMAutoRotate))
 	mux.HandleFunc("/admin/api/v1/system/dkim-autorotate/rotate-now", s.withAPIAuth(s.handleAPIDKIMAutoRotate))

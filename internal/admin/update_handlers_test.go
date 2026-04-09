@@ -165,6 +165,8 @@ func TestUpdateHandlersGetClientIP_TrustedLocalProxyOnly(t *testing.T) {
 	})
 }
 
+const rollbackURLPrefix = "/admin/api/v1/system/update/rollback/"
+
 func newRollbackRequest(path, token string, method string) *http.Request {
 	req := httptest.NewRequest(method, path, nil)
 	if token != "" {
@@ -177,7 +179,7 @@ func TestHandleRollbackUpdate(t *testing.T) {
 	server, cleanup, updateID, token, binaryPath := setupRollbackHandlerTest(t)
 	defer cleanup()
 
-	req := newRollbackRequest("/admin/system/update/rollback/"+strconv.FormatInt(updateID, 10), token, http.MethodPost)
+	req := newRollbackRequest(rollbackURLPrefix+strconv.FormatInt(updateID, 10), token, http.MethodPost)
 	w := httptest.NewRecorder()
 
 	server.HandleRollbackUpdate(w, req)
@@ -212,17 +214,36 @@ func TestHandleRollbackUpdate(t *testing.T) {
 	}
 }
 
+// decodeAPIResponse decodes the standard JSON error/success envelope used
+// by s.jsonError and confirms the response is valid JSON.
+func decodeAPIResponse(t *testing.T, body []byte) map[string]interface{} {
+	t.Helper()
+	var resp map[string]interface{}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("failed to decode JSON response %q: %v", string(body), err)
+	}
+	return resp
+}
+
+// TestHandleRollbackUpdate_Unauthorized exercises the withAPIAuth middleware
+// that wraps the rollback handler at the mux level. The handler itself no
+// longer does an isAdmin check — that's the middleware's job — so this test
+// calls the wrapped handler to verify the full auth path returns a JSON 401.
 func TestHandleRollbackUpdate_Unauthorized(t *testing.T) {
 	server, cleanup, updateID, _, binaryPath := setupRollbackHandlerTest(t)
 	defer cleanup()
 
 	// No session cookie at all.
-	req := newRollbackRequest("/admin/system/update/rollback/"+strconv.FormatInt(updateID, 10), "", http.MethodPost)
+	req := newRollbackRequest(rollbackURLPrefix+strconv.FormatInt(updateID, 10), "", http.MethodPost)
 	w := httptest.NewRecorder()
-	server.HandleRollbackUpdate(w, req)
+	server.withAPIAuth(server.HandleRollbackUpdate)(w, req)
 
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want %d", w.Code, http.StatusUnauthorized)
+	}
+	resp := decodeAPIResponse(t, w.Body.Bytes())
+	if success, _ := resp["success"].(bool); success {
+		t.Fatalf("expected success=false in unauthorized response, got %#v", resp)
 	}
 	// Unauthorized request must not touch the binary.
 	data, err := os.ReadFile(binaryPath)
@@ -238,12 +259,16 @@ func TestHandleRollbackUpdate_MethodNotAllowed(t *testing.T) {
 	server, cleanup, updateID, token, _ := setupRollbackHandlerTest(t)
 	defer cleanup()
 
-	req := newRollbackRequest("/admin/system/update/rollback/"+strconv.FormatInt(updateID, 10), token, http.MethodGet)
+	req := newRollbackRequest(rollbackURLPrefix+strconv.FormatInt(updateID, 10), token, http.MethodGet)
 	w := httptest.NewRecorder()
 	server.HandleRollbackUpdate(w, req)
 
 	if w.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("status = %d, want %d", w.Code, http.StatusMethodNotAllowed)
+	}
+	resp := decodeAPIResponse(t, w.Body.Bytes())
+	if success, _ := resp["success"].(bool); success {
+		t.Fatalf("expected success=false in 405 response, got %#v", resp)
 	}
 }
 
@@ -251,12 +276,16 @@ func TestHandleRollbackUpdate_InvalidID(t *testing.T) {
 	server, cleanup, _, token, _ := setupRollbackHandlerTest(t)
 	defer cleanup()
 
-	req := newRollbackRequest("/admin/system/update/rollback/not-a-number", token, http.MethodPost)
+	req := newRollbackRequest(rollbackURLPrefix+"not-a-number", token, http.MethodPost)
 	w := httptest.NewRecorder()
 	server.HandleRollbackUpdate(w, req)
 
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+	resp := decodeAPIResponse(t, w.Body.Bytes())
+	if success, _ := resp["success"].(bool); success {
+		t.Fatalf("expected success=false in 400 response, got %#v", resp)
 	}
 }
 
@@ -270,12 +299,16 @@ func TestHandleRollbackUpdate_NotAvailable(t *testing.T) {
 		t.Fatalf("failed to clear rollback_available: %v", err)
 	}
 
-	req := newRollbackRequest("/admin/system/update/rollback/"+strconv.FormatInt(updateID, 10), token, http.MethodPost)
+	req := newRollbackRequest(rollbackURLPrefix+strconv.FormatInt(updateID, 10), token, http.MethodPost)
 	w := httptest.NewRecorder()
 	server.HandleRollbackUpdate(w, req)
 
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want %d", w.Code, http.StatusInternalServerError)
+	}
+	resp := decodeAPIResponse(t, w.Body.Bytes())
+	if success, _ := resp["success"].(bool); success {
+		t.Fatalf("expected success=false in 500 response, got %#v", resp)
 	}
 	// Binary must not be restored when the rollback is not available.
 	data, err := os.ReadFile(binaryPath)
