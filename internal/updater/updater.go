@@ -344,24 +344,33 @@ func (um *UpdateManager) markUpdateFailed(ctx context.Context, updateID int64, e
 	return err
 }
 
-// rollbackUpdate restores the binary recorded in the pre-update snapshot for
-// updateID and restarts the service. It is safe against concurrent callers:
-// the first caller atomically claims the rollback by flipping
-// rollback_available from 1 to 0, and any concurrent caller observes zero
-// rows affected and returns an error. If any step after the claim fails,
-// the claim is released so an operator can retry.
+// rollbackUpdate restores the binary recorded in the pre-update snapshot
+// for updateID and restarts the service. Several things are load-bearing
+// about the ordering below:
 //
-// Once the claim is taken, the rollback runs on a detached context with a
-// generous timeout so that an admin closing their browser mid-rollback
-// cannot kill the restore, restart, or finalise steps and leave the system
-// in a half-rolled-back state.
+//  1. Atomic claim. Only updates in a terminal state (failed/completed)
+//     with a live backup are eligible — this prevents rolling back an
+//     update still in progress, and prevents two admins from racing on
+//     the same update.
+//  2. Detached context. Once the claim is taken, the rollback must run
+//     to completion regardless of whether the admin's browser stays open.
+//  3. DB state is written *before* the service restart. The admin server
+//     runs inside the mail server process, so a successful
+//     `systemctl restart mailserver.service` sends SIGTERM to this very
+//     process — any code after the restart call is not guaranteed to run.
+//     If we wrote "rolled_back" only after the restart, the self-restart
+//     case would leave update_history stuck at `failed`,
+//     rollback_available=0, and no way for the admin to see or retry.
+//  4. Compensation. If RestartService actually *returns* with an error,
+//     the restart did not happen (systemctl missing, unit file broken,
+//     permissions, etc.) — the service is still running the failed
+//     build. In that case we revert update_history back to its prior
+//     status/completed_at (captured before step 3), stamp the restart
+//     error into error_message for operator visibility, and let the
+//     defer release the claim so a retry is possible.
 func (um *UpdateManager) rollbackUpdate(ctx context.Context, updateID int64) error {
-	// Atomically claim the rollback. Only updates in a terminal state
-	// (failed/completed) with a live backup are eligible — this prevents
-	// rolling back an update that's still in progress, and prevents two
-	// admins from rolling back the same update concurrently. The claim
-	// itself honours the caller's context: cancellation before we've
-	// committed to anything is fine.
+	// Step 1: Atomic claim on the caller's ctx. Cancellation here means
+	// nothing has changed yet, so the caller can safely retry.
 	claim, err := um.db.ExecContext(ctx, `
 		UPDATE update_history
 		SET rollback_available = 0
@@ -378,30 +387,32 @@ func (um *UpdateManager) rollbackUpdate(ctx context.Context, updateID int64) err
 		return fmt.Errorf("rollback not available for update %d", updateID)
 	}
 
-	// Detach from the caller's context for every subsequent step. Once we
-	// have the claim, the rollback must run to completion (or fail cleanly
-	// and release the claim) regardless of whether the admin stays connected.
+	// Step 2: Detach from the caller's context for everything below.
 	rollbackCtx, cancelRollback := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancelRollback()
 
-	// Release the claim on any failure below so the operator can retry. Use
-	// a second detached context so it survives even if rollbackCtx has been
-	// cancelled/timed-out by the time we reach the defer.
+	// Release the claim on any failure that reaches the defer (success
+	// will be set to true only when we've either finalised the rollback
+	// or handed control to a restart that will kill us). Uses its own
+	// detached context so it survives rollbackCtx expiring.
 	success := false
 	defer func() {
 		if success {
 			return
 		}
-		releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if _, relErr := um.db.ExecContext(releaseCtx, `
-			UPDATE update_history
-			SET rollback_available = 1
-			WHERE id = ?
-		`, updateID); relErr != nil {
-			um.logger.Error("Failed to release rollback claim after error", "update_id", updateID, "error", relErr)
-		}
+		um.releaseRollbackClaim(updateID)
 	}()
+
+	// Capture the pre-rollback state so we can compensate if the restart
+	// step fails without SIGTERM-ing us (i.e. systemctl exec returned an
+	// error before it could signal this process).
+	var prevStatus string
+	var prevCompletedAt sql.NullTime
+	if err := um.db.QueryRowContext(rollbackCtx,
+		`SELECT status, completed_at FROM update_history WHERE id = ?`, updateID,
+	).Scan(&prevStatus, &prevCompletedAt); err != nil {
+		return fmt.Errorf("failed to read pre-rollback state: %w", err)
+	}
 
 	backupPath, err := um.getRollbackBackupPath(rollbackCtx, updateID)
 	if err != nil {
@@ -416,31 +427,83 @@ func (um *UpdateManager) rollbackUpdate(ctx context.Context, updateID int64) err
 		return fmt.Errorf("restore failed: %w", err)
 	}
 
-	// Restart the service so the restored binary actually takes effect.
-	// A failed restart means the running process is still on the failed
-	// build even though the binary on disk is correct, so we must NOT
-	// mark the update as rolled back in that case — the caller needs to
-	// know the rollback is only half-done and investigate.
-	//
-	// SkipServiceRestart is for tests and for production environments
-	// where service lifecycle is managed externally (k8s, nomad, etc.);
-	// in those cases the operator is responsible for the restart.
-	if um.deployManager != nil && !um.config.SkipServiceRestart {
-		if err := um.deployManager.RestartService(rollbackCtx); err != nil {
-			return fmt.Errorf("service restart after rollback failed: %w", err)
-		}
-	}
-
+	// Step 3: Mark the DB as rolled_back BEFORE calling RestartService.
+	// See the function doc comment: the admin server is embedded in the
+	// mail process, so a successful systemctl restart will SIGTERM us
+	// mid-function. Writing the status first makes the DB consistent
+	// with reality in that case.
 	if _, err := um.db.ExecContext(rollbackCtx, `
 		UPDATE update_history
-		SET status = ?, completed_at = ?
+		SET status = ?, completed_at = ?, error_message = NULL
 		WHERE id = ?
 	`, StatusRolledBack, time.Now(), updateID); err != nil {
 		return fmt.Errorf("failed to mark update rolled back: %w", err)
 	}
-
+	// From here on, a successful return (or death from SIGTERM during
+	// the restart) means the rollback is committed and the claim must
+	// NOT be released by the defer.
 	success = true
-	return nil
+
+	// Step 4: Restart the service. In the self-restart case this call
+	// never returns — we get SIGTERM'd while systemctl is stopping the
+	// unit, and the new process comes up with the restored binary. If
+	// this call DOES return with an error we know the restart didn't
+	// actually happen and we must compensate.
+	//
+	// SkipServiceRestart covers tests and production environments where
+	// service lifecycle is managed externally (k8s, nomad, etc.); in
+	// those cases the operator owns the restart and the DB row we just
+	// wrote is the correct final state.
+	if um.deployManager == nil || um.config.SkipServiceRestart {
+		return nil
+	}
+
+	// Give the restart its own fresh context so a nearly-expired
+	// rollbackCtx (e.g. after a slow restore) cannot doom it.
+	restartCtx, cancelRestart := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancelRestart()
+
+	restartErr := um.deployManager.RestartService(restartCtx)
+	if restartErr == nil {
+		// Either we got here because SkipServiceRestart is off but the
+		// process somehow survived (unusual, e.g. running outside systemd
+		// during development) or because the restart returned before
+		// SIGTERM propagated. Either way the rollback is done.
+		return nil
+	}
+
+	// Step 5: Compensate. The restart exec failed, so we are still the
+	// old binary running the failed build despite what the DB now says.
+	// Revert status/completed_at and stamp the restart error into
+	// error_message so the admin UI surfaces it. Release the claim via
+	// the defer by clearing success.
+	success = false
+	revertCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, rerr := um.db.ExecContext(revertCtx, `
+		UPDATE update_history
+		SET status = ?, completed_at = ?, error_message = ?
+		WHERE id = ?
+	`, prevStatus, prevCompletedAt, fmt.Sprintf("rollback restore succeeded but service restart failed: %v", restartErr), updateID); rerr != nil {
+		um.logger.Error("rollback half-committed: restart failed and compensation UPDATE also failed — manual intervention required",
+			"update_id", updateID, "restart_error", restartErr, "compensation_error", rerr)
+	}
+	return fmt.Errorf("service restart after rollback failed: %w", restartErr)
+}
+
+// releaseRollbackClaim resets rollback_available back to 1 so the
+// operator can retry. Uses a detached context so it works even when the
+// caller's or rollback's context has already been cancelled.
+func (um *UpdateManager) releaseRollbackClaim(updateID int64) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := um.db.ExecContext(ctx, `
+		UPDATE update_history
+		SET rollback_available = 1
+		WHERE id = ?
+	`, updateID); err != nil {
+		um.logger.Error("Failed to release rollback claim", "update_id", updateID, "error", err)
+	}
 }
 
 // RollbackUpdate restores a previously backed-up version for the given update.
