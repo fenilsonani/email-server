@@ -380,6 +380,10 @@ func (s *Server) HandleRollbackUpdate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 
 	ctx := r.Context()
 	username := s.getUsername(r)
@@ -391,15 +395,32 @@ func (s *Server) HandleRollbackUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// TODO: Implement rollback logic
+	updateMgr := updater.NewUpdateManager(s.db, &s.config.Updater, s.logger, nil)
+	if err := updateMgr.RollbackUpdate(ctx, updateID); err != nil {
+		s.auditLogger.Log(ctx, username, audit.EventConfigChange, "system_rollback", map[string]interface{}{
+			"update_id": updateID,
+			"status":    "failed",
+			"error":     err.Error(),
+		}, getClientIP(r))
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"message": fmt.Sprintf("Rollback failed: %v", err),
+		})
+		return
+	}
+
 	s.auditLogger.Log(ctx, username, audit.EventConfigChange, "system_rollback", map[string]interface{}{
 		"update_id": updateID,
+		"status":    "completed",
 	}, getClientIP(r))
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success": false,
-		"message": "Rollback not yet implemented",
+		"success":   true,
+		"message":   "Rollback completed",
+		"update_id": updateID,
 	})
 }
 

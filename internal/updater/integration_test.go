@@ -3,6 +3,8 @@ package updater
 import (
 	"context"
 	"database/sql"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -335,9 +337,24 @@ func TestIntegration_FailedUpdateWithRollback(t *testing.T) {
 	db := setupIntegrationTestDB(t)
 	defer db.Close()
 
+	buildDir := t.TempDir()
+	binaryPath := filepath.Join(buildDir, "mailserver")
+	backupDir := filepath.Join(buildDir, "backups", "pre-update-1")
+	if err := os.MkdirAll(backupDir, 0o750); err != nil {
+		t.Fatalf("Failed to create backup dir: %v", err)
+	}
+	if err := os.WriteFile(binaryPath, []byte("new binary"), 0o750); err != nil {
+		t.Fatalf("Failed to write binary: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(backupDir, "mailserver-binary"), []byte("old binary"), 0o750); err != nil {
+		t.Fatalf("Failed to write backup binary: %v", err)
+	}
+
 	cfg := &config.UpdaterConfig{
-		GitRepoURL: "https://github.com/fenilsonani/email-server",
-		BuildPath:  "/tmp/test-build",
+		GitRepoURL:     "https://github.com/fenilsonani/email-server",
+		BuildPath:      buildDir,
+		BinaryPath:     binaryPath,
+		SystemdService: "mailserver.service",
 	}
 	logger := logging.Default()
 
@@ -357,6 +374,12 @@ func TestIntegration_FailedUpdateWithRollback(t *testing.T) {
 	updateID, err := um.createUpdateHistory(ctx, opts, "v0.9.0", "old_commit")
 	if err != nil {
 		t.Fatalf("Failed to create update: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE update_history SET backup_path = ?, rollback_available = 1 WHERE id = ?`, backupDir, updateID); err != nil {
+		t.Fatalf("Failed to update rollback metadata: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO rollback_snapshots (update_id, snapshot_type, version, commit_sha, binary_path, backup_path) VALUES (?, 'pre_update', ?, ?, ?, ?)`, updateID, "v0.9.0", "old_commit", binaryPath, backupDir); err != nil {
+		t.Fatalf("Failed to insert rollback snapshot: %v", err)
 	}
 
 	t.Run("SimulateFailureAndRollback", func(t *testing.T) {
@@ -411,6 +434,25 @@ func TestIntegration_FailedUpdateWithRollback(t *testing.T) {
 		}
 		if errorMsg != "Build compilation failed" {
 			t.Errorf("Expected error message, got %q", errorMsg)
+		}
+
+		if err := um.RollbackUpdate(ctx, updateID); err != nil {
+			t.Fatalf("RollbackUpdate failed: %v", err)
+		}
+
+		data, err := os.ReadFile(binaryPath)
+		if err != nil {
+			t.Fatalf("Failed to read restored binary: %v", err)
+		}
+		if string(data) != "old binary" {
+			t.Fatalf("Expected restored binary contents, got %q", string(data))
+		}
+
+		if err := db.QueryRowContext(ctx, "SELECT status FROM update_history WHERE id = ?", updateID).Scan(&status); err != nil {
+			t.Fatalf("Failed to query rolled back status: %v", err)
+		}
+		if status != string(StatusRolledBack) {
+			t.Errorf("Expected status 'rolled_back', got %q", status)
 		}
 
 		// Verify only 3 of 8 steps completed before failure

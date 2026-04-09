@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/fenilsonani/email-server/internal/config"
@@ -51,14 +52,14 @@ var UpdateSteps = []UpdateStep{
 
 // UpdateOptions specifies parameters for an update
 type UpdateOptions struct {
-	Mode           UpdateMode
-	TargetType     TargetType
-	Target         string // Version, PR#, branch name, or commit SHA
-	DryRun         bool
-	SkipBackup     bool
-	Force          bool
+	Mode            UpdateMode
+	TargetType      TargetType
+	Target          string // Version, PR#, branch name, or commit SHA
+	DryRun          bool
+	SkipBackup      bool
+	Force           bool
 	SkipHealthCheck bool
-	Username       string // Admin user performing the update
+	Username        string // Admin user performing the update
 }
 
 // UpdateResult contains the outcome of an update
@@ -142,6 +143,15 @@ func (um *UpdateManager) StartUpdate(ctx context.Context, opts UpdateOptions) (*
 			result.Errors = append(result.Errors, fmt.Sprintf("backup failed: %v", err))
 		} else {
 			result.BackupPath = backupPath
+			result.RollbackAvailable = true
+			if err := um.recordRollbackSnapshot(ctx, updateID, currentVersion, currentCommit, backupPath); err != nil {
+				um.logger.Warn("Failed to record rollback snapshot", "update_id", updateID, "error", err)
+				if err := um.markRollbackAvailable(ctx, updateID, backupPath); err != nil {
+					um.logger.Warn("Failed to persist rollback availability", "update_id", updateID, "error", err)
+				}
+			} else if err := um.markRollbackAvailable(ctx, updateID, backupPath); err != nil {
+				um.logger.Warn("Failed to persist rollback availability", "update_id", updateID, "error", err)
+			}
 			um.progressTracker.UpdateProgress(ctx, updateID, 2, "backup", "completed", "Backup created successfully")
 		}
 	}
@@ -164,7 +174,9 @@ func (um *UpdateManager) StartUpdate(ctx context.Context, opts UpdateOptions) (*
 		um.progressTracker.UpdateProgress(ctx, updateID, 4, "build", "failed", fmt.Sprintf("Build failed: %v", err))
 		um.markUpdateFailed(ctx, updateID, fmt.Sprintf("build failed: %v", err))
 		if um.config.AutoRollbackOnFailure && result.BackupPath != "" {
-			um.rollbackUpdate(ctx, updateID)
+			if err := um.rollbackUpdate(ctx, updateID); err != nil {
+				um.logger.Error("Automatic rollback failed after build error", "update_id", updateID, "error", err)
+			}
 		}
 		return result, fmt.Errorf("build failed: %w", err)
 	}
@@ -177,7 +189,9 @@ func (um *UpdateManager) StartUpdate(ctx context.Context, opts UpdateOptions) (*
 			um.progressTracker.UpdateProgress(ctx, updateID, 5, "test", "failed", fmt.Sprintf("Tests failed: %v", err))
 			um.markUpdateFailed(ctx, updateID, fmt.Sprintf("test failed: %v", err))
 			if um.config.AutoRollbackOnFailure && result.BackupPath != "" {
-				um.rollbackUpdate(ctx, updateID)
+				if err := um.rollbackUpdate(ctx, updateID); err != nil {
+					um.logger.Error("Automatic rollback failed after test error", "update_id", updateID, "error", err)
+				}
 			}
 			return result, fmt.Errorf("test failed: %w", err)
 		}
@@ -192,7 +206,9 @@ func (um *UpdateManager) StartUpdate(ctx context.Context, opts UpdateOptions) (*
 		um.progressTracker.UpdateProgress(ctx, updateID, 6, "deploy", "failed", fmt.Sprintf("Deploy failed: %v", err))
 		um.markUpdateFailed(ctx, updateID, fmt.Sprintf("deploy failed: %v", err))
 		if um.config.AutoRollbackOnFailure && result.BackupPath != "" {
-			um.rollbackUpdate(ctx, updateID)
+			if err := um.rollbackUpdate(ctx, updateID); err != nil {
+				um.logger.Error("Automatic rollback failed after deploy error", "update_id", updateID, "error", err)
+			}
 		}
 		return result, fmt.Errorf("deploy failed: %w", err)
 	}
@@ -206,7 +222,9 @@ func (um *UpdateManager) StartUpdate(ctx context.Context, opts UpdateOptions) (*
 			um.progressTracker.UpdateProgress(ctx, updateID, 7, "verify", "failed", "Health check returned no results")
 			um.markUpdateFailed(ctx, updateID, "health check failed: no results")
 			if um.config.AutoRollbackOnFailure && result.BackupPath != "" {
-				um.rollbackUpdate(ctx, updateID)
+				if err := um.rollbackUpdate(ctx, updateID); err != nil {
+					um.logger.Error("Automatic rollback failed after health-check error", "update_id", updateID, "error", err)
+				}
 			}
 			return result, fmt.Errorf("health check failed: no results")
 		}
@@ -217,7 +235,9 @@ func (um *UpdateManager) StartUpdate(ctx context.Context, opts UpdateOptions) (*
 			um.progressTracker.UpdateProgress(ctx, updateID, 7, "verify", "failed", fmt.Sprintf("Health check failed: %d checks failed", healthStatus.Failed))
 			um.markUpdateFailed(ctx, updateID, fmt.Sprintf("health check failed: %d checks failed", healthStatus.Failed))
 			if um.config.AutoRollbackOnFailure && result.BackupPath != "" {
-				um.rollbackUpdate(ctx, updateID)
+				if err := um.rollbackUpdate(ctx, updateID); err != nil {
+					um.logger.Error("Automatic rollback failed after health-check error", "update_id", updateID, "error", err)
+				}
 			}
 			return result, fmt.Errorf("health check failed: %d checks failed", healthStatus.Failed)
 		}
@@ -252,8 +272,8 @@ func (um *UpdateManager) getCurrentVersion(ctx context.Context) (string, string,
 
 func (um *UpdateManager) createUpdateHistory(ctx context.Context, opts UpdateOptions, fromVersion, fromCommit string) (int64, error) {
 	query := `
-	INSERT INTO update_history (update_type, from_version, from_commit, status, started_by, pr_number, branch_name)
-	VALUES (?, ?, ?, ?, ?, ?, ?)
+	INSERT INTO update_history (update_type, from_version, from_commit, status, started_by, pr_number, branch_name, backup_path, rollback_available)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 	var prNumber *int
 	if opts.TargetType == TargetTypePR {
@@ -278,6 +298,8 @@ func (um *UpdateManager) createUpdateHistory(ctx context.Context, opts UpdateOpt
 			}
 			return nil
 		}(),
+		nil,
+		false,
 	)
 	if err != nil {
 		return 0, err
@@ -317,13 +339,83 @@ func (um *UpdateManager) markUpdateFailed(ctx context.Context, updateID int64, e
 }
 
 func (um *UpdateManager) rollbackUpdate(ctx context.Context, updateID int64) error {
-	um.logger.Warn("Initiating automatic rollback", "update_id", updateID)
-	// TODO: Implement rollback logic
+	backupPath, err := um.getRollbackBackupPath(ctx, updateID)
+	if err != nil {
+		return err
+	}
+	if backupPath == "" {
+		return fmt.Errorf("rollback backup not available for update %d", updateID)
+	}
+
+	um.logger.Warn("Initiating rollback", "update_id", updateID, "backup_path", backupPath)
+	if err := um.backupManager.RestoreFromBackup(ctx, backupPath); err != nil {
+		return err
+	}
+
 	query := `
 	UPDATE update_history
-	SET status = ?
+	SET status = ?, completed_at = ?, rollback_available = 0
 	WHERE id = ?
 	`
-	_, err := um.db.ExecContext(ctx, query, StatusRolledBack, updateID)
+	_, err = um.db.ExecContext(ctx, query, StatusRolledBack, time.Now(), updateID)
 	return err
+}
+
+// RollbackUpdate restores a previously backed-up version for the given update.
+func (um *UpdateManager) RollbackUpdate(ctx context.Context, updateID int64) error {
+	return um.rollbackUpdate(ctx, updateID)
+}
+
+func (um *UpdateManager) markRollbackAvailable(ctx context.Context, updateID int64, backupPath string) error {
+	query := `
+	UPDATE update_history
+	SET backup_path = ?, rollback_available = 1
+	WHERE id = ?
+	`
+	_, err := um.db.ExecContext(ctx, query, backupPath, updateID)
+	return err
+}
+
+func (um *UpdateManager) recordRollbackSnapshot(ctx context.Context, updateID int64, version, commitSHA, backupPath string) error {
+	query := `
+	INSERT INTO rollback_snapshots (update_id, snapshot_type, version, commit_sha, binary_path, backup_path, config_snapshot, health_status)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`
+	_, err := um.db.ExecContext(ctx, query,
+		updateID,
+		"pre_update",
+		version,
+		commitSHA,
+		um.config.BinaryPath,
+		backupPath,
+		nil,
+		nil,
+	)
+	return err
+}
+
+func (um *UpdateManager) getRollbackBackupPath(ctx context.Context, updateID int64) (string, error) {
+	var backupPath sql.NullString
+	err := um.db.QueryRowContext(ctx, `
+		SELECT backup_path
+		FROM rollback_snapshots
+		WHERE update_id = ?
+		ORDER BY created_at DESC, id DESC
+		LIMIT 1
+	`, updateID).Scan(&backupPath)
+	if err == nil && backupPath.Valid && strings.TrimSpace(backupPath.String) != "" {
+		return backupPath.String, nil
+	}
+	if err != nil && err != sql.ErrNoRows {
+		return "", err
+	}
+
+	var historyBackup sql.NullString
+	if err := um.db.QueryRowContext(ctx, `SELECT backup_path FROM update_history WHERE id = ?`, updateID).Scan(&historyBackup); err != nil {
+		return "", err
+	}
+	if historyBackup.Valid {
+		return historyBackup.String, nil
+	}
+	return "", nil
 }

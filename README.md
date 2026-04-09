@@ -253,6 +253,12 @@ go test -v ./internal/auth/...
 go test -v ./internal/smtp/delivery/...
 ```
 
+## Current Limitations
+
+- Priority-based delivery queuing is not wired through the delivery engine yet.
+- Update rollback now restores the last saved backup, but it still depends on a valid pre-update backup path.
+- Some admin and user portal flows are still being polished for validation and error messaging.
+
 ## Security Notes
 
 - Put the admin panel behind a reverse proxy with restricted access
