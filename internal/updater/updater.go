@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/fenilsonani/email-server/internal/config"
@@ -51,14 +52,14 @@ var UpdateSteps = []UpdateStep{
 
 // UpdateOptions specifies parameters for an update
 type UpdateOptions struct {
-	Mode           UpdateMode
-	TargetType     TargetType
-	Target         string // Version, PR#, branch name, or commit SHA
-	DryRun         bool
-	SkipBackup     bool
-	Force          bool
+	Mode            UpdateMode
+	TargetType      TargetType
+	Target          string // Version, PR#, branch name, or commit SHA
+	DryRun          bool
+	SkipBackup      bool
+	Force           bool
 	SkipHealthCheck bool
-	Username       string // Admin user performing the update
+	Username        string // Admin user performing the update
 }
 
 // UpdateResult contains the outcome of an update
@@ -142,6 +143,19 @@ func (um *UpdateManager) StartUpdate(ctx context.Context, opts UpdateOptions) (*
 			result.Errors = append(result.Errors, fmt.Sprintf("backup failed: %v", err))
 		} else {
 			result.BackupPath = backupPath
+			if err := um.recordRollbackSnapshot(ctx, updateID, currentVersion, currentCommit, backupPath); err != nil {
+				um.logger.Warn("Failed to record rollback snapshot", "update_id", updateID, "error", err)
+			}
+			// Only advertise the rollback as available once the DB row has
+			// been updated to reflect it. If this persistence fails we can
+			// still continue the update — but the caller must not be told
+			// rollback is available, because rollbackUpdate() will refuse to
+			// restore an update whose rollback_available column is not 1.
+			if err := um.markRollbackAvailable(ctx, updateID, backupPath); err != nil {
+				um.logger.Warn("Failed to persist rollback availability", "update_id", updateID, "error", err)
+			} else {
+				result.RollbackAvailable = true
+			}
 			um.progressTracker.UpdateProgress(ctx, updateID, 2, "backup", "completed", "Backup created successfully")
 		}
 	}
@@ -164,7 +178,9 @@ func (um *UpdateManager) StartUpdate(ctx context.Context, opts UpdateOptions) (*
 		um.progressTracker.UpdateProgress(ctx, updateID, 4, "build", "failed", fmt.Sprintf("Build failed: %v", err))
 		um.markUpdateFailed(ctx, updateID, fmt.Sprintf("build failed: %v", err))
 		if um.config.AutoRollbackOnFailure && result.BackupPath != "" {
-			um.rollbackUpdate(ctx, updateID)
+			if err := um.rollbackUpdate(ctx, updateID); err != nil {
+				um.logger.Error("Automatic rollback failed after build error", "update_id", updateID, "error", err)
+			}
 		}
 		return result, fmt.Errorf("build failed: %w", err)
 	}
@@ -177,7 +193,9 @@ func (um *UpdateManager) StartUpdate(ctx context.Context, opts UpdateOptions) (*
 			um.progressTracker.UpdateProgress(ctx, updateID, 5, "test", "failed", fmt.Sprintf("Tests failed: %v", err))
 			um.markUpdateFailed(ctx, updateID, fmt.Sprintf("test failed: %v", err))
 			if um.config.AutoRollbackOnFailure && result.BackupPath != "" {
-				um.rollbackUpdate(ctx, updateID)
+				if err := um.rollbackUpdate(ctx, updateID); err != nil {
+					um.logger.Error("Automatic rollback failed after test error", "update_id", updateID, "error", err)
+				}
 			}
 			return result, fmt.Errorf("test failed: %w", err)
 		}
@@ -192,7 +210,9 @@ func (um *UpdateManager) StartUpdate(ctx context.Context, opts UpdateOptions) (*
 		um.progressTracker.UpdateProgress(ctx, updateID, 6, "deploy", "failed", fmt.Sprintf("Deploy failed: %v", err))
 		um.markUpdateFailed(ctx, updateID, fmt.Sprintf("deploy failed: %v", err))
 		if um.config.AutoRollbackOnFailure && result.BackupPath != "" {
-			um.rollbackUpdate(ctx, updateID)
+			if err := um.rollbackUpdate(ctx, updateID); err != nil {
+				um.logger.Error("Automatic rollback failed after deploy error", "update_id", updateID, "error", err)
+			}
 		}
 		return result, fmt.Errorf("deploy failed: %w", err)
 	}
@@ -206,7 +226,9 @@ func (um *UpdateManager) StartUpdate(ctx context.Context, opts UpdateOptions) (*
 			um.progressTracker.UpdateProgress(ctx, updateID, 7, "verify", "failed", "Health check returned no results")
 			um.markUpdateFailed(ctx, updateID, "health check failed: no results")
 			if um.config.AutoRollbackOnFailure && result.BackupPath != "" {
-				um.rollbackUpdate(ctx, updateID)
+				if err := um.rollbackUpdate(ctx, updateID); err != nil {
+					um.logger.Error("Automatic rollback failed after health-check error", "update_id", updateID, "error", err)
+				}
 			}
 			return result, fmt.Errorf("health check failed: no results")
 		}
@@ -217,7 +239,9 @@ func (um *UpdateManager) StartUpdate(ctx context.Context, opts UpdateOptions) (*
 			um.progressTracker.UpdateProgress(ctx, updateID, 7, "verify", "failed", fmt.Sprintf("Health check failed: %d checks failed", healthStatus.Failed))
 			um.markUpdateFailed(ctx, updateID, fmt.Sprintf("health check failed: %d checks failed", healthStatus.Failed))
 			if um.config.AutoRollbackOnFailure && result.BackupPath != "" {
-				um.rollbackUpdate(ctx, updateID)
+				if err := um.rollbackUpdate(ctx, updateID); err != nil {
+					um.logger.Error("Automatic rollback failed after health-check error", "update_id", updateID, "error", err)
+				}
 			}
 			return result, fmt.Errorf("health check failed: %d checks failed", healthStatus.Failed)
 		}
@@ -235,7 +259,9 @@ func (um *UpdateManager) StartUpdate(ctx context.Context, opts UpdateOptions) (*
 	result.Success = true
 	result.Duration = duration
 	result.StepsCompleted = 8
-	result.RollbackAvailable = result.BackupPath != ""
+	// result.RollbackAvailable is already set (or left false) during the
+	// backup step based on whether markRollbackAvailable actually persisted
+	// the state. Do not override it here.
 
 	return result, nil
 }
@@ -252,8 +278,8 @@ func (um *UpdateManager) getCurrentVersion(ctx context.Context) (string, string,
 
 func (um *UpdateManager) createUpdateHistory(ctx context.Context, opts UpdateOptions, fromVersion, fromCommit string) (int64, error) {
 	query := `
-	INSERT INTO update_history (update_type, from_version, from_commit, status, started_by, pr_number, branch_name)
-	VALUES (?, ?, ?, ?, ?, ?, ?)
+	INSERT INTO update_history (update_type, from_version, from_commit, status, started_by, pr_number, branch_name, backup_path, rollback_available)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 	var prNumber *int
 	if opts.TargetType == TargetTypePR {
@@ -278,6 +304,8 @@ func (um *UpdateManager) createUpdateHistory(ctx context.Context, opts UpdateOpt
 			}
 			return nil
 		}(),
+		nil,
+		false,
 	)
 	if err != nil {
 		return 0, err
@@ -316,14 +344,223 @@ func (um *UpdateManager) markUpdateFailed(ctx context.Context, updateID int64, e
 	return err
 }
 
+// rollbackUpdate restores the binary recorded in the pre-update snapshot
+// for updateID and restarts the service. Several things are load-bearing
+// about the ordering below:
+//
+//  1. Atomic claim. Only updates in a terminal state (failed/completed)
+//     with a live backup are eligible — this prevents rolling back an
+//     update still in progress, and prevents two admins from racing on
+//     the same update.
+//  2. Detached context. Once the claim is taken, the rollback must run
+//     to completion regardless of whether the admin's browser stays open.
+//  3. DB state is written *before* the service restart. The admin server
+//     runs inside the mail server process, so a successful
+//     `systemctl restart mailserver.service` sends SIGTERM to this very
+//     process — any code after the restart call is not guaranteed to run.
+//     If we wrote "rolled_back" only after the restart, the self-restart
+//     case would leave update_history stuck at `failed`,
+//     rollback_available=0, and no way for the admin to see or retry.
+//  4. Compensation. If RestartService actually *returns* with an error,
+//     the restart did not happen (systemctl missing, unit file broken,
+//     permissions, etc.) — the service is still running the failed
+//     build. In that case we revert update_history back to its prior
+//     status/completed_at (captured before step 3), stamp the restart
+//     error into error_message for operator visibility, and let the
+//     defer release the claim so a retry is possible.
 func (um *UpdateManager) rollbackUpdate(ctx context.Context, updateID int64) error {
-	um.logger.Warn("Initiating automatic rollback", "update_id", updateID)
-	// TODO: Implement rollback logic
+	// Step 1: Atomic claim on the caller's ctx. Cancellation here means
+	// nothing has changed yet, so the caller can safely retry.
+	claim, err := um.db.ExecContext(ctx, `
+		UPDATE update_history
+		SET rollback_available = 0
+		WHERE id = ? AND rollback_available = 1 AND status IN (?, ?)
+	`, updateID, StatusFailed, StatusCompleted)
+	if err != nil {
+		return fmt.Errorf("failed to claim rollback: %w", err)
+	}
+	claimed, err := claim.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to check rollback claim: %w", err)
+	}
+	if claimed == 0 {
+		return fmt.Errorf("rollback not available for update %d", updateID)
+	}
+
+	// Step 2: Detach from the caller's context for everything below.
+	rollbackCtx, cancelRollback := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancelRollback()
+
+	// Release the claim on any failure that reaches the defer (success
+	// will be set to true only when we've either finalised the rollback
+	// or handed control to a restart that will kill us). Uses its own
+	// detached context so it survives rollbackCtx expiring.
+	success := false
+	defer func() {
+		if success {
+			return
+		}
+		um.releaseRollbackClaim(updateID)
+	}()
+
+	// Capture the pre-rollback state so we can compensate if the restart
+	// step fails without SIGTERM-ing us (i.e. systemctl exec returned an
+	// error before it could signal this process).
+	var prevStatus string
+	var prevCompletedAt sql.NullTime
+	if err := um.db.QueryRowContext(rollbackCtx,
+		`SELECT status, completed_at FROM update_history WHERE id = ?`, updateID,
+	).Scan(&prevStatus, &prevCompletedAt); err != nil {
+		return fmt.Errorf("failed to read pre-rollback state: %w", err)
+	}
+
+	backupPath, err := um.getRollbackBackupPath(rollbackCtx, updateID)
+	if err != nil {
+		return err
+	}
+	if backupPath == "" {
+		return fmt.Errorf("rollback backup not available for update %d", updateID)
+	}
+
+	um.logger.Warn("Initiating rollback", "update_id", updateID, "backup_path", backupPath)
+	if err := um.backupManager.RestoreFromBackup(rollbackCtx, backupPath); err != nil {
+		return fmt.Errorf("restore failed: %w", err)
+	}
+
+	// Step 3: Mark the DB as rolled_back BEFORE calling RestartService.
+	// See the function doc comment: the admin server is embedded in the
+	// mail process, so a successful systemctl restart will SIGTERM us
+	// mid-function. Writing the status first makes the DB consistent
+	// with reality in that case.
+	if _, err := um.db.ExecContext(rollbackCtx, `
+		UPDATE update_history
+		SET status = ?, completed_at = ?, error_message = NULL
+		WHERE id = ?
+	`, StatusRolledBack, time.Now(), updateID); err != nil {
+		return fmt.Errorf("failed to mark update rolled back: %w", err)
+	}
+	// From here on, a successful return (or death from SIGTERM during
+	// the restart) means the rollback is committed and the claim must
+	// NOT be released by the defer.
+	success = true
+
+	// Step 4: Restart the service. In the self-restart case this call
+	// never returns — we get SIGTERM'd while systemctl is stopping the
+	// unit, and the new process comes up with the restored binary. If
+	// this call DOES return with an error we know the restart didn't
+	// actually happen and we must compensate.
+	//
+	// SkipServiceRestart covers tests and production environments where
+	// service lifecycle is managed externally (k8s, nomad, etc.); in
+	// those cases the operator owns the restart and the DB row we just
+	// wrote is the correct final state.
+	if um.deployManager == nil || um.config.SkipServiceRestart {
+		return nil
+	}
+
+	// Give the restart its own fresh context so a nearly-expired
+	// rollbackCtx (e.g. after a slow restore) cannot doom it.
+	restartCtx, cancelRestart := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancelRestart()
+
+	restartErr := um.deployManager.RestartService(restartCtx)
+	if restartErr == nil {
+		// Either we got here because SkipServiceRestart is off but the
+		// process somehow survived (unusual, e.g. running outside systemd
+		// during development) or because the restart returned before
+		// SIGTERM propagated. Either way the rollback is done.
+		return nil
+	}
+
+	// Step 5: Compensate. The restart exec failed, so we are still the
+	// old binary running the failed build despite what the DB now says.
+	// Revert status/completed_at and stamp the restart error into
+	// error_message so the admin UI surfaces it. Release the claim via
+	// the defer by clearing success.
+	success = false
+	revertCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, rerr := um.db.ExecContext(revertCtx, `
+		UPDATE update_history
+		SET status = ?, completed_at = ?, error_message = ?
+		WHERE id = ?
+	`, prevStatus, prevCompletedAt, fmt.Sprintf("rollback restore succeeded but service restart failed: %v", restartErr), updateID); rerr != nil {
+		um.logger.Error("rollback half-committed: restart failed and compensation UPDATE also failed — manual intervention required",
+			"update_id", updateID, "restart_error", restartErr, "compensation_error", rerr)
+	}
+	return fmt.Errorf("service restart after rollback failed: %w", restartErr)
+}
+
+// releaseRollbackClaim resets rollback_available back to 1 so the
+// operator can retry. Uses a detached context so it works even when the
+// caller's or rollback's context has already been cancelled.
+func (um *UpdateManager) releaseRollbackClaim(updateID int64) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := um.db.ExecContext(ctx, `
+		UPDATE update_history
+		SET rollback_available = 1
+		WHERE id = ?
+	`, updateID); err != nil {
+		um.logger.Error("Failed to release rollback claim", "update_id", updateID, "error", err)
+	}
+}
+
+// RollbackUpdate restores a previously backed-up version for the given update.
+func (um *UpdateManager) RollbackUpdate(ctx context.Context, updateID int64) error {
+	return um.rollbackUpdate(ctx, updateID)
+}
+
+func (um *UpdateManager) markRollbackAvailable(ctx context.Context, updateID int64, backupPath string) error {
 	query := `
 	UPDATE update_history
-	SET status = ?
+	SET backup_path = ?, rollback_available = 1
 	WHERE id = ?
 	`
-	_, err := um.db.ExecContext(ctx, query, StatusRolledBack, updateID)
+	_, err := um.db.ExecContext(ctx, query, backupPath, updateID)
 	return err
+}
+
+func (um *UpdateManager) recordRollbackSnapshot(ctx context.Context, updateID int64, version, commitSHA, backupPath string) error {
+	query := `
+	INSERT INTO rollback_snapshots (update_id, snapshot_type, version, commit_sha, binary_path, backup_path, config_snapshot, health_status)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`
+	_, err := um.db.ExecContext(ctx, query,
+		updateID,
+		"pre_update",
+		version,
+		commitSHA,
+		um.config.BinaryPath,
+		backupPath,
+		nil,
+		nil,
+	)
+	return err
+}
+
+func (um *UpdateManager) getRollbackBackupPath(ctx context.Context, updateID int64) (string, error) {
+	var backupPath sql.NullString
+	err := um.db.QueryRowContext(ctx, `
+		SELECT backup_path
+		FROM rollback_snapshots
+		WHERE update_id = ?
+		ORDER BY created_at DESC, id DESC
+		LIMIT 1
+	`, updateID).Scan(&backupPath)
+	if err == nil && backupPath.Valid && strings.TrimSpace(backupPath.String) != "" {
+		return backupPath.String, nil
+	}
+	if err != nil && err != sql.ErrNoRows {
+		return "", err
+	}
+
+	var historyBackup sql.NullString
+	if err := um.db.QueryRowContext(ctx, `SELECT backup_path FROM update_history WHERE id = ?`, updateID).Scan(&historyBackup); err != nil {
+		return "", err
+	}
+	if historyBackup.Valid && strings.TrimSpace(historyBackup.String) != "" {
+		return historyBackup.String, nil
+	}
+	return "", nil
 }

@@ -38,20 +38,20 @@ var staticFS embed.FS
 
 // Server handles the admin web interface
 type Server struct {
-	config        *config.Config
-	db            *sql.DB
-	authenticator *auth.Authenticator
-	store         *maildir.Store
-	sieveStore    *sieve.Store
-	featuresStore *features.Store
-	listsStore    *lists.Store
-	orgStore      *org.Store
-	queue          *queue.RedisQueue
-	deliveryEngine *delivery.Engine
-	queuePath      string
-	logger         *logging.Logger
-	auditLogger   *audit.Logger
-	templates     map[string]*template.Template
+	config             *config.Config
+	db                 *sql.DB
+	authenticator      *auth.Authenticator
+	store              *maildir.Store
+	sieveStore         *sieve.Store
+	featuresStore      *features.Store
+	listsStore         *lists.Store
+	orgStore           *org.Store
+	queue              *queue.RedisQueue
+	deliveryEngine     *delivery.Engine
+	queuePath          string
+	logger             *logging.Logger
+	auditLogger        *audit.Logger
+	templates          map[string]*template.Template
 	httpServer         *http.Server
 	shutdownOnce       sync.Once
 	rateLimiter        *RateLimiter
@@ -179,13 +179,13 @@ func NewServer(cfg *config.Config, db *sql.DB, authenticator *auth.Authenticator
 	}
 
 	s := &Server{
-		config:        cfg,
-		db:            db,
-		authenticator: authenticator,
-		store:         store,
-		sieveStore:    sieveStore,
-		queue:         q,
-		logger:        logger,
+		config:             cfg,
+		db:                 db,
+		authenticator:      authenticator,
+		store:              store,
+		sieveStore:         sieveStore,
+		queue:              q,
+		logger:             logger,
 		auditLogger:        auditLog,
 		templates:          templates,
 		rateLimiter:        DefaultRateLimiter(),
@@ -301,6 +301,7 @@ func (s *Server) Start(listen string) error {
 	mux.HandleFunc("/admin/api/v1/system/2fa/disable", s.withAPIAuth(s.handleAPI2FADisable))
 	// System: Updates
 	mux.HandleFunc("/admin/api/v1/system/check-update", s.withAPIAuth(s.handleAPICheckUpdate))
+	mux.HandleFunc("/admin/api/v1/system/update/rollback/", s.withAPIAuth(s.HandleRollbackUpdate))
 	// System: DKIM Auto-Rotate
 	mux.HandleFunc("/admin/api/v1/system/dkim-autorotate", s.withAPIAuth(s.handleAPIDKIMAutoRotate))
 	mux.HandleFunc("/admin/api/v1/system/dkim-autorotate/rotate-now", s.withAPIAuth(s.handleAPIDKIMAutoRotate))

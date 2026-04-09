@@ -374,32 +374,49 @@ func (s *Server) HandleGetUpdateHistory(w http.ResponseWriter, r *http.Request) 
 	json.NewEncoder(w).Encode(history)
 }
 
-// HandleRollbackUpdate rolls back to a previous version
+// HandleRollbackUpdate rolls back to a previous version.
+//
+// Authentication and admin-check are handled by the withAPIAuth middleware
+// wrapping this handler at the mux level (see server.go). Error responses
+// are JSON to match the rest of the /admin/api/v1 contract.
 func (s *Server) HandleRollbackUpdate(w http.ResponseWriter, r *http.Request) {
-	if !s.isAdmin(r) {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+	if r.Method != http.MethodPost {
+		s.jsonError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
 
 	ctx := r.Context()
 	username := s.getUsername(r)
 
-	updateIDStr := strings.TrimPrefix(r.URL.Path, "/admin/system/update/rollback/")
+	updateIDStr := strings.TrimPrefix(r.URL.Path, "/admin/api/v1/system/update/rollback/")
 	updateID, err := strconv.ParseInt(updateIDStr, 10, 64)
 	if err != nil {
-		http.Error(w, "Invalid update ID", http.StatusBadRequest)
+		s.jsonError(w, http.StatusBadRequest, "Invalid update ID")
 		return
 	}
 
-	// TODO: Implement rollback logic
+	doc := doctor.New(s.config, s.queue)
+	updateMgr := updater.NewUpdateManager(s.db, &s.config.Updater, s.logger, doc)
+	if err := updateMgr.RollbackUpdate(ctx, updateID); err != nil {
+		s.auditLogger.Log(ctx, username, audit.EventConfigChange, "system_rollback", map[string]interface{}{
+			"update_id": updateID,
+			"status":    "failed",
+			"error":     err.Error(),
+		}, getClientIP(r))
+		s.jsonError(w, http.StatusInternalServerError, fmt.Sprintf("Rollback failed: %v", err))
+		return
+	}
+
 	s.auditLogger.Log(ctx, username, audit.EventConfigChange, "system_rollback", map[string]interface{}{
 		"update_id": updateID,
+		"status":    "completed",
 	}, getClientIP(r))
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success": false,
-		"message": "Rollback not yet implemented",
+		"success":   true,
+		"message":   "Rollback completed",
+		"update_id": updateID,
 	})
 }
 

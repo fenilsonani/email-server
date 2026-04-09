@@ -57,7 +57,7 @@ func (dm *DeployManager) Deploy(ctx context.Context, newBinaryPath string) error
 	}
 
 	// Restart the service
-	if err := dm.restartService(ctx); err != nil {
+	if err := dm.RestartService(ctx); err != nil {
 		return fmt.Errorf("failed to restart service: %w", err)
 	}
 
@@ -105,27 +105,15 @@ func (dm *DeployManager) copyBinary(src, dst string) error {
 	return nil
 }
 
-// restartService restarts the systemd service
-func (dm *DeployManager) restartService(ctx context.Context) error {
+// RestartService restarts the systemd service. Exposed so rollback can
+// restart after restoring a prior binary.
+func (dm *DeployManager) RestartService(ctx context.Context) error {
 	dm.logger.Info("Restarting service", "service", dm.config.SystemdService)
 
 	cmd := exec.CommandContext(ctx, "systemctl", "restart", dm.config.SystemdService) // #nosec G204 -- service name validated and no shell is used
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("systemctl restart failed: %w, output: %s", err, string(output))
-	}
-
-	return nil
-}
-
-// stopService stops the systemd service
-func (dm *DeployManager) stopService(ctx context.Context) error {
-	dm.logger.Info("Stopping service", "service", dm.config.SystemdService)
-
-	cmd := exec.CommandContext(ctx, "systemctl", "stop", dm.config.SystemdService) // #nosec G204 -- service name validated and no shell is used
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("systemctl stop failed: %w, output: %s", err, string(output))
 	}
 
 	return nil
@@ -156,42 +144,6 @@ func (dm *DeployManager) GetServiceStatus(ctx context.Context) (string, error) {
 	}
 
 	return string(output[:len(output)-1]), nil
-}
-
-// Rollback restores the backed-up binary and restarts the service
-func (dm *DeployManager) Rollback(ctx context.Context) error {
-	dm.logger.Warn("Rolling back to previous binary")
-
-	targetPath := dm.config.BinaryPath
-	backupPath := targetPath + ".backup"
-
-	// Check if backup exists
-	if _, err := os.Stat(backupPath); os.IsNotExist(err) {
-		return fmt.Errorf("backup binary not found: %s", backupPath)
-	}
-
-	// Stop the service
-	if err := dm.stopService(ctx); err != nil {
-		dm.logger.Warn("Failed to stop service", "error", err)
-	}
-
-	// Restore the backup
-	backupData, err := os.ReadFile(backupPath) // #nosec G304 -- backup path derived from validated binary path
-	if err != nil {
-		return fmt.Errorf("failed to read backup: %w", err)
-	}
-
-	if err := os.WriteFile(targetPath, backupData, 0750); err != nil {
-		return fmt.Errorf("failed to restore binary: %w", err)
-	}
-
-	// Restart the service
-	if err := dm.restartService(ctx); err != nil {
-		return fmt.Errorf("failed to restart service: %w", err)
-	}
-
-	dm.logger.Info("Rollback completed successfully")
-	return nil
 }
 
 // CopyBinaryForBackup creates a copy of the current binary at the specified location
