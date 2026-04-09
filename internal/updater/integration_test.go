@@ -351,10 +351,11 @@ func TestIntegration_FailedUpdateWithRollback(t *testing.T) {
 	}
 
 	cfg := &config.UpdaterConfig{
-		GitRepoURL:     "https://github.com/fenilsonani/email-server",
-		BuildPath:      buildDir,
-		BinaryPath:     binaryPath,
-		SystemdService: "mailserver.service",
+		GitRepoURL:         "https://github.com/fenilsonani/email-server",
+		BuildPath:          buildDir,
+		BinaryPath:         binaryPath,
+		SystemdService:     "mailserver.service",
+		SkipServiceRestart: true, // tests must not exec systemctl
 	}
 	logger := logging.Default()
 

@@ -360,10 +360,11 @@ func newRollbackFixture(t *testing.T, status UpdateStatus, rollbackAvailable boo
 	}
 
 	cfg := &config.UpdaterConfig{
-		GitRepoURL:     "https://github.com/fenilsonani/email-server",
-		BuildPath:      buildDir,
-		BinaryPath:     binaryPath,
-		SystemdService: "mailserver.service",
+		GitRepoURL:         "https://github.com/fenilsonani/email-server",
+		BuildPath:          buildDir,
+		BinaryPath:         binaryPath,
+		SystemdService:     "mailserver.service",
+		SkipServiceRestart: true, // tests must not exec systemctl
 	}
 	return &rollbackFixture{
 		db:         db,
@@ -457,6 +458,31 @@ func TestRollbackUpdateRefusesInProgressUpdate(t *testing.T) {
 	}
 	if got := f.status(t); got != string(StatusInProgress) {
 		t.Fatalf("status = %q, want %q", got, StatusInProgress)
+	}
+}
+
+// A failed service restart must fail the rollback rather than silently
+// mark the update as rolled_back. Otherwise the DB would claim the rollback
+// succeeded while the running process is still on the failed build. The
+// claim must also be released so the operator can retry after fixing
+// whatever broke systemctl.
+func TestRollbackUpdateFailsOnRestartFailure(t *testing.T) {
+	f := newRollbackFixture(t, StatusFailed, true)
+	// Re-enable the systemctl restart path. On macOS / CI without systemctl
+	// the exec will fail with "executable file not found", which is exactly
+	// the production failure mode we want to defend against.
+	f.um.config.SkipServiceRestart = false
+
+	err := f.um.RollbackUpdate(context.Background(), f.updateID)
+	if err == nil {
+		t.Fatal("RollbackUpdate() returned nil, want error when restart fails")
+	}
+
+	if !f.rollbackAvailable(t) {
+		t.Fatal("rollback_available stayed at 0 after failed restart, want reset to 1 so operator can retry")
+	}
+	if got := f.status(t); got != string(StatusFailed) {
+		t.Fatalf("status = %q, want %q (must not be marked rolled_back when restart failed)", got, StatusFailed)
 	}
 }
 

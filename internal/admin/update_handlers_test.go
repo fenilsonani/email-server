@@ -126,10 +126,11 @@ func setupRollbackHandlerTest(t *testing.T) (*Server, func(), int64, string, str
 	cfg := &config.Config{
 		Server: config.ServerConfig{Hostname: "mail.example.com"},
 		Updater: config.UpdaterConfig{
-			GitRepoURL:     "https://github.com/fenilsonani/email-server",
-			BuildPath:      buildDir,
-			BinaryPath:     binaryPath,
-			SystemdService: "mailserver.service",
+			GitRepoURL:         "https://github.com/fenilsonani/email-server",
+			BuildPath:          buildDir,
+			BinaryPath:         binaryPath,
+			SystemdService:     "mailserver.service",
+			SkipServiceRestart: true, // tests must not exec systemctl
 		},
 	}
 	server := &Server{

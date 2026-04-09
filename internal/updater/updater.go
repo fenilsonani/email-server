@@ -143,12 +143,18 @@ func (um *UpdateManager) StartUpdate(ctx context.Context, opts UpdateOptions) (*
 			result.Errors = append(result.Errors, fmt.Sprintf("backup failed: %v", err))
 		} else {
 			result.BackupPath = backupPath
-			result.RollbackAvailable = true
 			if err := um.recordRollbackSnapshot(ctx, updateID, currentVersion, currentCommit, backupPath); err != nil {
 				um.logger.Warn("Failed to record rollback snapshot", "update_id", updateID, "error", err)
 			}
+			// Only advertise the rollback as available once the DB row has
+			// been updated to reflect it. If this persistence fails we can
+			// still continue the update — but the caller must not be told
+			// rollback is available, because rollbackUpdate() will refuse to
+			// restore an update whose rollback_available column is not 1.
 			if err := um.markRollbackAvailable(ctx, updateID, backupPath); err != nil {
 				um.logger.Warn("Failed to persist rollback availability", "update_id", updateID, "error", err)
+			} else {
+				result.RollbackAvailable = true
 			}
 			um.progressTracker.UpdateProgress(ctx, updateID, 2, "backup", "completed", "Backup created successfully")
 		}
@@ -253,7 +259,9 @@ func (um *UpdateManager) StartUpdate(ctx context.Context, opts UpdateOptions) (*
 	result.Success = true
 	result.Duration = duration
 	result.StepsCompleted = 8
-	result.RollbackAvailable = result.BackupPath != ""
+	// result.RollbackAvailable is already set (or left false) during the
+	// backup step based on whether markRollbackAvailable actually persisted
+	// the state. Do not override it here.
 
 	return result, nil
 }
@@ -340,13 +348,20 @@ func (um *UpdateManager) markUpdateFailed(ctx context.Context, updateID int64, e
 // updateID and restarts the service. It is safe against concurrent callers:
 // the first caller atomically claims the rollback by flipping
 // rollback_available from 1 to 0, and any concurrent caller observes zero
-// rows affected and returns an error. If the restore fails mid-flight, the
-// claim is released so an operator can retry.
+// rows affected and returns an error. If any step after the claim fails,
+// the claim is released so an operator can retry.
+//
+// Once the claim is taken, the rollback runs on a detached context with a
+// generous timeout so that an admin closing their browser mid-rollback
+// cannot kill the restore, restart, or finalise steps and leave the system
+// in a half-rolled-back state.
 func (um *UpdateManager) rollbackUpdate(ctx context.Context, updateID int64) error {
 	// Atomically claim the rollback. Only updates in a terminal state
 	// (failed/completed) with a live backup are eligible — this prevents
 	// rolling back an update that's still in progress, and prevents two
-	// admins from rolling back the same update concurrently.
+	// admins from rolling back the same update concurrently. The claim
+	// itself honours the caller's context: cancellation before we've
+	// committed to anything is fine.
 	claim, err := um.db.ExecContext(ctx, `
 		UPDATE update_history
 		SET rollback_available = 0
@@ -363,10 +378,15 @@ func (um *UpdateManager) rollbackUpdate(ctx context.Context, updateID int64) err
 		return fmt.Errorf("rollback not available for update %d", updateID)
 	}
 
-	// Release the claim on any failure below so the operator can retry.
-	// Use a detached context with a short timeout so that client cancellation
-	// (e.g. the admin closing the browser mid-rollback) cannot also kill the
-	// compensating UPDATE and strand the row at rollback_available = 0.
+	// Detach from the caller's context for every subsequent step. Once we
+	// have the claim, the rollback must run to completion (or fail cleanly
+	// and release the claim) regardless of whether the admin stays connected.
+	rollbackCtx, cancelRollback := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancelRollback()
+
+	// Release the claim on any failure below so the operator can retry. Use
+	// a second detached context so it survives even if rollbackCtx has been
+	// cancelled/timed-out by the time we reach the defer.
 	success := false
 	defer func() {
 		if success {
@@ -383,7 +403,7 @@ func (um *UpdateManager) rollbackUpdate(ctx context.Context, updateID int64) err
 		}
 	}()
 
-	backupPath, err := um.getRollbackBackupPath(ctx, updateID)
+	backupPath, err := um.getRollbackBackupPath(rollbackCtx, updateID)
 	if err != nil {
 		return err
 	}
@@ -392,22 +412,26 @@ func (um *UpdateManager) rollbackUpdate(ctx context.Context, updateID int64) err
 	}
 
 	um.logger.Warn("Initiating rollback", "update_id", updateID, "backup_path", backupPath)
-	if err := um.backupManager.RestoreFromBackup(ctx, backupPath); err != nil {
+	if err := um.backupManager.RestoreFromBackup(rollbackCtx, backupPath); err != nil {
 		return fmt.Errorf("restore failed: %w", err)
 	}
 
 	// Restart the service so the restored binary actually takes effect.
-	// Best-effort: if systemctl is unavailable or the unit fails to come back
-	// up, the binary is already restored on disk, so log and carry on — the
-	// operator can finish the restart manually.
-	if um.deployManager != nil {
-		if err := um.deployManager.RestartService(ctx); err != nil {
-			um.logger.Warn("Service restart after rollback failed; binary is restored but manual restart may be required",
-				"update_id", updateID, "error", err)
+	// A failed restart means the running process is still on the failed
+	// build even though the binary on disk is correct, so we must NOT
+	// mark the update as rolled back in that case — the caller needs to
+	// know the rollback is only half-done and investigate.
+	//
+	// SkipServiceRestart is for tests and for production environments
+	// where service lifecycle is managed externally (k8s, nomad, etc.);
+	// in those cases the operator is responsible for the restart.
+	if um.deployManager != nil && !um.config.SkipServiceRestart {
+		if err := um.deployManager.RestartService(rollbackCtx); err != nil {
+			return fmt.Errorf("service restart after rollback failed: %w", err)
 		}
 	}
 
-	if _, err := um.db.ExecContext(ctx, `
+	if _, err := um.db.ExecContext(rollbackCtx, `
 		UPDATE update_history
 		SET status = ?, completed_at = ?
 		WHERE id = ?

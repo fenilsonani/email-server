@@ -227,6 +227,7 @@ type UpdaterConfig struct {
 	AutoRollbackOnFailure  bool   `koanf:"auto_rollback_on_failure"`  // Automatically rollback on failure (default true)
 	BinaryPath             string `koanf:"binary_path"`               // Path to mailserver binary
 	SystemdService         string `koanf:"systemd_service"`           // Systemd service name (default "mailserver.service")
+	SkipServiceRestart     bool   `koanf:"skip_service_restart"`      // Skip systemctl restart on deploy/rollback; only for tests or external orchestrators (k8s, nomad) that manage process lifecycle. Operators who enable this are responsible for restarting the service themselves.
 }
 
 // DefaultConfig returns a configuration with sensible defaults
