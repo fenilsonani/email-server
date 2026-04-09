@@ -395,7 +395,8 @@ func (s *Server) HandleRollbackUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	updateMgr := updater.NewUpdateManager(s.db, &s.config.Updater, s.logger, nil)
+	doc := doctor.New(s.config, s.queue)
+	updateMgr := updater.NewUpdateManager(s.db, &s.config.Updater, s.logger, doc)
 	if err := updateMgr.RollbackUpdate(ctx, updateID); err != nil {
 		s.auditLogger.Log(ctx, username, audit.EventConfigChange, "system_rollback", map[string]interface{}{
 			"update_id": updateID,

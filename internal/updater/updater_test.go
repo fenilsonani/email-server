@@ -313,9 +313,21 @@ func TestMarkUpdateFailed(t *testing.T) {
 	}
 }
 
-func TestRollbackUpdateRestoresBackup(t *testing.T) {
+// rollbackFixture wires up the on-disk and in-DB state needed to exercise
+// UpdateManager.RollbackUpdate without reaching for a real updater config
+// on each test.
+type rollbackFixture struct {
+	db         *sql.DB
+	um         *UpdateManager
+	updateID   int64
+	binaryPath string
+	backupDir  string
+}
+
+func newRollbackFixture(t *testing.T, status UpdateStatus, rollbackAvailable bool) *rollbackFixture {
+	t.Helper()
 	db := setupTestDB(t)
-	defer db.Close()
+	t.Cleanup(func() { db.Close() })
 
 	buildDir := t.TempDir()
 	binaryPath := filepath.Join(buildDir, "mailserver")
@@ -330,11 +342,17 @@ func TestRollbackUpdateRestoresBackup(t *testing.T) {
 		t.Fatalf("failed to write backup binary: %v", err)
 	}
 
-	if _, err := db.Exec(`INSERT INTO update_history (update_type, from_version, to_version, from_commit, to_commit, status, started_by, backup_path, rollback_available) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)`, "release", "v1.0.0", "v1.1.0", "oldcommit", "newcommit", string(StatusFailed), "admin", backupDir); err != nil {
+	availableFlag := 0
+	if rollbackAvailable {
+		availableFlag = 1
+	}
+	res, err := db.Exec(`INSERT INTO update_history (update_type, from_version, to_version, from_commit, to_commit, status, started_by, backup_path, rollback_available) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"release", "v1.0.0", "v1.1.0", "oldcommit", "newcommit", string(status), "admin", backupDir, availableFlag)
+	if err != nil {
 		t.Fatalf("failed to insert update history: %v", err)
 	}
-	var updateID int64
-	if err := db.QueryRow(`SELECT id FROM update_history LIMIT 1`).Scan(&updateID); err != nil {
+	updateID, err := res.LastInsertId()
+	if err != nil {
 		t.Fatalf("failed to get update id: %v", err)
 	}
 	if _, err := db.Exec(`INSERT INTO rollback_snapshots (update_id, snapshot_type, version, commit_sha, binary_path, backup_path) VALUES (?, 'pre_update', ?, ?, ?, ?)`, updateID, "v1.0.0", "oldcommit", binaryPath, backupDir); err != nil {
@@ -347,30 +365,119 @@ func TestRollbackUpdateRestoresBackup(t *testing.T) {
 		BinaryPath:     binaryPath,
 		SystemdService: "mailserver.service",
 	}
-	um := NewUpdateManager(db, cfg, logging.Default(), nil)
+	return &rollbackFixture{
+		db:         db,
+		um:         NewUpdateManager(db, cfg, logging.Default(), nil),
+		updateID:   updateID,
+		binaryPath: binaryPath,
+		backupDir:  backupDir,
+	}
+}
 
-	if err := um.RollbackUpdate(context.Background(), updateID); err != nil {
+func (f *rollbackFixture) rollbackAvailable(t *testing.T) bool {
+	t.Helper()
+	var available bool
+	if err := f.db.QueryRow(`SELECT rollback_available FROM update_history WHERE id = ?`, f.updateID).Scan(&available); err != nil {
+		t.Fatalf("failed to query rollback_available: %v", err)
+	}
+	return available
+}
+
+func (f *rollbackFixture) status(t *testing.T) string {
+	t.Helper()
+	var status string
+	if err := f.db.QueryRow(`SELECT status FROM update_history WHERE id = ?`, f.updateID).Scan(&status); err != nil {
+		t.Fatalf("failed to query status: %v", err)
+	}
+	return status
+}
+
+func TestRollbackUpdateRestoresBackup(t *testing.T) {
+	f := newRollbackFixture(t, StatusFailed, true)
+
+	if err := f.um.RollbackUpdate(context.Background(), f.updateID); err != nil {
 		t.Fatalf("RollbackUpdate() error = %v", err)
 	}
 
-	data, err := os.ReadFile(binaryPath)
+	data, err := os.ReadFile(f.binaryPath)
 	if err != nil {
 		t.Fatalf("failed to read restored binary: %v", err)
 	}
 	if string(data) != "old binary" {
 		t.Fatalf("restored binary = %q, want %q", string(data), "old binary")
 	}
-
-	var status string
-	var rollbackAvailable bool
-	if err := db.QueryRow(`SELECT status, rollback_available FROM update_history WHERE id = ?`, updateID).Scan(&status, &rollbackAvailable); err != nil {
-		t.Fatalf("failed to query update history: %v", err)
+	if got := f.status(t); got != string(StatusRolledBack) {
+		t.Fatalf("status = %q, want %q", got, StatusRolledBack)
 	}
-	if status != string(StatusRolledBack) {
-		t.Fatalf("status = %q, want %q", status, StatusRolledBack)
-	}
-	if rollbackAvailable {
+	if f.rollbackAvailable(t) {
 		t.Fatal("rollback_available = true, want false")
+	}
+}
+
+// Second rollback of the same update must be rejected. The first call flips
+// rollback_available to 0 as part of its atomic claim; the second finds no
+// row to claim and returns an error without touching the binary.
+func TestRollbackUpdateRejectsDoubleRollback(t *testing.T) {
+	f := newRollbackFixture(t, StatusFailed, true)
+	ctx := context.Background()
+
+	if err := f.um.RollbackUpdate(ctx, f.updateID); err != nil {
+		t.Fatalf("first RollbackUpdate() error = %v", err)
+	}
+
+	// Overwrite the binary so we can detect whether the second rollback
+	// (wrongly) restored it again.
+	if err := os.WriteFile(f.binaryPath, []byte("post-rollback edit"), 0o750); err != nil {
+		t.Fatalf("failed to overwrite binary: %v", err)
+	}
+
+	if err := f.um.RollbackUpdate(ctx, f.updateID); err == nil {
+		t.Fatal("second RollbackUpdate() succeeded, want error")
+	}
+	data, err := os.ReadFile(f.binaryPath)
+	if err != nil {
+		t.Fatalf("failed to read binary: %v", err)
+	}
+	if string(data) != "post-rollback edit" {
+		t.Fatalf("binary was restored by second rollback: got %q", string(data))
+	}
+}
+
+// Rollback must refuse updates that are still in progress — pulling the
+// binary out from under a running deploy would corrupt on-disk state.
+func TestRollbackUpdateRefusesInProgressUpdate(t *testing.T) {
+	f := newRollbackFixture(t, StatusInProgress, true)
+
+	err := f.um.RollbackUpdate(context.Background(), f.updateID)
+	if err == nil {
+		t.Fatal("RollbackUpdate() on in-progress update succeeded, want error")
+	}
+	if !f.rollbackAvailable(t) {
+		t.Fatal("rollback_available cleared after refused rollback, want preserved")
+	}
+	if got := f.status(t); got != string(StatusInProgress) {
+		t.Fatalf("status = %q, want %q", got, StatusInProgress)
+	}
+}
+
+// If the restore itself fails, the claim must be released so the operator
+// can retry. Otherwise one bad attempt would permanently wedge the rollback.
+func TestRollbackUpdateReleasesClaimOnRestoreFailure(t *testing.T) {
+	f := newRollbackFixture(t, StatusFailed, true)
+
+	// Corrupt the backup so RestoreFromBackup fails.
+	if err := os.Remove(filepath.Join(f.backupDir, "mailserver-binary")); err != nil {
+		t.Fatalf("failed to remove backup binary: %v", err)
+	}
+
+	if err := f.um.RollbackUpdate(context.Background(), f.updateID); err == nil {
+		t.Fatal("RollbackUpdate() with missing backup succeeded, want error")
+	}
+	if !f.rollbackAvailable(t) {
+		t.Fatal("rollback_available = false after failed restore, want reset to true so operator can retry")
+	}
+	if got := f.status(t); got != string(StatusFailed) {
+		t.Fatalf("status = %q, want %q (unchanged on failed rollback)", got, StatusFailed)
 	}
 }
 

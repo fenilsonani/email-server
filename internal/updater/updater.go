@@ -146,10 +146,8 @@ func (um *UpdateManager) StartUpdate(ctx context.Context, opts UpdateOptions) (*
 			result.RollbackAvailable = true
 			if err := um.recordRollbackSnapshot(ctx, updateID, currentVersion, currentCommit, backupPath); err != nil {
 				um.logger.Warn("Failed to record rollback snapshot", "update_id", updateID, "error", err)
-				if err := um.markRollbackAvailable(ctx, updateID, backupPath); err != nil {
-					um.logger.Warn("Failed to persist rollback availability", "update_id", updateID, "error", err)
-				}
-			} else if err := um.markRollbackAvailable(ctx, updateID, backupPath); err != nil {
+			}
+			if err := um.markRollbackAvailable(ctx, updateID, backupPath); err != nil {
 				um.logger.Warn("Failed to persist rollback availability", "update_id", updateID, "error", err)
 			}
 			um.progressTracker.UpdateProgress(ctx, updateID, 2, "backup", "completed", "Backup created successfully")
@@ -338,7 +336,53 @@ func (um *UpdateManager) markUpdateFailed(ctx context.Context, updateID int64, e
 	return err
 }
 
+// rollbackUpdate restores the binary recorded in the pre-update snapshot for
+// updateID and restarts the service. It is safe against concurrent callers:
+// the first caller atomically claims the rollback by flipping
+// rollback_available from 1 to 0, and any concurrent caller observes zero
+// rows affected and returns an error. If the restore fails mid-flight, the
+// claim is released so an operator can retry.
 func (um *UpdateManager) rollbackUpdate(ctx context.Context, updateID int64) error {
+	// Atomically claim the rollback. Only updates in a terminal state
+	// (failed/completed) with a live backup are eligible — this prevents
+	// rolling back an update that's still in progress, and prevents two
+	// admins from rolling back the same update concurrently.
+	claim, err := um.db.ExecContext(ctx, `
+		UPDATE update_history
+		SET rollback_available = 0
+		WHERE id = ? AND rollback_available = 1 AND status IN (?, ?)
+	`, updateID, StatusFailed, StatusCompleted)
+	if err != nil {
+		return fmt.Errorf("failed to claim rollback: %w", err)
+	}
+	claimed, err := claim.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to check rollback claim: %w", err)
+	}
+	if claimed == 0 {
+		return fmt.Errorf("rollback not available for update %d", updateID)
+	}
+
+	// Release the claim on any failure below so the operator can retry.
+	// Use a detached context with a short timeout so that client cancellation
+	// (e.g. the admin closing the browser mid-rollback) cannot also kill the
+	// compensating UPDATE and strand the row at rollback_available = 0.
+	success := false
+	defer func() {
+		if success {
+			return
+		}
+		releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if _, relErr := um.db.ExecContext(releaseCtx, `
+			UPDATE update_history
+			SET rollback_available = 1
+			WHERE id = ?
+		`, updateID); relErr != nil {
+			um.logger.Error("Failed to release rollback claim after error", "update_id", updateID, "error", relErr)
+		}
+	}()
+
 	backupPath, err := um.getRollbackBackupPath(ctx, updateID)
 	if err != nil {
 		return err
@@ -349,16 +393,30 @@ func (um *UpdateManager) rollbackUpdate(ctx context.Context, updateID int64) err
 
 	um.logger.Warn("Initiating rollback", "update_id", updateID, "backup_path", backupPath)
 	if err := um.backupManager.RestoreFromBackup(ctx, backupPath); err != nil {
-		return err
+		return fmt.Errorf("restore failed: %w", err)
 	}
 
-	query := `
-	UPDATE update_history
-	SET status = ?, completed_at = ?, rollback_available = 0
-	WHERE id = ?
-	`
-	_, err = um.db.ExecContext(ctx, query, StatusRolledBack, time.Now(), updateID)
-	return err
+	// Restart the service so the restored binary actually takes effect.
+	// Best-effort: if systemctl is unavailable or the unit fails to come back
+	// up, the binary is already restored on disk, so log and carry on — the
+	// operator can finish the restart manually.
+	if um.deployManager != nil {
+		if err := um.deployManager.RestartService(ctx); err != nil {
+			um.logger.Warn("Service restart after rollback failed; binary is restored but manual restart may be required",
+				"update_id", updateID, "error", err)
+		}
+	}
+
+	if _, err := um.db.ExecContext(ctx, `
+		UPDATE update_history
+		SET status = ?, completed_at = ?
+		WHERE id = ?
+	`, StatusRolledBack, time.Now(), updateID); err != nil {
+		return fmt.Errorf("failed to mark update rolled back: %w", err)
+	}
+
+	success = true
+	return nil
 }
 
 // RollbackUpdate restores a previously backed-up version for the given update.

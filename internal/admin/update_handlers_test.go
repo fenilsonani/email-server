@@ -165,13 +165,19 @@ func TestUpdateHandlersGetClientIP_TrustedLocalProxyOnly(t *testing.T) {
 	})
 }
 
+func newRollbackRequest(path, token string, method string) *http.Request {
+	req := httptest.NewRequest(method, path, nil)
+	if token != "" {
+		req.AddCookie(&http.Cookie{Name: "admin_session", Value: token})
+	}
+	return req
+}
+
 func TestHandleRollbackUpdate(t *testing.T) {
 	server, cleanup, updateID, token, binaryPath := setupRollbackHandlerTest(t)
 	defer cleanup()
 
-	req := httptest.NewRequest(http.MethodPost, "/admin/system/update/rollback/1", nil)
-	req.AddCookie(&http.Cookie{Name: "admin_session", Value: token})
-	req.URL.Path = "/admin/system/update/rollback/" + strconv.FormatInt(updateID, 10)
+	req := newRollbackRequest("/admin/system/update/rollback/"+strconv.FormatInt(updateID, 10), token, http.MethodPost)
 	w := httptest.NewRecorder()
 
 	server.HandleRollbackUpdate(w, req)
@@ -203,5 +209,80 @@ func TestHandleRollbackUpdate(t *testing.T) {
 	}
 	if rollbackAvailable {
 		t.Fatalf("rollback_available = true, want false")
+	}
+}
+
+func TestHandleRollbackUpdate_Unauthorized(t *testing.T) {
+	server, cleanup, updateID, _, binaryPath := setupRollbackHandlerTest(t)
+	defer cleanup()
+
+	// No session cookie at all.
+	req := newRollbackRequest("/admin/system/update/rollback/"+strconv.FormatInt(updateID, 10), "", http.MethodPost)
+	w := httptest.NewRecorder()
+	server.HandleRollbackUpdate(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusUnauthorized)
+	}
+	// Unauthorized request must not touch the binary.
+	data, err := os.ReadFile(binaryPath)
+	if err != nil {
+		t.Fatalf("failed to read binary: %v", err)
+	}
+	if string(data) != "new binary" {
+		t.Fatalf("binary was restored on unauthorized request: %q", string(data))
+	}
+}
+
+func TestHandleRollbackUpdate_MethodNotAllowed(t *testing.T) {
+	server, cleanup, updateID, token, _ := setupRollbackHandlerTest(t)
+	defer cleanup()
+
+	req := newRollbackRequest("/admin/system/update/rollback/"+strconv.FormatInt(updateID, 10), token, http.MethodGet)
+	w := httptest.NewRecorder()
+	server.HandleRollbackUpdate(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusMethodNotAllowed)
+	}
+}
+
+func TestHandleRollbackUpdate_InvalidID(t *testing.T) {
+	server, cleanup, _, token, _ := setupRollbackHandlerTest(t)
+	defer cleanup()
+
+	req := newRollbackRequest("/admin/system/update/rollback/not-a-number", token, http.MethodPost)
+	w := httptest.NewRecorder()
+	server.HandleRollbackUpdate(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+}
+
+func TestHandleRollbackUpdate_NotAvailable(t *testing.T) {
+	server, cleanup, updateID, token, binaryPath := setupRollbackHandlerTest(t)
+	defer cleanup()
+
+	// Flip rollback_available off — an admin previously disabled it, or a
+	// prior rollback already consumed the claim.
+	if _, err := server.db.Exec(`UPDATE update_history SET rollback_available = 0 WHERE id = ?`, updateID); err != nil {
+		t.Fatalf("failed to clear rollback_available: %v", err)
+	}
+
+	req := newRollbackRequest("/admin/system/update/rollback/"+strconv.FormatInt(updateID, 10), token, http.MethodPost)
+	w := httptest.NewRecorder()
+	server.HandleRollbackUpdate(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusInternalServerError)
+	}
+	// Binary must not be restored when the rollback is not available.
+	data, err := os.ReadFile(binaryPath)
+	if err != nil {
+		t.Fatalf("failed to read binary: %v", err)
+	}
+	if string(data) != "new binary" {
+		t.Fatalf("binary was restored when rollback was unavailable: %q", string(data))
 	}
 }
