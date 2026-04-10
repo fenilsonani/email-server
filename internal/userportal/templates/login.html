@@ -16,12 +16,12 @@
 
             <div class="form-group">
                 <label for="email">Email Address</label>
-                <input type="email" id="email" name="email" value="{{.Email}}" required autofocus>
+                <input type="email" id="email" name="email" value="{{.Email}}" autocomplete="username" inputmode="email" required autofocus>
             </div>
 
             <div class="form-group">
                 <label for="password">Password</label>
-                <input type="password" id="password" name="password" required>
+                <input type="password" id="password" name="password" autocomplete="current-password" required>
             </div>
 
             <button type="submit" class="btn btn-primary btn-block">Sign In</button>

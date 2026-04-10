@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -33,9 +34,23 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// POST - handle login
+	// Anything other than GET or POST is not allowed. Without this guard,
+	// PUT/PATCH/DELETE would silently fall through into the POST path and
+	// burn rate-limit budget on requests that the form never produces.
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "GET, POST")
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// POST - handle login. If the body is malformed or oversized, re-render
+	// the login form with a friendly error instead of dumping a bare 400.
 	if err := parseFormWithLimit(w, r, maxUserPortalFormBody); err != nil {
-		http.Error(w, "Bad request", formErrorStatus(err))
+		s.renderTemplate(w, "login.html", map[string]interface{}{
+			"Title":  "Account Login",
+			"Error":  "Could not read login form. Please try again.",
+			"Domain": domain,
+		})
 		return
 	}
 
@@ -43,12 +58,15 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	password := r.PostForm.Get("password")
 	clientIP := s.getClientIP(r)
 
-	// Check rate limiting
+	// Check rate limiting. Re-show the email so the user doesn't have to
+	// retype it after the lockout expires, and use the dedicated
+	// RateLimited template branch so it can be styled distinctly.
 	if s.rateLimiter.IsBlocked(clientIP) {
 		s.renderTemplate(w, "login.html", map[string]interface{}{
-			"Title":  "Account Login",
-			"Error":  "Too many failed attempts. Please try again later.",
-			"Domain": domain,
+			"Title":       "Account Login",
+			"RateLimited": true,
+			"Email":       email,
+			"Domain":      domain,
 		})
 		return
 	}
@@ -62,35 +80,39 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		s.auditLogger.Log(r.Context(), email, audit.EventUserPortalLoginFailure, email, map[string]interface{}{
 			"portal":             "user",
 			"remaining_attempts": remaining,
+			"blocked":            blocked,
 		}, clientIP)
 
-		errorMsg := "Invalid email or password"
-		if remaining > 0 && remaining < 3 {
-			errorMsg = "Invalid credentials. " + string(rune('0'+remaining)) + " attempts remaining"
-		} else if blocked {
-			errorMsg = "Too many failed attempts. Account temporarily locked."
-		}
-
+		// loginAttemptError builds the right message for this attempt — use
+		// strconv.Itoa, NOT string(rune('0'+remaining)), which silently drops
+		// the wrong character once remaining ≥ 10.
 		s.renderTemplate(w, "login.html", map[string]interface{}{
 			"Title":  "Account Login",
-			"Error":  errorMsg,
+			"Error":  loginAttemptError(remaining, blocked),
 			"Email":  email,
 			"Domain": domain,
 		})
 		return
 	}
 
-	// If we detected a domain, verify user belongs to it
-	// SECURITY: Use generic error message to prevent account enumeration
+	// If we detected a domain, verify user belongs to it.
+	// SECURITY: Use a generic error message to prevent account enumeration.
+	// SECURITY: A QueryRowContext error must NOT be silently ignored — that
+	// would either let any user log in (if the row is missing) or block
+	// every user (if the lookup transiently fails). Treat it as an auth
+	// failure with the same generic message.
 	if domain != nil {
 		var userDomainID int64
-		s.db.QueryRowContext(r.Context(), "SELECT domain_id FROM users WHERE id = ?", user.ID).Scan(&userDomainID)
-		if userDomainID != domain.ID {
-			// Record as failed attempt to prevent bypass via domain switching
+		if err := s.db.QueryRowContext(r.Context(),
+			"SELECT domain_id FROM users WHERE id = ?", user.ID,
+		).Scan(&userDomainID); err != nil || userDomainID != domain.ID {
 			s.rateLimiter.RecordFailure(clientIP)
+			if err != nil {
+				s.logger.Warn("Failed to read user domain on login", "user_id", user.ID, "error", err)
+			}
 			s.renderTemplate(w, "login.html", map[string]interface{}{
 				"Title":  "Account Login",
-				"Error":  "Invalid email or password", // Generic message prevents enumeration
+				"Error":  "Invalid email or password",
 				"Email":  email,
 				"Domain": domain,
 			})
@@ -114,6 +136,23 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}, clientIP)
 
 	http.Redirect(w, r, "/account/", http.StatusSeeOther)
+}
+
+// loginAttemptError builds the user-facing error message for a failed login
+// attempt. It distinguishes three cases: the lockout just tripped, the
+// caller is one or two attempts away from lockout, or this is just a
+// generic invalid-credentials response.
+func loginAttemptError(remaining int, blocked bool) string {
+	switch {
+	case blocked:
+		return "Too many failed attempts. Account temporarily locked."
+	case remaining == 1:
+		return "Invalid credentials. 1 attempt remaining before temporary lockout."
+	case remaining > 1 && remaining <= 2:
+		return "Invalid credentials. " + strconv.Itoa(remaining) + " attempts remaining before temporary lockout."
+	default:
+		return "Invalid email or password"
+	}
 }
 
 // handleLogout handles user logout

@@ -126,9 +126,22 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// POST - handle login
+	// Anything other than GET or POST is not allowed. Without this guard,
+	// PUT/PATCH/DELETE would silently fall through into the POST path and
+	// burn rate-limit budget on requests that the form never produces.
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "GET, POST")
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// POST - handle login. If the body is malformed or oversized, re-render
+	// the login form with a friendly error instead of dumping a bare 400.
 	if err := parseFormWithLimit(w, r, maxAdminFormBody); err != nil {
-		http.Error(w, "Bad request", formErrorStatus(err))
+		s.renderTemplate(w, "login.html", map[string]interface{}{
+			"Title": "Admin Login",
+			"Error": "Could not read login form. Please try again.",
+		})
 		return
 	}
 
