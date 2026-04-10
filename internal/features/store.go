@@ -360,8 +360,12 @@ func (s *Store) GetScheduledEmail(ctx context.Context, userID, emailID int64) (*
 		return nil, err
 	}
 
-	json.Unmarshal([]byte(recipientsJSON), &email.Recipients)
-	json.Unmarshal([]byte(headersJSON), &email.Headers)
+	if err := json.Unmarshal([]byte(recipientsJSON), &email.Recipients); err != nil {
+		return nil, fmt.Errorf("scheduled email %d has malformed recipients: %w", email.ID, err)
+	}
+	if err := json.Unmarshal([]byte(headersJSON), &email.Headers); err != nil {
+		return nil, fmt.Errorf("scheduled email %d has malformed headers: %w", email.ID, err)
+	}
 	if sentAt.Valid {
 		email.SentAt = sentAt.Time
 	}
@@ -397,7 +401,9 @@ func (s *Store) ListScheduledEmails(ctx context.Context, userID int64, status st
 		if err != nil {
 			return nil, err
 		}
-		json.Unmarshal([]byte(recipientsJSON), &e.Recipients)
+		if err := json.Unmarshal([]byte(recipientsJSON), &e.Recipients); err != nil {
+			return nil, fmt.Errorf("scheduled email %d has malformed recipients: %w", e.ID, err)
+		}
 		emails = append(emails, e)
 	}
 	return emails, rows.Err()
@@ -427,10 +433,14 @@ func (s *Store) GetPendingScheduledEmails(ctx context.Context) ([]*ScheduledEmai
 			return nil, err
 		}
 		if recipientsJSON.Valid {
-			json.Unmarshal([]byte(recipientsJSON.String), &e.Recipients)
+			if err := json.Unmarshal([]byte(recipientsJSON.String), &e.Recipients); err != nil {
+				return nil, fmt.Errorf("scheduled email %d has malformed recipients: %w", e.ID, err)
+			}
 		}
 		if headersJSON.Valid {
-			json.Unmarshal([]byte(headersJSON.String), &e.Headers)
+			if err := json.Unmarshal([]byte(headersJSON.String), &e.Headers); err != nil {
+				return nil, fmt.Errorf("scheduled email %d has malformed headers: %w", e.ID, err)
+			}
 		}
 		emails = append(emails, e)
 	}
@@ -649,10 +659,14 @@ func (s *Store) GetReadyPendingSends(ctx context.Context) ([]*PendingSend, error
 			return nil, err
 		}
 		if recipientsJSON.Valid {
-			json.Unmarshal([]byte(recipientsJSON.String), &p.Recipients)
+			if err := json.Unmarshal([]byte(recipientsJSON.String), &p.Recipients); err != nil {
+				return nil, fmt.Errorf("pending send %d has malformed recipients: %w", p.ID, err)
+			}
 		}
 		if headersJSON.Valid {
-			json.Unmarshal([]byte(headersJSON.String), &p.Headers)
+			if err := json.Unmarshal([]byte(headersJSON.String), &p.Headers); err != nil {
+				return nil, fmt.Errorf("pending send %d has malformed headers: %w", p.ID, err)
+			}
 		}
 		pending = append(pending, p)
 	}

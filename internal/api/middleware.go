@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -139,9 +140,14 @@ func (s *Server) validateAPIKey(ctx context.Context, token string) (*APIKey, err
 		return nil, ErrInvalidAPIKey
 	}
 
-	// Parse scopes
+	// Parse scopes. A malformed scopes column would otherwise silently
+	// authenticate the request with zero permissions, leaving every
+	// downstream "permission denied" impossible to root-cause. Treat
+	// corruption as an auth failure so it surfaces in logs.
 	if scopesJSON != "" {
-		json.Unmarshal([]byte(scopesJSON), &apiKey.Scopes)
+		if err := json.Unmarshal([]byte(scopesJSON), &apiKey.Scopes); err != nil {
+			return nil, fmt.Errorf("api key %d has malformed scopes: %w", apiKey.ID, err)
+		}
 	}
 
 	if lastUsedAt.Valid {
