@@ -105,6 +105,16 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 
 // handleLogin handles admin login with rate limiting
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	// Reject disallowed methods first, before any side effects (rate-limit
+	// counter reads, DB lookups, template renders). Otherwise a blocked
+	// client sending PUT/PATCH/DELETE would get the rate-limit page
+	// instead of the 405 + Allow contract.
+	if r.Method != http.MethodGet && r.Method != http.MethodPost {
+		w.Header().Set("Allow", "GET, POST")
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
 	clientIP := s.rateLimiter.GetClientIP(r)
 
 	// Check if IP is blocked
@@ -126,9 +136,13 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// POST - handle login
+	// POST - handle login. If the body is malformed or oversized, re-render
+	// the login form with a friendly error instead of dumping a bare 400.
 	if err := parseFormWithLimit(w, r, maxAdminFormBody); err != nil {
-		http.Error(w, "Bad request", formErrorStatus(err))
+		s.renderTemplate(w, "login.html", map[string]interface{}{
+			"Title": "Admin Login",
+			"Error": "Could not read login form. Please try again.",
+		})
 		return
 	}
 
