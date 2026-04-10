@@ -20,6 +20,13 @@ func setupAPIKeyTestServer(t *testing.T, scopesJSON string) (*Server, string, in
 	if err != nil {
 		t.Fatalf("failed to open sqlite db: %v", err)
 	}
+	// With github.com/mattn/go-sqlite3 the ":memory:" DSN gives each
+	// connection its own private in-memory database, so a multi-connection
+	// pool can read/write completely different DBs. Pin to one connection
+	// for tests so the schema and rows we insert here are visible to
+	// validateAPIKey on the other side.
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
 	t.Cleanup(func() { db.Close() })
 
 	if _, err := db.Exec(`
@@ -72,6 +79,11 @@ func TestValidateAPIKey_RejectsMalformedScopes(t *testing.T) {
 
 	got, err := server.validateAPIKey(context.Background(), fullKey)
 	if err == nil {
+		// Guard against the (nil, nil) regression before reading .Scopes,
+		// otherwise the test would panic instead of failing cleanly.
+		if got == nil {
+			t.Fatal("validateAPIKey() returned (nil, nil) for malformed scopes; want non-nil error")
+		}
 		t.Fatalf("validateAPIKey() returned nil error for malformed scopes; got key with scopes=%v", got.Scopes)
 	}
 	if got != nil {
@@ -107,6 +119,9 @@ func TestValidateAPIKey_AcceptsEmptyScopes(t *testing.T) {
 	apiKey, err := server.validateAPIKey(context.Background(), fullKey)
 	if err != nil {
 		t.Fatalf("validateAPIKey() error = %v, want nil", err)
+	}
+	if apiKey == nil {
+		t.Fatal("validateAPIKey() returned nil APIKey")
 	}
 	if len(apiKey.Scopes) != 0 {
 		t.Fatalf("expected empty scopes, got %#v", apiKey.Scopes)
