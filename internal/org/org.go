@@ -131,7 +131,9 @@ func (s *Store) Get(ctx context.Context, id int64) (*Organization, error) {
 	if err != nil {
 		return nil, err
 	}
-	json.Unmarshal([]byte(settingsJSON), &org.Settings)
+	if err := json.Unmarshal([]byte(settingsJSON), &org.Settings); err != nil {
+		return nil, fmt.Errorf("organization %d has malformed settings: %w", org.ID, err)
+	}
 	return org, nil
 }
 
@@ -149,7 +151,9 @@ func (s *Store) GetBySlug(ctx context.Context, slug string) (*Organization, erro
 	if err != nil {
 		return nil, err
 	}
-	json.Unmarshal([]byte(settingsJSON), &org.Settings)
+	if err := json.Unmarshal([]byte(settingsJSON), &org.Settings); err != nil {
+		return nil, fmt.Errorf("organization %q has malformed settings: %w", org.Slug, err)
+	}
 	return org, nil
 }
 
@@ -170,7 +174,9 @@ func (s *Store) List(ctx context.Context) ([]Organization, error) {
 		if err := rows.Scan(&o.ID, &o.Name, &o.Slug, &o.OwnerUserID, &o.Preset, &settingsJSON, &o.CreatedAt, &o.UpdatedAt); err != nil {
 			return nil, err
 		}
-		json.Unmarshal([]byte(settingsJSON), &o.Settings)
+		if err := json.Unmarshal([]byte(settingsJSON), &o.Settings); err != nil {
+			return nil, fmt.Errorf("organization %d has malformed settings: %w", o.ID, err)
+		}
 		orgs = append(orgs, o)
 	}
 	return orgs, nil
@@ -196,7 +202,9 @@ func (s *Store) ListByUser(ctx context.Context, userID int64) ([]Organization, e
 		if err := rows.Scan(&o.ID, &o.Name, &o.Slug, &o.OwnerUserID, &o.Preset, &settingsJSON, &o.CreatedAt, &o.UpdatedAt); err != nil {
 			return nil, err
 		}
-		json.Unmarshal([]byte(settingsJSON), &o.Settings)
+		if err := json.Unmarshal([]byte(settingsJSON), &o.Settings); err != nil {
+			return nil, fmt.Errorf("organization %d has malformed settings: %w", o.ID, err)
+		}
 		orgs = append(orgs, o)
 	}
 	return orgs, nil

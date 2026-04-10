@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"html"
 	"net/http"
 	"regexp"
@@ -32,7 +33,13 @@ func (s *Server) listTemplates(w http.ResponseWriter, r *http.Request, domainID 
 
 		err := rows.Scan(&t.ID, &t.Slug, &t.Name, &t.Subject, &htmlBody, &textBody, &variablesJSON, &t.IsActive, &t.CreatedAt, &t.UpdatedAt)
 		if err != nil {
-			continue
+			// Scan errors signal a query/schema/type mismatch or driver-level
+			// read failure — not a row-level data problem we can skip past.
+			// Surface them as a 500 so a broken deployment doesn't quietly
+			// return a partial template list.
+			s.logger.ErrorContext(r.Context(), "template row scan failed", err, "domain_id", domainID)
+			jsonError(w, "Internal server error", "INTERNAL_ERROR", http.StatusInternalServerError)
+			return
 		}
 
 		if htmlBody.Valid {
@@ -42,7 +49,10 @@ func (s *Server) listTemplates(w http.ResponseWriter, r *http.Request, domainID 
 			t.TextBody = textBody.String
 		}
 		if variablesJSON.Valid && variablesJSON.String != "" {
-			json.Unmarshal([]byte(variablesJSON.String), &t.Variables)
+			if err := json.Unmarshal([]byte(variablesJSON.String), &t.Variables); err != nil {
+				s.logger.WarnContext(r.Context(), "skipping template with malformed variables JSON", "template_id", t.ID, "domain_id", domainID, "error", err)
+				continue
+			}
 		}
 
 		t.DomainID = domainID
@@ -238,7 +248,9 @@ func (s *Server) getTemplateBySlug(ctx context.Context, domainID int64, slug str
 		t.TextBody = textBody.String
 	}
 	if variablesJSON.Valid && variablesJSON.String != "" {
-		json.Unmarshal([]byte(variablesJSON.String), &t.Variables)
+		if err := json.Unmarshal([]byte(variablesJSON.String), &t.Variables); err != nil {
+			return nil, fmt.Errorf("template %q has malformed variables: %w", t.Slug, err)
+		}
 	}
 
 	t.DomainID = domainID

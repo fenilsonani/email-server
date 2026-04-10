@@ -548,10 +548,27 @@ func (s *Server) handleScheduled(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Count by status
-	pending, _ := s.featuresStore.ListScheduledEmails(r.Context(), userID, features.ScheduledStatusPending)
-	sent, _ := s.featuresStore.ListScheduledEmails(r.Context(), userID, features.ScheduledStatusSent)
-	cancelled, _ := s.featuresStore.ListScheduledEmails(r.Context(), userID, features.ScheduledStatusCancelled)
+	// Count by status. ListScheduledEmails now returns an error when a row's
+	// recipients column has malformed JSON; surface those instead of letting
+	// corrupted data collapse silently into a zero count.
+	pending, err := s.featuresStore.ListScheduledEmails(r.Context(), userID, features.ScheduledStatusPending)
+	if err != nil {
+		s.logger.ErrorContext(r.Context(), "Failed to count pending scheduled emails", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	sent, err := s.featuresStore.ListScheduledEmails(r.Context(), userID, features.ScheduledStatusSent)
+	if err != nil {
+		s.logger.ErrorContext(r.Context(), "Failed to count sent scheduled emails", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	cancelled, err := s.featuresStore.ListScheduledEmails(r.Context(), userID, features.ScheduledStatusCancelled)
+	if err != nil {
+		s.logger.ErrorContext(r.Context(), "Failed to count cancelled scheduled emails", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
 
 	data := map[string]interface{}{
 		"Title":          "Scheduled Emails",
