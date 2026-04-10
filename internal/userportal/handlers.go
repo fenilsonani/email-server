@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"net/http"
+	"net/mail"
 	"strconv"
 	"strings"
 	"time"
@@ -23,6 +24,14 @@ type UserInfo struct {
 
 // handleLogin handles user login
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	// Reject disallowed methods first, before any side effects (DB lookup
+	// in detectDomain, rate-limit counter reads, template renders).
+	if r.Method != http.MethodGet && r.Method != http.MethodPost {
+		w.Header().Set("Allow", "GET, POST")
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
 	// Detect domain for branding
 	domain := s.detectDomain(r)
 
@@ -31,15 +40,6 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 			"Title":  "Account Login",
 			"Domain": domain,
 		})
-		return
-	}
-
-	// Anything other than GET or POST is not allowed. Without this guard,
-	// PUT/PATCH/DELETE would silently fall through into the POST path and
-	// burn rate-limit budget on requests that the form never produces.
-	if r.Method != http.MethodPost {
-		w.Header().Set("Allow", "GET, POST")
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -106,10 +106,21 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		if err := s.db.QueryRowContext(r.Context(),
 			"SELECT domain_id FROM users WHERE id = ?", user.ID,
 		).Scan(&userDomainID); err != nil || userDomainID != domain.ID {
-			s.rateLimiter.RecordFailure(clientIP)
+			blocked := s.rateLimiter.RecordFailure(clientIP)
+			remaining := s.rateLimiter.RemainingAttempts(clientIP)
 			if err != nil {
 				s.logger.Warn("Failed to read user domain on login", "user_id", user.ID, "error", err)
 			}
+			// Audit cross-domain denials and transient lookup failures the
+			// same way as the credential-failure path above, otherwise this
+			// rejection would silently disappear from the failed-login
+			// audit trail even though it counts toward the lockout.
+			s.auditLogger.Log(r.Context(), email, audit.EventUserPortalLoginFailure, email, map[string]interface{}{
+				"portal":             "user",
+				"remaining_attempts": remaining,
+				"blocked":            blocked,
+				"reason":             "domain_mismatch",
+			}, clientIP)
 			s.renderTemplate(w, "login.html", map[string]interface{}{
 				"Title":  "Account Login",
 				"Error":  "Invalid email or password",
@@ -398,14 +409,14 @@ func (s *Server) handleForwarding(w http.ResponseWriter, r *http.Request) {
 	newIsActive := r.PostForm.Get("is_active") == "on"
 
 	// Validate email if forwarding is active
-	if newIsActive && newForwardTo == "" {
+	if newIsActive && !isValidMailboxAddress(newForwardTo) {
 		s.renderTemplate(w, "forwarding.html", map[string]interface{}{
 			"Title":     "Email Forwarding",
 			"User":      user,
 			"ForwardTo": newForwardTo,
 			"KeepCopy":  newKeepCopy,
 			"IsActive":  newIsActive,
-			"Error":     "Please enter a forwarding address",
+			"Error":     "Enter a valid forwarding email address",
 		})
 		return
 	}
@@ -503,6 +514,19 @@ func (s *Server) handleVacation(w http.ResponseWriter, r *http.Request) {
 			newEndDate = sql.NullTime{Time: t, Valid: true}
 		}
 	}
+	if newStartDate.Valid && newEndDate.Valid && newEndDate.Time.Before(newStartDate.Time) {
+		s.renderTemplate(w, "vacation.html", map[string]interface{}{
+			"Title":     "Vacation Responder",
+			"User":      user,
+			"Subject":   newSubject,
+			"Message":   newMessage,
+			"StartDate": newStartDateStr,
+			"EndDate":   newEndDateStr,
+			"IsActive":  newIsActive,
+			"Error":     "End date must be after the start date",
+		})
+		return
+	}
 
 	// Validate if active
 	if newIsActive && (newSubject == "" || newMessage == "") {
@@ -587,6 +611,17 @@ func (s *Server) getUserInfo(ctx context.Context, userID int64) (*UserInfo, erro
 	}
 
 	return &user, nil
+}
+
+func isValidMailboxAddress(address string) bool {
+	if address == "" {
+		return false
+	}
+	parsed, err := mail.ParseAddress(address)
+	if err != nil {
+		return false
+	}
+	return parsed.Address == address
 }
 
 func formatDate(t sql.NullTime) string {
