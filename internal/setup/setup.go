@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"net"
 	"net/mail"
 	"os"
@@ -154,6 +155,7 @@ func RunSetupWithOptions(force bool) error {
 		{Name: "Generate DKIM keys", Action: generateDKIM, Verify: verifyDKIM},
 		{Name: "Initialize database", Action: initDatabase, Verify: verifyDatabase},
 		{Name: "Create admin user", Action: createAdminUser, Verify: verifyAdminUser},
+		{Name: "Install binary", Action: installBinary, Verify: verifyInstalledBinary},
 		{Name: "Install systemd service", Action: installSystemd, Verify: verifySystemd},
 		{Name: "Start service", Action: startService, Verify: verifyService},
 	}
@@ -251,24 +253,29 @@ func generateConfig(cfg *SetupConfig) error {
 		return nil
 	}
 
+	dkimKeyFile := cfg.ConfigDir + "/dkim/" + cfg.Domain + ".key"
+
 	config := map[string]interface{}{
 		"server": map[string]interface{}{
 			"hostname": cfg.Hostname,
 			"domain":   cfg.Domain,
 		},
-		"domains": []string{cfg.Domain},
+		"domains": []map[string]interface{}{
+			{
+				"name":          cfg.Domain,
+				"dkim_selector": "mail",
+				"dkim_key_file": dkimKeyFile,
+			},
+		},
 		"storage": map[string]interface{}{
+			"data_dir":      cfg.DataDir,
 			"database_path": cfg.DataDir + "/mail.db",
 			"maildir_path":  cfg.DataDir + "/maildir",
 		},
 		"tls": map[string]interface{}{
-			"auto_cert":      true,
-			"acme_email":     cfg.TLSEmail,
-			"acme_cache_dir": cfg.DataDir + "/acme",
-		},
-		"dkim": map[string]interface{}{
-			"selector": "mail",
-			"key_path": cfg.ConfigDir + "/dkim/" + cfg.Domain + ".key",
+			"auto_tls":  true,
+			"email":     cfg.TLSEmail,
+			"cache_dir": cfg.DataDir + "/acme",
 		},
 		"queue": map[string]interface{}{
 			"redis_url": "redis://localhost:6379/0",
@@ -294,45 +301,59 @@ func verifyConfig(cfg *SetupConfig) error {
 	return err
 }
 
-// generateDKIM generates DKIM keys for the primary domain during initial setup.
-// Additional domains added via the admin panel get their DKIM keys generated separately.
+// generateDKIM generates DKIM keys for the primary domain during initial setup
+// and chowns them to the mailserver user so the daemon can read them at runtime.
+// Additional domains added later get their DKIM keys generated separately.
 func generateDKIM(cfg *SetupConfig) error {
-	keyPath := cfg.ConfigDir + "/dkim/" + cfg.Domain + ".key"
+	dkimDir := cfg.ConfigDir + "/dkim"
+	keyPath := dkimDir + "/" + cfg.Domain + ".key"
+	pubKeyPath := dkimDir + "/" + cfg.Domain + ".pub"
 
-	// Check if key already exists
-	if _, err := os.Stat(keyPath); err == nil {
-		return nil
+	if _, err := os.Stat(keyPath); err != nil {
+		privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+		if err != nil {
+			return err
+		}
+
+		privateKeyPEM := pem.EncodeToMemory(&pem.Block{
+			Type:  "RSA PRIVATE KEY",
+			Bytes: x509.MarshalPKCS1PrivateKey(privateKey),
+		})
+		if err := os.WriteFile(keyPath, privateKeyPEM, 0600); err != nil {
+			return err
+		}
+
+		publicKeyDER, err := x509.MarshalPKIXPublicKey(&privateKey.PublicKey)
+		if err != nil {
+			return err
+		}
+		publicKeyPEM := pem.EncodeToMemory(&pem.Block{
+			Type:  "PUBLIC KEY",
+			Bytes: publicKeyDER,
+		})
+		if err := os.WriteFile(pubKeyPath, publicKeyPEM, 0644); err != nil {
+			return err
+		}
 	}
 
-	// Generate RSA key
-	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	// The daemon runs as the `mailserver` user and config validation requires
+	// the key file to be readable. The key dir lives under cfg.ConfigDir which
+	// is otherwise root-owned, so chown the dkim subtree explicitly.
+	u, err := user.Lookup("mailserver")
 	if err != nil {
 		return err
 	}
-
-	// Encode private key
-	privateKeyPEM := pem.EncodeToMemory(&pem.Block{
-		Type:  "RSA PRIVATE KEY",
-		Bytes: x509.MarshalPKCS1PrivateKey(privateKey),
-	})
-
-	if err := os.WriteFile(keyPath, privateKeyPEM, 0600); err != nil {
-		return err
+	uid, _ := strconv.Atoi(u.Uid)
+	gid, _ := strconv.Atoi(u.Gid)
+	for _, p := range []string{dkimDir, keyPath, pubKeyPath} {
+		if _, err := os.Stat(p); err != nil {
+			continue
+		}
+		if err := os.Chown(p, uid, gid); err != nil {
+			return fmt.Errorf("chown %s: %w", p, err)
+		}
 	}
-
-	// Generate public key for DNS
-	publicKeyDER, err := x509.MarshalPKIXPublicKey(&privateKey.PublicKey)
-	if err != nil {
-		return err
-	}
-
-	publicKeyPEM := pem.EncodeToMemory(&pem.Block{
-		Type:  "PUBLIC KEY",
-		Bytes: publicKeyDER,
-	})
-
-	pubKeyPath := cfg.ConfigDir + "/dkim/" + cfg.Domain + ".pub"
-	return os.WriteFile(pubKeyPath, publicKeyPEM, 0644)
+	return nil
 }
 
 func verifyDKIM(cfg *SetupConfig) error {
@@ -341,9 +362,23 @@ func verifyDKIM(cfg *SetupConfig) error {
 	return err
 }
 
+// selfExe returns the absolute path of the running mailserver binary, so
+// child invocations don't depend on `mailserver` being on $PATH (sudo's
+// secure_path will typically strip the build dir).
+func selfExe() (string, error) {
+	p, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("locate self executable: %w", err)
+	}
+	return p, nil
+}
+
 func initDatabase(cfg *SetupConfig) error {
-	// Run migrations
-	cmd := exec.Command("mailserver", "migrate", "--config", cfg.ConfigDir+"/config.yaml") // #nosec G204 -- config path validated and exec.Command does not invoke a shell
+	exe, err := selfExe()
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command(exe, "migrate", "--config", cfg.ConfigDir+"/config.yaml") // #nosec G204 -- exe is os.Executable, args validated
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
@@ -356,15 +391,18 @@ func verifyDatabase(cfg *SetupConfig) error {
 }
 
 func createAdminUser(cfg *SetupConfig) error {
-	// Hash password
 	hash, err := bcrypt.GenerateFromPassword([]byte(cfg.AdminPass), bcrypt.DefaultCost)
 	if err != nil {
 		return err
 	}
 
-	// Use mailserver CLI to add domain and user
-	// First add domain
-	cmd := exec.Command("mailserver", "domain", "add", cfg.Domain, "--config", cfg.ConfigDir+"/config.yaml") // #nosec G204 -- setup inputs validated and exec.Command does not invoke a shell
+	exe, err := selfExe()
+	if err != nil {
+		return err
+	}
+	configPath := cfg.ConfigDir + "/config.yaml"
+
+	cmd := exec.Command(exe, "domain", "add", cfg.Domain, "--config", configPath) // #nosec G204 -- exe is os.Executable, args validated
 	if output, err := cmd.CombinedOutput(); err != nil {
 		message := strings.ToLower(strings.TrimSpace(string(output)))
 		if !strings.Contains(message, "already exists") {
@@ -372,13 +410,67 @@ func createAdminUser(cfg *SetupConfig) error {
 		}
 	}
 
-	// Add user
-	cmd = exec.Command("mailserver", "user", "add", cfg.AdminEmail, "--password-hash", string(hash), "--admin", "--config", cfg.ConfigDir+"/config.yaml") // #nosec G204 -- setup inputs validated and exec.Command does not invoke a shell
-	return cmd.Run()
+	cmd = exec.Command(exe, "user", "add", cfg.AdminEmail, "--password-hash", string(hash), "--admin", "--config", configPath) // #nosec G204 -- exe is os.Executable, args validated
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to add admin user: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
 }
 
 func verifyAdminUser(cfg *SetupConfig) error {
 	// Just verify the command ran - actual verification would need DB check
+	return nil
+}
+
+const installedBinaryPath = "/usr/local/bin/mailserver"
+
+// installBinary copies the running binary to /usr/local/bin/mailserver so that
+// the systemd unit (which references that path) can start the service. If the
+// running binary is already at the install path, this is a no-op.
+func installBinary(cfg *SetupConfig) error {
+	src, err := selfExe()
+	if err != nil {
+		return err
+	}
+	if src == installedBinaryPath {
+		return nil
+	}
+
+	in, err := os.Open(src) // #nosec G304 -- src is os.Executable
+	if err != nil {
+		return fmt.Errorf("open self binary: %w", err)
+	}
+	defer in.Close()
+
+	tmp := installedBinaryPath + ".new"
+	out, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0755)
+	if err != nil {
+		return fmt.Errorf("create %s: %w", tmp, err)
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		os.Remove(tmp)
+		return fmt.Errorf("copy binary: %w", err)
+	}
+	if err := out.Close(); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, installedBinaryPath); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("install %s: %w", installedBinaryPath, err)
+	}
+	return nil
+}
+
+func verifyInstalledBinary(cfg *SetupConfig) error {
+	info, err := os.Stat(installedBinaryPath)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&0111 == 0 {
+		return fmt.Errorf("%s is not executable", installedBinaryPath)
+	}
 	return nil
 }
 
@@ -435,12 +527,20 @@ func startService(cfg *SetupConfig) error {
 }
 
 func verifyService(cfg *SetupConfig) error {
-	// Check if service is running by checking ports
-	ports := []int{25, 143}
-	for _, port := range ports {
+	// Ask systemd directly: is-active returns exit 0 only when active. This
+	// catches the case where the unit failed to start (e.g. binary missing or
+	// config rejected) instead of waiting for ports that may never open.
+	out, err := exec.Command("systemctl", "is-active", "mailserver").CombinedOutput() // #nosec G204 -- static command without shell
+	state := strings.TrimSpace(string(out))
+	if err != nil || state != "active" {
+		return fmt.Errorf("service not active (state=%q): try `journalctl -u mailserver -n 50` for details", state)
+	}
+
+	// Belt-and-suspenders: confirm at least one mail port is listening.
+	for _, port := range []int{25, 143} {
 		conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 		if err != nil {
-			return fmt.Errorf("service not listening on port %d", port)
+			return fmt.Errorf("service active but not listening on port %d: %w", port, err)
 		}
 		conn.Close()
 	}
@@ -473,7 +573,7 @@ func printSuccess(cfg *SetupConfig) {
 	fmt.Printf("  TXT   _dmarc.%s  →  v=DMARC1; p=quarantine; rua=mailto:postmaster@%s\n", cfg.Domain, cfg.Domain)
 	fmt.Println()
 	fmt.Println("For DKIM record, run:")
-	fmt.Printf("  mailserver dkim show --domain %s\n", cfg.Domain)
+	fmt.Printf("  mailserver dkim show %s\n", cfg.Domain)
 	fmt.Println()
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	fmt.Println("                    NEXT STEPS")
