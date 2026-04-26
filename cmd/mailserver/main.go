@@ -83,9 +83,12 @@ func main() {
 	}
 }
 
+const mailserverVersion = "0.1.0"
+
 var rootCmd = &cobra.Command{
-	Use:   "mailserver",
-	Short: "Personal email server with IMAP, SMTP, CalDAV, and CardDAV",
+	Use:     "mailserver",
+	Version: mailserverVersion,
+	Short:   "Personal email server with IMAP, SMTP, CalDAV, and CardDAV",
 	Long: `A personal email server supporting:
 - IMAP with IDLE for Apple Mail sync
 - SMTP for sending and receiving email
@@ -93,8 +96,12 @@ var rootCmd = &cobra.Command{
 - CardDAV for contacts sync
 - Multiple domains with DKIM signing`,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-		// Skip config loading for help commands
+		// Skip config loading for help/version (--version handled by cobra before RunE,
+		// but PreRunE still fires)
 		if cmd.Name() == "help" || cmd.Name() == "version" {
+			return nil
+		}
+		if v, _ := cmd.Flags().GetBool("version"); v {
 			return nil
 		}
 
@@ -1014,13 +1021,39 @@ var userCmd = &cobra.Command{
 	Short: "Manage email users",
 }
 
+var (
+	userAddPasswordHash string
+	userAddAdmin        bool
+)
+
 var userAddCmd = &cobra.Command{
-	Use:   "add <email> <password>",
+	Use:   "add <email> [password]",
 	Short: "Add a new user",
-	Args:  cobra.ExactArgs(2),
+	Long: `Add a new user.
+
+Password may be supplied as the second positional argument, or as a pre-hashed
+bcrypt string via --password-hash (preferred for scripted use, since flags are
+less likely to leak via process listings than positional args). Exactly one of
+the two must be provided.`,
+	Args: cobra.RangeArgs(1, 2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		email := args[0]
-		password := args[1]
+
+		var hash string
+		switch {
+		case userAddPasswordHash != "" && len(args) == 2:
+			return fmt.Errorf("provide either a positional password or --password-hash, not both")
+		case userAddPasswordHash != "":
+			hash = userAddPasswordHash
+		case len(args) == 2:
+			h, err := auth.HashPassword(args[1])
+			if err != nil {
+				return fmt.Errorf("failed to hash password: %w", err)
+			}
+			hash = h
+		default:
+			return fmt.Errorf("password required: pass it as the second argument or via --password-hash")
+		}
 
 		if err := cfg.EnsureDirectories(); err != nil {
 			return err
@@ -1051,16 +1084,10 @@ var userAddCmd = &cobra.Command{
 			return fmt.Errorf("domain '%s' not found. Add it first with: mailserver domain add %s", domain, domain)
 		}
 
-		// Hash password
-		hash, err := auth.HashPassword(password)
-		if err != nil {
-			return fmt.Errorf("failed to hash password: %w", err)
-		}
-
 		// Insert user
 		result, err := db.ExecContext(context.Background(),
-			"INSERT INTO users (domain_id, username, password_hash) VALUES (?, ?, ?)",
-			domainID, username, hash,
+			"INSERT INTO users (domain_id, username, password_hash, is_admin) VALUES (?, ?, ?, ?)",
+			domainID, username, hash, userAddAdmin,
 		)
 		if err != nil {
 			return fmt.Errorf("failed to add user: %w", err)
@@ -2796,7 +2823,7 @@ var versionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Print version information",
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("mailserver v0.1.0")
+		fmt.Printf("mailserver v%s\n", mailserverVersion)
 	},
 }
 
@@ -3518,6 +3545,8 @@ func init() {
 	rootCmd.AddCommand(domainCmd)
 
 	// User commands
+	userAddCmd.Flags().StringVar(&userAddPasswordHash, "password-hash", "", "Pre-hashed bcrypt password (alternative to positional password)")
+	userAddCmd.Flags().BoolVar(&userAddAdmin, "admin", false, "Mark the user as a server admin")
 	userDeleteCmd.Flags().BoolVar(&userDeleteForce, "force", false, "Skip confirmation prompt")
 	userSetRoleCmd.Flags().StringVar(&setRoleDomain, "domain", "", "Domain scope for domain_admin role")
 	userCmd.AddCommand(userAddCmd)
