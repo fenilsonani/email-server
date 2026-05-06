@@ -3,8 +3,10 @@ package setup
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/fenilsonani/email-server/internal/auth"
 	"github.com/fenilsonani/email-server/internal/config"
 )
 
@@ -131,6 +133,32 @@ func TestGenerateConfig_KeepsExistingConfig(t *testing.T) {
 	}
 	if string(got) != string(existing) {
 		t.Errorf("existing config was overwritten: %q", got)
+	}
+}
+
+// TestAdminPasswordHash_VerifiesViaAuthPackage guards against a regression of
+// the algorithm-mismatch bug flagged on PR #47: setup used bcrypt while
+// internal/auth.VerifyPassword only accepts argon2id, leaving the admin user
+// unable to authenticate. The wizard's hash must round-trip through the same
+// verifier the runtime uses, otherwise `mailserver setup` silently produces a
+// broken admin account.
+func TestAdminPasswordHash_VerifiesViaAuthPackage(t *testing.T) {
+	const plain = "correct horse battery staple"
+
+	hash, err := auth.HashPassword(plain)
+	if err != nil {
+		t.Fatalf("auth.HashPassword: %v", err)
+	}
+
+	if !strings.HasPrefix(hash, "$argon2id$") {
+		t.Fatalf("hash prefix = %q, want $argon2id$ (a bcrypt hash like $2a$ would be silently rejected by VerifyPassword)", hash[:min(len(hash), 12)])
+	}
+
+	if !auth.VerifyPassword(plain, hash) {
+		t.Fatal("auth.VerifyPassword rejected hash produced by auth.HashPassword — algorithm mismatch")
+	}
+	if auth.VerifyPassword("wrong", hash) {
+		t.Fatal("auth.VerifyPassword accepted wrong password")
 	}
 }
 

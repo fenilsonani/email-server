@@ -1032,9 +1032,10 @@ var userAddCmd = &cobra.Command{
 	Long: `Add a new user.
 
 Password may be supplied as the second positional argument, or as a pre-hashed
-bcrypt string via --password-hash (preferred for scripted use, since flags are
-less likely to leak via process listings than positional args). Exactly one of
-the two must be provided.`,
+argon2id string via --password-hash (preferred for scripted use: the value passed
+is already a non-reversible hash, so even if the command line is observed via
+process listings the plaintext password is not exposed). Exactly one of the two
+must be provided.`,
 	Args: cobra.RangeArgs(1, 2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		email := args[0]
@@ -3545,7 +3546,7 @@ func init() {
 	rootCmd.AddCommand(domainCmd)
 
 	// User commands
-	userAddCmd.Flags().StringVar(&userAddPasswordHash, "password-hash", "", "Pre-hashed bcrypt password (alternative to positional password)")
+	userAddCmd.Flags().StringVar(&userAddPasswordHash, "password-hash", "", "Pre-hashed argon2id password (alternative to positional password)")
 	userAddCmd.Flags().BoolVar(&userAddAdmin, "admin", false, "Mark the user as a server admin")
 	userDeleteCmd.Flags().BoolVar(&userDeleteForce, "force", false, "Skip confirmation prompt")
 	userSetRoleCmd.Flags().StringVar(&setRoleDomain, "domain", "", "Domain scope for domain_admin role")

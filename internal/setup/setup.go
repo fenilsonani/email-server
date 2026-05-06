@@ -17,8 +17,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/fenilsonani/email-server/internal/auth"
 	"github.com/fenilsonani/email-server/internal/validation"
-	"golang.org/x/crypto/bcrypt"
 	"gopkg.in/yaml.v3"
 )
 
@@ -391,7 +391,10 @@ func verifyDatabase(cfg *SetupConfig) error {
 }
 
 func createAdminUser(cfg *SetupConfig) error {
-	hash, err := bcrypt.GenerateFromPassword([]byte(cfg.AdminPass), bcrypt.DefaultCost)
+	// Use auth.HashPassword (argon2id) so the hash matches what
+	// internal/auth.VerifyPassword expects — bcrypt hashes are silently
+	// rejected and would leave the admin unable to log in.
+	hash, err := auth.HashPassword(cfg.AdminPass)
 	if err != nil {
 		return err
 	}
@@ -410,7 +413,7 @@ func createAdminUser(cfg *SetupConfig) error {
 		}
 	}
 
-	cmd = exec.Command(exe, "user", "add", cfg.AdminEmail, "--password-hash", string(hash), "--admin", "--config", configPath) // #nosec G204 -- exe is os.Executable, args validated
+	cmd = exec.Command(exe, "user", "add", cfg.AdminEmail, "--password-hash", hash, "--admin", "--config", configPath) // #nosec G204 -- exe is os.Executable, args validated
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to add admin user: %w: %s", err, strings.TrimSpace(string(output)))
 	}
