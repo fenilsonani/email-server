@@ -33,10 +33,14 @@ git clone https://github.com/fenilsonani/email-server.git
 cd email-server
 go build -o mailserver ./cmd/mailserver
 
-./mailserver preflight    # check prerequisites
-./mailserver setup        # interactive setup
-./mailserver doctor       # diagnose issues
+sudo ./mailserver preflight    # check prerequisites
+sudo ./mailserver setup        # interactive setup (installs to /usr/local/bin/mailserver)
+mailserver doctor              # diagnose issues
 ```
+
+The wizard runs `preflight`, generates config, creates the system user/dirs,
+generates DKIM keys, runs migrations, creates the admin user, copies itself to
+`/usr/local/bin/mailserver`, installs the systemd unit, and starts the service.
 
 ### Manual Setup
 
