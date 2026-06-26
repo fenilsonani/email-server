@@ -1,6 +1,43 @@
 # Personal Email Server
 
+> **Archived — June 2026.** i'm not maintaining this anymore. the code still works and you can deploy it, but no new features or fixes from me. fork it if you want to keep going. read on for why i started it and why i'm stopping.
+
 A self-hosted email server written in Go. IMAP with IDLE, SMTP with retry logic, CalDAV/CardDAV, DKIM/SPF/DMARC, and a web admin panel.
+
+## Why i built this
+
+i wanted to deploy a full email server the easiest and most reliable way possible — one thing that just works. run a setup wizard, point your DNS, done. own my own mail, full features (imap, smtp, dkim/spf/dmarc, calendar, contacts, admin panel), no monthly bills, no third party reading my stuff.
+
+and honestly the code got there. the setup wizard, preflight, doctor — it does install clean and it does run. everything that was in my control, i'm happy with.
+
+## Why i'm archiving it
+
+the problem with self-hosted email was never the code. it's deliverability, and that's the one part you can't fix by writing more go.
+
+- **ip blacklisting.** your server sends from a vps ip that lives in a cloud provider's range, and those ranges are distrusted by default. you land on spamhaus / microsoft blocks / gmail spam folder on day one, sometimes because of whoever had that ip before you. nothing you can do in code fixes that.
+- **port 25 gets blocked** by a lot of vps providers and basically every residential isp, so outbound just silently fails.
+- **gmail / yahoo / microsoft bulk sender rules (2024+)** raised the bar — strict dmarc alignment, one-click unsubscribe, complaint thresholds. a fresh solo ip with no warmup history rarely clears it.
+- **it's a forever ops job** — rdns/ptr, ip warming, watching blocklists, patching, acme renewals, backups. for something the big providers basically do for free.
+
+so "just works" was never really up to my server. it's up to gmail/microsoft/spamhaus deciding to accept my mail, and they don't trust a brand new self-hosted ip. that's not a bug i can close. the whole "easiest + reliable + just works" thing for *sending* email moved out of self-hosted software and into managed senders that own warmed-up, trusted ips. so it doesn't make sense to keep building this.
+
+## If you still want to deploy
+
+totally fine — it still works. just go in knowing the deliverability stuff above. and if you mostly care about *sending*, let someone else carry the ip reputation:
+
+- **Cloudflare Email Service** — send straight from workers, no api keys. private beta dec 2025, public beta apr 16 2026. pair it with their Email Routing for inbound and you've got full send + receive, and the ip reputation is *their* problem not yours.
+- **[Resend](https://resend.com) / [Postmark](https://postmarkapp.com) / AWS SES** — managed sending apis, warmed ips.
+
+and if you want a self-hosted full mailbox that's actually maintained, honestly just use one of these instead of mine:
+
+| project | stack | good for |
+|---|---|---|
+| **[Stalwart](https://github.com/stalwartlabs/mail-server)** | single rust binary, ~100mb ram | closest thing to what i was building — all-in-one (jmap/imap/smtp/caldav/carddav + dkim/spf/dmarc/arc), tiny vps. this is the one i'd pick. |
+| **[Maddy](https://github.com/foxcpp/maddy)** | single go binary | most like this repo if you want familiar code |
+| **[mailcow](https://mailcow.email)** | docker stack + sogo webmail | full smb setup with nice admin ui, heavier (2gb+ ram) |
+| **[Mail-in-a-Box](https://mailinabox.email)** | bash/python on ubuntu | easiest "one script and done" full stack |
+
+tl;dr — for sending use Cloudflare Email Service / Resend / SES, for a self-hosted mailbox use **Stalwart**. that combo is the "easiest + reliable + just works" i was originally chasing here.
 
 ## Features
 
